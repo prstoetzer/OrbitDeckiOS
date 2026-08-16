@@ -1,0 +1,424 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		012B3D5FE7B0EE6E71C2B7DF /* Views/OrbitalAnalysisView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 288DA342A9387B413727BBE4 /* Views/OrbitalAnalysisView.swift */; };
+		089C7BC84DD8E89D8A53B10C /* Views/SatellitesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55BDFC1138CA1C47FF99349A /* Views/SatellitesView.swift */; };
+		08EDC310E824B8CB90D8A3EE /* Views/HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A72471D03E195359C63155A /* Views/HomeView.swift */; };
+		0C4C1D39CC489508720D4198 /* Views/SkyRadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C400D0BA43629F11E97C6234 /* Views/SkyRadarView.swift */; };
+		24A2EC1FCE037F1FA7FD744D /* Services/LocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CC53E0E4F549F7E5A4BF44 /* Services/LocationProvider.swift */; };
+		2E946B4130308C7600960A39 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2E946B4030308C7600960A39 /* Assets.xcassets */; };
+		64DDAC67D6894708F4CDE021 /* Views/PassesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8FF6BE81A9340A8D932821F /* Views/PassesView.swift */; };
+		66289466ED75BEC0DCF9ABC8 /* Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D031980CF45765481210B /* Views/SettingsView.swift */; };
+		6E7F478781FCC9B1E67B0963 /* Views/RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00C31F510B2C4F86D159714 /* Views/RootView.swift */; };
+		6F5F774867D281006A248D46 /* AppTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D53E08BB4B7DAA62B0595EE /* AppTheme.swift */; };
+		869912A6379B25295FA155F0 /* OrbitDeckIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B43629BF128E879781EFB61 /* OrbitDeckIOSApp.swift */; };
+		8FBFD82367C4A6A0259DC0D0 /* SatelliteKit in Frameworks */ = {isa = PBXBuildFile; productRef = 504BB4E1427005D790B290F6 /* SatelliteKit */; };
+		9AD55F916BA960A2601A37F4 /* Views/PassDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD3770544E3A3926B90E3EBC /* Views/PassDetailView.swift */; };
+		A07A00010000000000000011 /* Services/AO7Service.swift in Sources */ = {isa = PBXBuildFile; fileRef = A07A00010000000000000001 /* Services/AO7Service.swift */; };
+		A699DCA775DAC77E69FB06C3 /* Views/TenDayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 998B61C9F980048B635F9371 /* Views/TenDayView.swift */; };
+		A8F2B40AB9E4503AADD5B6F3 /* Services/GPService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E031943FE1F24BBA6F4FDA /* Services/GPService.swift */; };
+		A903F6A56AC625C98B5048C1 /* Views/GroundTrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8755BB411B3347495EF34D0C /* Views/GroundTrackView.swift */; };
+		AD6974BCF92181EA0D10E2E9 /* Models/SatelliteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52B673BAAB30D9349858A178 /* Models/SatelliteModels.swift */; };
+		BA9A82ED3F8C08B7780FC971 /* Views/IlluminationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3601E96659AC708B443708AC /* Views/IlluminationView.swift */; };
+		BCE0B03C6AD18E7E84526787 /* Services/TransponderService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FDDA8C92EE5F5541001A77A /* Services/TransponderService.swift */; };
+		BDD443FC7935C36BB4F88C04 /* Views/RadioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C9F5562B8D8E90BE1FE63E /* Views/RadioView.swift */; };
+		C078BFB7DE4C528E6F37E562 /* Models/OrbitStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 899A384EB801786469AC31B7 /* Models/OrbitStore.swift */; };
+		DFC12A86B001908A6118F1FC /* Engine/OrbitPredictor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0377C74A272ACB831917414F /* Engine/OrbitPredictor.swift */; };
+		E05000010000000000000011 /* Services/ExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E05000010000000000000001 /* Services/ExportService.swift */; };
+		E05000020000000000000011 /* Services/PassAlarmService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E05000020000000000000001 /* Services/PassAlarmService.swift */; };
+		E05000030000000000000011 /* Views/AdvancedFeatureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E05000030000000000000001 /* Views/AdvancedFeatureViews.swift */; };
+		E06000010000000000000011 /* Engine/UtilityEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E06000010000000000000001 /* Engine/UtilityEngine.swift */; };
+		E06000020000000000000011 /* Views/UtilityFeatureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E06000020000000000000001 /* Views/UtilityFeatureViews.swift */; };
+		E07000010000000000000011 /* Engine/DeepParityEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E07000010000000000000001 /* Engine/DeepParityEngine.swift */; };
+		E07000020000000000000011 /* Views/DeepParityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E07000020000000000000001 /* Views/DeepParityViews.swift */; };
+		E09000010000000000000011 /* Engine/DXCCData.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09000010000000000000001 /* Engine/DXCCData.swift */; };
+		E09000020000000000000011 /* Engine/ParityPlanningEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09000020000000000000001 /* Engine/ParityPlanningEngine.swift */; };
+		E09000030000000000000011 /* Engine/AstronomyParityEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09000030000000000000001 /* Engine/AstronomyParityEngine.swift */; };
+		E09300010000000000000011 /* Engine/WorldMapData.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09300010000000000000001 /* Engine/WorldMapData.swift */; };
+		E09400010000000000000011 /* Engine/DXCCNumericData.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09400010000000000000001 /* Engine/DXCCNumericData.swift */; };
+		E09600010000000000000011 /* Services/XLSXExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09600010000000000000001 /* Services/XLSXExportService.swift */; };
+		E09700010000000000000011 /* Engine/FeatureCompletionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E09700010000000000000001 /* Engine/FeatureCompletionEngine.swift */; };
+		E4D1D287D264EDD14A01DEEF /* Views/TrackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAB8FEFB3DB06B03B7C3E2EA /* Views/TrackView.swift */; };
+		F08994C001BC8C8619BC6225 /* Views/Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3C6A9BDFE3CB6D38313CE4F /* Views/Components.swift */; };
+		FEA7E0010000000000000011 /* Engine/FeatureEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA7E0010000000000000001 /* Engine/FeatureEngine.swift */; };
+		FEA7E0020000000000000011 /* Views/FeatureViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA7E0020000000000000001 /* Views/FeatureViews.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0377C74A272ACB831917414F /* Engine/OrbitPredictor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/OrbitPredictor.swift; sourceTree = "<group>"; };
+		0B43629BF128E879781EFB61 /* OrbitDeckIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrbitDeckIOSApp.swift; sourceTree = "<group>"; };
+		1CC9831C1A440AF25860B564 /* OrbitDeck.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OrbitDeck.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		25C9F5562B8D8E90BE1FE63E /* Views/RadioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/RadioView.swift; sourceTree = "<group>"; };
+		288DA342A9387B413727BBE4 /* Views/OrbitalAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/OrbitalAnalysisView.swift; sourceTree = "<group>"; };
+		2A72471D03E195359C63155A /* Views/HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/HomeView.swift; sourceTree = "<group>"; };
+		2E946B4030308C7600960A39 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		2FDDA8C92EE5F5541001A77A /* Services/TransponderService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/TransponderService.swift; sourceTree = "<group>"; };
+		32CC53E0E4F549F7E5A4BF44 /* Services/LocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocationProvider.swift; sourceTree = "<group>"; };
+		3601E96659AC708B443708AC /* Views/IlluminationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/IlluminationView.swift; sourceTree = "<group>"; };
+		52B673BAAB30D9349858A178 /* Models/SatelliteModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/SatelliteModels.swift; sourceTree = "<group>"; };
+		55BDFC1138CA1C47FF99349A /* Views/SatellitesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/SatellitesView.swift; sourceTree = "<group>"; };
+		5D53E08BB4B7DAA62B0595EE /* AppTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTheme.swift; sourceTree = "<group>"; };
+		83E031943FE1F24BBA6F4FDA /* Services/GPService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/GPService.swift; sourceTree = "<group>"; };
+		8755BB411B3347495EF34D0C /* Views/GroundTrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/GroundTrackView.swift; sourceTree = "<group>"; };
+		899A384EB801786469AC31B7 /* Models/OrbitStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models/OrbitStore.swift; sourceTree = "<group>"; };
+		998B61C9F980048B635F9371 /* Views/TenDayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/TenDayView.swift; sourceTree = "<group>"; };
+		A07A00010000000000000001 /* Services/AO7Service.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/AO7Service.swift; sourceTree = "<group>"; };
+		A8FF6BE81A9340A8D932821F /* Views/PassesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/PassesView.swift; sourceTree = "<group>"; };
+		B00C31F510B2C4F86D159714 /* Views/RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/RootView.swift; sourceTree = "<group>"; };
+		C3C6A9BDFE3CB6D38313CE4F /* Views/Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/Components.swift; sourceTree = "<group>"; };
+		C400D0BA43629F11E97C6234 /* Views/SkyRadarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/SkyRadarView.swift; sourceTree = "<group>"; };
+		CAB8FEFB3DB06B03B7C3E2EA /* Views/TrackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/TrackView.swift; sourceTree = "<group>"; };
+		CC1D031980CF45765481210B /* Views/SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/SettingsView.swift; sourceTree = "<group>"; };
+		CD3770544E3A3926B90E3EBC /* Views/PassDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/PassDetailView.swift; sourceTree = "<group>"; };
+		E05000010000000000000001 /* Services/ExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/ExportService.swift; sourceTree = "<group>"; };
+		E05000020000000000000001 /* Services/PassAlarmService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/PassAlarmService.swift; sourceTree = "<group>"; };
+		E05000030000000000000001 /* Views/AdvancedFeatureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/AdvancedFeatureViews.swift; sourceTree = "<group>"; };
+		E06000010000000000000001 /* Engine/UtilityEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/UtilityEngine.swift; sourceTree = "<group>"; };
+		E06000020000000000000001 /* Views/UtilityFeatureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/UtilityFeatureViews.swift; sourceTree = "<group>"; };
+		E07000010000000000000001 /* Engine/DeepParityEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/DeepParityEngine.swift; sourceTree = "<group>"; };
+		E07000020000000000000001 /* Views/DeepParityViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/DeepParityViews.swift; sourceTree = "<group>"; };
+		E09000010000000000000001 /* Engine/DXCCData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/DXCCData.swift; sourceTree = "<group>"; };
+		E09000020000000000000001 /* Engine/ParityPlanningEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/ParityPlanningEngine.swift; sourceTree = "<group>"; };
+		E09000030000000000000001 /* Engine/AstronomyParityEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/AstronomyParityEngine.swift; sourceTree = "<group>"; };
+		E09300010000000000000001 /* Engine/WorldMapData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/WorldMapData.swift; sourceTree = "<group>"; };
+		E09400010000000000000001 /* Engine/DXCCNumericData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/DXCCNumericData.swift; sourceTree = "<group>"; };
+		E09600010000000000000001 /* Services/XLSXExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/XLSXExportService.swift; sourceTree = "<group>"; };
+		E09700010000000000000001 /* Engine/FeatureCompletionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/FeatureCompletionEngine.swift; sourceTree = "<group>"; };
+		FEA7E0010000000000000001 /* Engine/FeatureEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Engine/FeatureEngine.swift; sourceTree = "<group>"; };
+		FEA7E0020000000000000001 /* Views/FeatureViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/FeatureViews.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		69680EDE0CF9B24DB8DBFE04 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8FBFD82367C4A6A0259DC0D0 /* SatelliteKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		615B463D1028E4E24B674CF7 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1CC9831C1A440AF25860B564 /* OrbitDeck.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		8309DD304D804F9D7F6302F5 /* OrbitDeckIOS */ = {
+			isa = PBXGroup;
+			children = (
+				5D53E08BB4B7DAA62B0595EE /* AppTheme.swift */,
+				0377C74A272ACB831917414F /* Engine/OrbitPredictor.swift */,
+				FEA7E0010000000000000001 /* Engine/FeatureEngine.swift */,
+				E09700010000000000000001 /* Engine/FeatureCompletionEngine.swift */,
+				E09000010000000000000001 /* Engine/DXCCData.swift */,
+				E09000020000000000000001 /* Engine/ParityPlanningEngine.swift */,
+				E09000030000000000000001 /* Engine/AstronomyParityEngine.swift */,
+				E09300010000000000000001 /* Engine/WorldMapData.swift */,
+				E09400010000000000000001 /* Engine/DXCCNumericData.swift */,
+				899A384EB801786469AC31B7 /* Models/OrbitStore.swift */,
+				52B673BAAB30D9349858A178 /* Models/SatelliteModels.swift */,
+				0B43629BF128E879781EFB61 /* OrbitDeckIOSApp.swift */,
+				83E031943FE1F24BBA6F4FDA /* Services/GPService.swift */,
+				32CC53E0E4F549F7E5A4BF44 /* Services/LocationProvider.swift */,
+				2FDDA8C92EE5F5541001A77A /* Services/TransponderService.swift */,
+				A07A00010000000000000001 /* Services/AO7Service.swift */,
+				E09600010000000000000001 /* Services/XLSXExportService.swift */,
+				E05000010000000000000001 /* Services/ExportService.swift */,
+				E05000020000000000000001 /* Services/PassAlarmService.swift */,
+				C3C6A9BDFE3CB6D38313CE4F /* Views/Components.swift */,
+				8755BB411B3347495EF34D0C /* Views/GroundTrackView.swift */,
+				2A72471D03E195359C63155A /* Views/HomeView.swift */,
+				3601E96659AC708B443708AC /* Views/IlluminationView.swift */,
+				288DA342A9387B413727BBE4 /* Views/OrbitalAnalysisView.swift */,
+				CD3770544E3A3926B90E3EBC /* Views/PassDetailView.swift */,
+				A8FF6BE81A9340A8D932821F /* Views/PassesView.swift */,
+				25C9F5562B8D8E90BE1FE63E /* Views/RadioView.swift */,
+				B00C31F510B2C4F86D159714 /* Views/RootView.swift */,
+				FEA7E0020000000000000001 /* Views/FeatureViews.swift */,
+				E05000030000000000000001 /* Views/AdvancedFeatureViews.swift */,
+				E06000010000000000000001 /* Engine/UtilityEngine.swift */,
+				E07000010000000000000001 /* Engine/DeepParityEngine.swift */,
+				E06000020000000000000001 /* Views/UtilityFeatureViews.swift */,
+				E07000020000000000000001 /* Views/DeepParityViews.swift */,
+				55BDFC1138CA1C47FF99349A /* Views/SatellitesView.swift */,
+				CC1D031980CF45765481210B /* Views/SettingsView.swift */,
+				C400D0BA43629F11E97C6234 /* Views/SkyRadarView.swift */,
+				998B61C9F980048B635F9371 /* Views/TenDayView.swift */,
+				CAB8FEFB3DB06B03B7C3E2EA /* Views/TrackView.swift */,
+			);
+			path = OrbitDeckIOS;
+			sourceTree = "<group>";
+		};
+		870B3294C0CBD48AF6BBCC1B = {
+			isa = PBXGroup;
+			children = (
+				2E946B4030308C7600960A39 /* Assets.xcassets */,
+				8309DD304D804F9D7F6302F5 /* OrbitDeckIOS */,
+				615B463D1028E4E24B674CF7 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0E8A3AD980EC179856012B7E /* OrbitDeckIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8277A6D033206E2155B475F8 /* Build configuration list for PBXNativeTarget "OrbitDeckIOS" */;
+			buildPhases = (
+				F612CD2E22E187AC48B5913C /* Sources */,
+				69680EDE0CF9B24DB8DBFE04 /* Frameworks */,
+				86F6FE2DD6E869C1842A14B3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OrbitDeckIOS;
+			packageProductDependencies = (
+				504BB4E1427005D790B290F6 /* SatelliteKit */,
+			);
+			productName = OrbitDeckIOS;
+			productReference = 1CC9831C1A440AF25860B564 /* OrbitDeck.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		98F54143AB4E86B28C3AFEE0 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					0E8A3AD980EC179856012B7E = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = 29BB5A1F789B4343D9D10FFE /* Build configuration list for PBXProject "OrbitDeckIOS" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 870B3294C0CBD48AF6BBCC1B;
+			packageReferences = (
+				B67AAC620FDEA6EAC93D41BF /* XCRemoteSwiftPackageReference "SatelliteKit" */,
+			);
+			productRefGroup = 615B463D1028E4E24B674CF7 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0E8A3AD980EC179856012B7E /* OrbitDeckIOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		86F6FE2DD6E869C1842A14B3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2E946B4130308C7600960A39 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		F612CD2E22E187AC48B5913C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6F5F774867D281006A248D46 /* AppTheme.swift in Sources */,
+				DFC12A86B001908A6118F1FC /* Engine/OrbitPredictor.swift in Sources */,
+				FEA7E0010000000000000011 /* Engine/FeatureEngine.swift in Sources */,
+				E09700010000000000000011 /* Engine/FeatureCompletionEngine.swift in Sources */,
+				E09000010000000000000011 /* Engine/DXCCData.swift in Sources */,
+				E09000020000000000000011 /* Engine/ParityPlanningEngine.swift in Sources */,
+				E09000030000000000000011 /* Engine/AstronomyParityEngine.swift in Sources */,
+				E09300010000000000000011 /* Engine/WorldMapData.swift in Sources */,
+				E09400010000000000000011 /* Engine/DXCCNumericData.swift in Sources */,
+				C078BFB7DE4C528E6F37E562 /* Models/OrbitStore.swift in Sources */,
+				AD6974BCF92181EA0D10E2E9 /* Models/SatelliteModels.swift in Sources */,
+				869912A6379B25295FA155F0 /* OrbitDeckIOSApp.swift in Sources */,
+				A8F2B40AB9E4503AADD5B6F3 /* Services/GPService.swift in Sources */,
+				24A2EC1FCE037F1FA7FD744D /* Services/LocationProvider.swift in Sources */,
+				BCE0B03C6AD18E7E84526787 /* Services/TransponderService.swift in Sources */,
+				A07A00010000000000000011 /* Services/AO7Service.swift in Sources */,
+				E09600010000000000000011 /* Services/XLSXExportService.swift in Sources */,
+				E05000010000000000000011 /* Services/ExportService.swift in Sources */,
+				E05000020000000000000011 /* Services/PassAlarmService.swift in Sources */,
+				F08994C001BC8C8619BC6225 /* Views/Components.swift in Sources */,
+				A903F6A56AC625C98B5048C1 /* Views/GroundTrackView.swift in Sources */,
+				08EDC310E824B8CB90D8A3EE /* Views/HomeView.swift in Sources */,
+				BA9A82ED3F8C08B7780FC971 /* Views/IlluminationView.swift in Sources */,
+				012B3D5FE7B0EE6E71C2B7DF /* Views/OrbitalAnalysisView.swift in Sources */,
+				9AD55F916BA960A2601A37F4 /* Views/PassDetailView.swift in Sources */,
+				64DDAC67D6894708F4CDE021 /* Views/PassesView.swift in Sources */,
+				BDD443FC7935C36BB4F88C04 /* Views/RadioView.swift in Sources */,
+				6E7F478781FCC9B1E67B0963 /* Views/RootView.swift in Sources */,
+				FEA7E0020000000000000011 /* Views/FeatureViews.swift in Sources */,
+				E05000030000000000000011 /* Views/AdvancedFeatureViews.swift in Sources */,
+				E06000010000000000000011 /* Engine/UtilityEngine.swift in Sources */,
+				E07000010000000000000011 /* Engine/DeepParityEngine.swift in Sources */,
+				E06000020000000000000011 /* Views/UtilityFeatureViews.swift in Sources */,
+				E07000020000000000000011 /* Views/DeepParityViews.swift in Sources */,
+				089C7BC84DD8E89D8A53B10C /* Views/SatellitesView.swift in Sources */,
+				66289466ED75BEC0DCF9ABC8 /* Views/SettingsView.swift in Sources */,
+				0C4C1D39CC489508720D4198 /* Views/SkyRadarView.swift in Sources */,
+				A699DCA775DAC77E69FB06C3 /* Views/TenDayView.swift in Sources */,
+				E4D1D287D264EDD14A01DEEF /* Views/TrackView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		504B6810B36BF9ADE0C509C4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		7FCD0DA8B2954BD963D5B5C4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		E1698793B8B09B32821D3120 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 16;
+				DEVELOPMENT_TEAM = A4KV683T6U;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = OrbitDeck;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.9.7;
+				PRODUCT_BUNDLE_IDENTIFIER = com.prstoetzer.OrbitDeckIOS;
+				PRODUCT_NAME = OrbitDeck;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FFACE85B9B63AB569355131D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 16;
+				DEVELOPMENT_TEAM = A4KV683T6U;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = OrbitDeck;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.9.7;
+				PRODUCT_BUNDLE_IDENTIFIER = com.prstoetzer.OrbitDeckIOS;
+				PRODUCT_NAME = OrbitDeck;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		29BB5A1F789B4343D9D10FFE /* Build configuration list for PBXProject "OrbitDeckIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7FCD0DA8B2954BD963D5B5C4 /* Debug */,
+				504B6810B36BF9ADE0C509C4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8277A6D033206E2155B475F8 /* Build configuration list for PBXNativeTarget "OrbitDeckIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E1698793B8B09B32821D3120 /* Debug */,
+				FFACE85B9B63AB569355131D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B67AAC620FDEA6EAC93D41BF /* XCRemoteSwiftPackageReference "SatelliteKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gavineadie/SatelliteKit.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.1.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		504BB4E1427005D790B290F6 /* SatelliteKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B67AAC620FDEA6EAC93D41BF /* XCRemoteSwiftPackageReference "SatelliteKit" */;
+			productName = SatelliteKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 98F54143AB4E86B28C3AFEE0 /* Project object */;
+}

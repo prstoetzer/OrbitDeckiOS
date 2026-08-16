@@ -1,0 +1,28 @@
+10 REM ====== MANDEL - the Mandelbrot set, coarse ======
+100 LET W = 3
+110 LET T = 12
+120 CLS
+130 FOR I = 0 TO 237 STEP W
+150 LET A = 0 - 2.2 + I / 239 * 3.2
+160 FOR J = 0 TO 132 STEP W
+180 LET B = 0 - 1.3 + J / 134 * 2.6
+190 LET X = 0
+200 LET Y = 0
+210 LET K = 0
+230 LET P = X * X
+240 LET Q = Y * Y
+250 IF P + Q > 4 THEN GOTO 320
+260 LET Y = 2 * X * Y + B
+270 LET X = P - Q + A
+280 LET K = K + 1
+290 IF K < T THEN GOTO 230
+310 GOTO 360
+320 REM escaped at K: pick a colour band by speed
+330 LET L = 1 + K - INT(K / 8) * 8
+340 IF L = 0 THEN L = 1
+350 LINE I,J,I+W-1,J,L
+360 NEXT J
+370 NEXT I
+380 TEXT 2,2,"MANDELBROT"
+390 SHOW
+400 END

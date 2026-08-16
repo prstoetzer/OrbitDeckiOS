@@ -1,0 +1,278 @@
+{
+  ".gitignore": {
+    "bytes": 252,
+    "sha256": "f0d53150fcc0af76844abc35787ec41e448ff08c1c745a051239497688e444da"
+  },
+  "LICENSE": {
+    "bytes": 1076,
+    "sha256": "7ee6ad27f4788c51a930f32ea26d3060c178c8d43e48844c443d768ab2fdfc7f"
+  },
+  "OrbitDeckIOS.xcodeproj/project.pbxproj": {
+    "bytes": 26167,
+    "sha256": "334739fa1cde004273c18169b851ddd295e2beff4c533d30d038542cac807b68"
+  },
+  "OrbitDeckIOS.xcodeproj/xcshareddata/xcschemes/OrbitDeckIOS.xcscheme": {
+    "bytes": 2181,
+    "sha256": "565a9a0c8adfd0874657d29c9ef6bbdadbc5e4d088105e0437463218f07bc214"
+  },
+  "OrbitDeckIOS/AppTheme.swift": {
+    "bytes": 1786,
+    "sha256": "fbfe4ae3747bd9a5791df8906e87034f905c8e39b2c8e460812f9e73d423585e"
+  },
+  "OrbitDeckIOS/Engine/AstronomyParityEngine.swift": {
+    "bytes": 20157,
+    "sha256": "669d786df6ac29656a8a7d232413e74f53e7c91a519c4cd073a975abdf0d7aa5"
+  },
+  "OrbitDeckIOS/Engine/DXCCData.swift": {
+    "bytes": 30136,
+    "sha256": "aedcd932e83f51507f4ba8b43f412117f6fb8eb90abe9039f9ec59a8b5bdfe88"
+  },
+  "OrbitDeckIOS/Engine/DXCCNumericData.swift": {
+    "bytes": 12224,
+    "sha256": "49ae28108c967112f4b2ffb81e62bb5d5e38d2f1e29cb9436965928a1cf6dc85"
+  },
+  "OrbitDeckIOS/Engine/DeepParityEngine.swift": {
+    "bytes": 132260,
+    "sha256": "e10d72fd49e2adb085eaf93452cda62f4f301d86866a953f63033fe535f01014"
+  },
+  "OrbitDeckIOS/Engine/FeatureCompletionEngine.swift": {
+    "bytes": 17915,
+    "sha256": "24b93cd01a88334b7e13e304aa740db95a5dc6fce05731cba77ededc7960e48b"
+  },
+  "OrbitDeckIOS/Engine/FeatureEngine.swift": {
+    "bytes": 136557,
+    "sha256": "ab8c63c8644bd4ae40ef8604b45b12f4bcd4f16eb85276ed8c0412bef278ef26"
+  },
+  "OrbitDeckIOS/Engine/OrbitPredictor.swift": {
+    "bytes": 15256,
+    "sha256": "464918f15438022cfa1649585dbb9c9d4c43310f9f56391c347101939e2ffde7"
+  },
+  "OrbitDeckIOS/Engine/ParityPlanningEngine.swift": {
+    "bytes": 15887,
+    "sha256": "b9400358e9cd150154050513deae56b6317615d731b56556d4ce1e4a827dfadc"
+  },
+  "OrbitDeckIOS/Engine/UtilityEngine.swift": {
+    "bytes": 40796,
+    "sha256": "49bc222905f3a2e3895bcfd747bf28deb4c78f59738d359a4d73ec40624b01f8"
+  },
+  "OrbitDeckIOS/Engine/WorldMapData.swift": {
+    "bytes": 4542,
+    "sha256": "c64712612221359ac671c1b214548f6fc1f5258c9c4f2bd88be7b5a6a9c0761e"
+  },
+  "OrbitDeckIOS/Models/OrbitStore.swift": {
+    "bytes": 16103,
+    "sha256": "ebeef080b6c2b753aac54a894e3add8c8bacb33baa11b4f6a29762847e98aa92"
+  },
+  "OrbitDeckIOS/Models/SatelliteModels.swift": {
+    "bytes": 6876,
+    "sha256": "0e7dd27b1d06aca2e7c90ae4a71e8f6ddb4153612e396721278e3d5af9456d28"
+  },
+  "OrbitDeckIOS/OrbitDeckIOSApp.swift": {
+    "bytes": 366,
+    "sha256": "dc8d5b8f4ee6cdfc0079b577386e569a9b04c6a3c5d06f13df5bad5904ee7deb"
+  },
+  "OrbitDeckIOS/Services/AO7Service.swift": {
+    "bytes": 11207,
+    "sha256": "4f86490ac5f4dd44367e76caf2ea6e0a4d51c2e64609e9daef1cc8850e201003"
+  },
+  "OrbitDeckIOS/Services/ExportService.swift": {
+    "bytes": 108126,
+    "sha256": "04deb127e4e36b85b860405878b5df099e4250c2f9c6b2ed488dac30680a4ae2"
+  },
+  "OrbitDeckIOS/Services/GPService.swift": {
+    "bytes": 11961,
+    "sha256": "7bf2ef058457fa8dd11f22b504533ea367789778a537f0b31ebdb08f29b13f29"
+  },
+  "OrbitDeckIOS/Services/LocationProvider.swift": {
+    "bytes": 1537,
+    "sha256": "d3a6b1b0605e3acbbbe49dbfd4173e1d4ba17537ca2dfdcc819c07e21ee76231"
+  },
+  "OrbitDeckIOS/Services/PassAlarmService.swift": {
+    "bytes": 2151,
+    "sha256": "3a62040e7e8c64176e825d4d0ff107cabe548214665fa1a4af1b2408d3f5036b"
+  },
+  "OrbitDeckIOS/Services/TransponderService.swift": {
+    "bytes": 4272,
+    "sha256": "a9c37d33a2b55974f207a5526219060d6957f22ee9cb63714f45da95f1ca3521"
+  },
+  "OrbitDeckIOS/Services/XLSXExportService.swift": {
+    "bytes": 13479,
+    "sha256": "b4ab0685b4cc08ea9a8adf9d7e0c881780f1888a3bb3a58aa46edd30022ec700"
+  },
+  "OrbitDeckIOS/Views/AdvancedFeatureViews.swift": {
+    "bytes": 67475,
+    "sha256": "0dcf31543311125be0a3c1fee7502735e3a2c67585b80fa2d1bb0bafbc4835d1"
+  },
+  "OrbitDeckIOS/Views/Components.swift": {
+    "bytes": 8621,
+    "sha256": "b6ae373aa77c743450909ce5e891bd4b0e06b85fc7cf3f8b7fa41d768ae5f5c9"
+  },
+  "OrbitDeckIOS/Views/DeepParityViews.swift": {
+    "bytes": 45357,
+    "sha256": "68a6cf3cf82b35f5deecdcde0ef930d63e3fb5ca1dc4465e2024c95bafd6135c"
+  },
+  "OrbitDeckIOS/Views/FeatureViews.swift": {
+    "bytes": 168464,
+    "sha256": "83d108d3b185daad4252b9181c4e7ea20fada9cea5907e5f67fab8472dae520d"
+  },
+  "OrbitDeckIOS/Views/GroundTrackView.swift": {
+    "bytes": 4865,
+    "sha256": "9ab73cb98e50e8a9d43189ca70805ce045c1a0136aa739df871c1e2b878ec51d"
+  },
+  "OrbitDeckIOS/Views/HomeView.swift": {
+    "bytes": 7609,
+    "sha256": "23bd16f8e76c68f029e9f6fdadf492bbb48a646fde9f369b8a3ca682cda0ca3f"
+  },
+  "OrbitDeckIOS/Views/IlluminationView.swift": {
+    "bytes": 15278,
+    "sha256": "e1372a593b720ff12b0f2422d066b18f7b960fd69d384d53f2648b004a925156"
+  },
+  "OrbitDeckIOS/Views/OrbitalAnalysisView.swift": {
+    "bytes": 5098,
+    "sha256": "137011cc408996eb430b7fc5d6676057be491bf6c233d12fd629a03cfe5a230a"
+  },
+  "OrbitDeckIOS/Views/PassDetailView.swift": {
+    "bytes": 4533,
+    "sha256": "29318ff0dcce5a196994a15c084db1913ada6c41d22701eda3703a07699d082e"
+  },
+  "OrbitDeckIOS/Views/PassesView.swift": {
+    "bytes": 6030,
+    "sha256": "57188ea0926d300ea3a708e612c135942e3fc33052e1e44f676f432bf52d5bc2"
+  },
+  "OrbitDeckIOS/Views/RadioView.swift": {
+    "bytes": 19076,
+    "sha256": "4b1bb5ae395ddd763e0763721fbdc9f633b3f37d7f36dee94f34d8acadbc5a6a"
+  },
+  "OrbitDeckIOS/Views/RootView.swift": {
+    "bytes": 10987,
+    "sha256": "1b73b01a7a3fe08c42f778ceb02100e15c3cb5ea8dd9c3275cf531b0d89cfaab"
+  },
+  "OrbitDeckIOS/Views/SatellitesView.swift": {
+    "bytes": 8222,
+    "sha256": "fbe0ca3680fd8477a6ebcaa3130f87f1b084a209ffff88979896bdef66f745a7"
+  },
+  "OrbitDeckIOS/Views/SettingsView.swift": {
+    "bytes": 8148,
+    "sha256": "325414372bae68021b76073c7b2f996325ecfda5f8e1472ab4614c966c770837"
+  },
+  "OrbitDeckIOS/Views/SkyRadarView.swift": {
+    "bytes": 2229,
+    "sha256": "c51880f46c675d8f1dfa8f48da3d61bc0f7633c76a34c66d405527d336b03d4a"
+  },
+  "OrbitDeckIOS/Views/TenDayView.swift": {
+    "bytes": 3619,
+    "sha256": "9eeb8273bc8b651882a6e5d7dc6ac10be044b19065d6c8053622fe59846460a5"
+  },
+  "OrbitDeckIOS/Views/TrackView.swift": {
+    "bytes": 2842,
+    "sha256": "e7a835fc7de2e090cbb94c12a6e97a9646d9fe65456c1115e0bd795223b5e1c2"
+  },
+  "OrbitDeckIOS/Views/UtilityFeatureViews.swift": {
+    "bytes": 25180,
+    "sha256": "9365243facbf9135c92cba48677bda95411786c184f2b2db0b0fbb60d93d27cc"
+  },
+  "PORTING_STATUS.md": {
+    "bytes": 12432,
+    "sha256": "d7f894729980f79b6feb62bb2b100b0dcc2d678e2f86f5b4083537be23a5fff8"
+  },
+  "README-iOS.md": {
+    "bytes": 2677,
+    "sha256": "c79cdfe5c4ed326f620764216b62fa751a26cc12ee968bac6b07e59e169267f9"
+  },
+  "RELEASE_NOTES-0.9.7.md": {
+    "bytes": 5661,
+    "sha256": "e56c24cbc28c5396d3984c71f4b1b97235da220f16a8c84c8a632e129d519a6c"
+  },
+  "THIRD_PARTY_NOTICES.md": {
+    "bytes": 308,
+    "sha256": "2d27447cc6a95a17dcf9bf8dbc52577ea1806522e97ce8d4f8e29c6ac1341ced"
+  },
+  "examples/CardSat-BASIC/BELT.BAS": {
+    "bytes": 1753,
+    "sha256": "aae0fd505b90c5c4dccccf337c9082582d77a1c3c89a52e12b5734ed96b24261"
+  },
+  "examples/CardSat-BASIC/CALLPARSE.BAS": {
+    "bytes": 1670,
+    "sha256": "18a06a92622735628ea9fbca0c421461992e8107b8fa7d49d1692397913186cd"
+  },
+  "examples/CardSat-BASIC/DECAY.BAS": {
+    "bytes": 1384,
+    "sha256": "c16ee8374c18392bbfeee71e91609d7a0a22c65b6c9e518a32c510451caf4749"
+  },
+  "examples/CardSat-BASIC/DOPPLER.BAS": {
+    "bytes": 2619,
+    "sha256": "2835ee62ca147027225ef199ea4af73eeaac562c53818d0f9c3973d83ef412c1"
+  },
+  "examples/CardSat-BASIC/DXPATH.BAS": {
+    "bytes": 1059,
+    "sha256": "a0811a42854460483f9ae44c027003dd06d174d909186c190657139f58f747b8"
+  },
+  "examples/CardSat-BASIC/GROUND.BAS": {
+    "bytes": 2105,
+    "sha256": "728cec2ca02a5dab135b325a6fe07c0c7007c2ee148579778954c10d3451f84a"
+  },
+  "examples/CardSat-BASIC/HARMONO.BAS": {
+    "bytes": 513,
+    "sha256": "fc7685bd6e1f89f231f70a16327be458866ab8dac6672da4ffc0eccffacb3d11"
+  },
+  "examples/CardSat-BASIC/MANDEL.BAS": {
+    "bytes": 634,
+    "sha256": "413af29d7baefeee9d3018bdce62b764efb6f4d49fa750c41dbd77e22403c870"
+  },
+  "examples/CardSat-BASIC/PASSES.BAS": {
+    "bytes": 1484,
+    "sha256": "42c0c4f2eba50cea9716e042ac3e2f05db0f66ff818f866ab2eba4dd28f0f520"
+  },
+  "examples/CardSat-BASIC/PASSTATS.BAS": {
+    "bytes": 1075,
+    "sha256": "4e99ebfa33494550e84c65e80f113445888bf7eeb45e619f16184d469dbf8903"
+  },
+  "examples/CardSat-BASIC/README.md": {
+    "bytes": 1341,
+    "sha256": "15039de15def55b1a6a0381818b5665d593aefbfa398fdc936d68fb267510cf3"
+  },
+  "examples/CardSat-BASIC/SIEVE.BAS": {
+    "bytes": 566,
+    "sha256": "c4bce4f2e621e85d0d23ed30f9cf4b0f6f9404b1109be076c63df6029754d387"
+  },
+  "examples/CardSat-BASIC/STARFLD.BAS": {
+    "bytes": 883,
+    "sha256": "6f4a3ee4ddc3efc49cc0e40a480fb897697235d470223711b34dde702bd33b2c"
+  },
+  "examples/CardSat-BASIC/SUNMOON.BAS": {
+    "bytes": 1904,
+    "sha256": "6e8b70d3e60254f7f1074e7300a3792455436b90e26176070621429d924e03e3"
+  },
+  "scripts/Parity092Smoke.swift": {
+    "bytes": 2587,
+    "sha256": "b2cd48ecafd2fb08270aba7ff022d722409414b52ca39f608f8c665391be6e7b"
+  },
+  "scripts/Parity093Smoke.swift": {
+    "bytes": 4931,
+    "sha256": "d872daaa812006d3b8424eaaff535df1f6b718870838d9975fd1d5b4dcd9a102"
+  },
+  "scripts/Parity094Smoke.swift": {
+    "bytes": 5856,
+    "sha256": "239cd1b7fbbafe62b6cbfdb06293175e2472c6ac5d2f22c8de6ebd835f237081"
+  },
+  "scripts/Parity095Smoke.swift": {
+    "bytes": 6512,
+    "sha256": "050beb8ad2e62073decb3a04ef8060dd5fd1cc6cfab716ef37e3f6435c488192"
+  },
+  "scripts/Parity096Smoke.swift": {
+    "bytes": 5130,
+    "sha256": "b039b920ed224d99d04eca969ba32d04479a0d8e34b6cc8b8aaf65ea361258f9"
+  },
+  "scripts/Parity097Smoke.swift": {
+    "bytes": 6623,
+    "sha256": "5ec49c41df557f8aa2feca5fac89ba741ee91fff984decd82827d7e047707067"
+  },
+  "scripts/TinyBasicRegression.swift": {
+    "bytes": 13422,
+    "sha256": "a7a8cfc3dcecba703f6c3030bc3b05b0543c911ac5b1910257591b242b882eb3"
+  },
+  "scripts/build-simulator.sh": {
+    "bytes": 271,
+    "sha256": "f81b1cf3b285974b7d0159cf1b80d11b67164c3b6ded9e85868f0daeefba3c99"
+  }
+}

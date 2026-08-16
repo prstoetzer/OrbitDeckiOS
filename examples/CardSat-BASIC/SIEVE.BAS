@@ -1,0 +1,28 @@
+10 REM ====== SIEVE - primes by the Sieve of Eratosthenes ======
+100 LET N = 120
+110 DIM @(N+1)
+130 FOR I = 0 TO N
+140 LET @(I) = 1
+150 NEXT I
+160 LET @(0) = 0
+170 LET @(1) = 0
+190 FOR I = 2 TO N
+200 IF @(I) = 0 THEN GOTO 260
+220 LET J = I + I
+230 IF J > N THEN GOTO 260
+240 LET @(J) = 0
+250 LET J = J + I
+255 GOTO 230
+260 NEXT I
+280 PRINT "Primes up to "; N; ":"
+290 LET C = 0
+300 FOR I = 2 TO N
+310 IF @(I) = 0 THEN GOTO 360
+320 PRINT I; " ";
+330 LET C = C + 1
+340 IF C MOD 10 <> 0 THEN GOTO 360
+350 PRINT ""
+360 NEXT I
+370 PRINT ""
+380 PRINT "Count: "; C
+390 END

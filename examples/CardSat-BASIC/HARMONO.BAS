@@ -1,0 +1,23 @@
+10 REM ====== HARMONO - a harmonograph curve ======
+100 LET C = 120
+110 LET H = 67
+120 CLS
+150 LET P = 2
+160 LET Q = 3
+170 LET R = 3
+180 LET S = 2
+190 LET F = 0
+200 FOR A = 0 TO 1440 STEP 4
+210 LET E = EXP(0 - A / 900)
+220 LET X = C + E * 46 * SIN(P * A + 10) + E * 30 * SIN(Q * A)
+230 LET Y = H + E * 40 * SIN(R * A) + E * 22 * SIN(S * A + 40)
+240 IF F = 0 THEN GOTO 280
+260 LET L = 2 + INT(A / 240)
+270 LINE U,V,X,Y,L
+280 LET U = X
+290 LET V = Y
+300 LET F = 1
+310 NEXT A
+320 TEXT 2,2,"HARMONO"
+330 SHOW
+340 END
