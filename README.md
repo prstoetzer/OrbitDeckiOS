@@ -56,9 +56,10 @@ OrbitDeck does not collect, store, or transmit personal information to the devel
 | Path | Contents |
 |------|----------|
 | `OrbitDeckIOS/` | The iOS app (SwiftUI) and its Xcode project |
-| `SatelliteKit/` | Vendored SGP4/SDP4 propagation library |
 | `docs/` | The GitHub Pages website (served at orbitdeckios.n8hm.radio) |
 | `fastlane/` | App Store screenshot automation configuration |
+
+SGP4/SDP4 propagation is provided by [SatelliteKit](https://github.com/gavineadie/SatelliteKit), resolved as a Swift Package dependency at build time (not vendored in this repository).
 
 ## Support AMSAT
 
@@ -66,4 +67,4 @@ Please consider joining or donating to [AMSAT](https://www.amsat.org) — the Ra
 
 ## License and credits
 
-© 2026 Paul Stoetzer, N8HM. SatelliteKit is included under its own license (see `SatelliteKit/LICENSE`).
+© 2026 Paul Stoetzer, N8HM. [SatelliteKit](https://github.com/gavineadie/SatelliteKit) is a separate Swift package under its own license.
