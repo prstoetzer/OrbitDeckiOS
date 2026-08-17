@@ -42,10 +42,9 @@ struct PassesView: View {
                 ForEach(minElevationPresets, id: \.self) { Text(verbatim: "\($0)°").tag($0) }
             }
             .pickerStyle(.segmented)
-            .onChange(of: minEl) { _, newValue in
-                store.preferences.minElevation = Double(newValue)   // global default (intended)
-                Task { await load() }                               // and refilter this list now
-            }
+            // Local to this screen only: seed from the global default once, but do
+            // not write it back. Changing the mask here re-filters just this list
+            // (via taskKey) and leaves the app-wide minimum untouched.
             .onAppear {
                 let current = Int(store.preferences.minElevation.rounded())
                 minEl = minElevationPresets.min(by: { abs($0 - current) < abs($1 - current) }) ?? 5
@@ -70,7 +69,7 @@ struct PassesView: View {
             ContentUnavailableView(
                 "No qualifying passes",
                 systemImage: "moon.stars",
-                description: Text("No passes above \(ODFormat.angle(store.preferences.minElevation)) were found in the next 10 days.")
+                description: Text("No passes above \(ODFormat.angle(Double(minEl))) were found in the next 10 days.")
             )
             Spacer()
         } else {
@@ -168,7 +167,7 @@ struct PassesView: View {
 
     private var taskKey: String {
         let o = store.preferences.observer
-        return "\(store.selectedSatellite?.id ?? 0)-\(o.latitude)-\(o.longitude)-\(store.preferences.minElevation)"
+        return "\(store.selectedSatellite?.id ?? 0)-\(o.latitude)-\(o.longitude)-\(minEl)"
     }
 
     @MainActor
@@ -194,7 +193,7 @@ struct PassesView: View {
         defer { isLoading = false }
 
         let observer = store.preferences.observer
-        let minimum = store.preferences.minElevation
+        let minimum = Double(minEl)   // local mask for this screen only
         do {
             passes = try await Task.detached(priority: .userInitiated) {
                 try OrbitPredictor.predictPasses(
