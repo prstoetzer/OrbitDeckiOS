@@ -13,11 +13,15 @@ enum OscarPDFKind: String, CaseIterable, Identifiable, Sendable {
     case rangeCircle = "Range circle only"
     case pathArc = "Path arc only"
     case baseAndRange = "Base + range circle"
+    case qthCentered = "QTH-centered set (3 sheets)"
+    case qthCombined = "QTH-centered · map+range + arc (2 sheets)"
     var id: String { rawValue }
 
     var includesBaseMap: Bool { self == .fullSet || self == .baseMap || self == .baseAndRange }
     var includesRangeCircle: Bool { self == .fullSet || self == .rangeCircle || self == .baseAndRange }
     var includesPathArc: Bool { self == .fullSet || self == .pathArc }
+    /// Station-centered azimuthal-equidistant sheets instead of the polar set.
+    var isQTHCentered: Bool { self == .qthCentered || self == .qthCombined }
 }
 
 struct PassComparisonEntry: Identifiable, Sendable {
@@ -225,7 +229,7 @@ struct OrbitExportService {
                         }
                         y += 19
                     }
-                    ("OrbitDeck iOS · reference-orbit planning sheet · \(observer.name)" as NSString).draw(
+                    ("OrbitDeck · Paul Stoetzer, N8HM · reference-orbit planning sheet · \(observer.name)" as NSString).draw(
                         in: CGRect(x: 44, y: 754, width: 524, height: 16),
                         withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.secondaryLabel]
                     )
@@ -954,28 +958,50 @@ struct OrbitExportService {
         func drawFooter(_ text: String) {
             (text as NSString).draw(in: CGRect(x: 42, y: 704, width: 528, height: 48),
                                     withAttributes: [.font: UIFont.systemFont(ofSize: 8), .foregroundColor: UIColor.darkGray])
-            ("OrbitDeck iOS · OSCARLOCATOR printable · print at 100% / actual size" as NSString).draw(
-                in: CGRect(x: 42, y: 758, width: 528, height: 16),
-                withAttributes: [.font: UIFont.systemFont(ofSize: 7), .foregroundColor: UIColor.gray])
+            let credit = "OrbitDeck · Paul Stoetzer, N8HM · print at 100% (actual size)"
+            let creditAttrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 6.5), .foregroundColor: UIColor(white: 0.6, alpha: 1)]
+            let creditSize = (credit as NSString).size(withAttributes: creditAttrs)
+            (credit as NSString).draw(at: CGPoint(x: center.x - creditSize.width/2, y: 762), withAttributes: creditAttrs)
         }
         func drawFrame(_ cg: CGContext, rings: Bool = true, spokes: Bool = true) {
+            let sign: CGFloat = south ? -1 : 1
             cg.setStrokeColor(UIColor.black.cgColor); cg.setLineWidth(1.3)
             cg.strokeEllipse(in: CGRect(x: center.x-radius, y: center.y-radius, width: 2*radius, height: 2*radius))
+            // 1°/5°/10° rim registration ticks, bold at the four cardinal longitudes,
+            // so stacked transparencies align — matches desktop OSCARLOCATOR.
+            for deg in 0..<360 {
+                let theta = CGFloat(Double(deg) * .pi / 180)
+                let ux = sign * sin(theta), uy = cos(theta)
+                let rim = CGPoint(x: center.x + radius * ux, y: center.y + radius * uy)
+                let cardinal = deg % 90 == 0
+                let len: CGFloat = deg % 10 == 0 ? 7.6 : (deg % 5 == 0 ? 4.8 : 2.4)
+                cg.setLineWidth(cardinal ? 2.2 : (deg % 10 == 0 ? 1.1 : (deg % 5 == 0 ? 0.8 : 0.5)))
+                cg.setStrokeColor((cardinal ? UIColor.black : UIColor.darkGray).cgColor)
+                cg.move(to: rim); cg.addLine(to: CGPoint(x: rim.x + len*ux, y: rim.y + len*uy)); cg.strokePath()
+            }
             cg.setStrokeColor(UIColor.lightGray.cgColor); cg.setLineWidth(0.55)
             if rings {
                 for rho in stride(from: 15.0, through: 75.0, by: 15.0) {
                     let rr = radius * CGFloat(rho/90)
+                    cg.setStrokeColor(UIColor.lightGray.cgColor); cg.setLineWidth(0.55)
                     cg.strokeEllipse(in: CGRect(x:center.x-rr,y:center.y-rr,width:2*rr,height:2*rr))
+                    // Latitude label for each ring, on the 30° spoke.
+                    let lat = south ? rho - 90 : 90 - rho
+                    let t = CGFloat(30.0 * .pi / 180)
+                    let lp = CGPoint(x: center.x + sign*rr*sin(t), y: center.y + rr*cos(t))
+                    ("\(Int(abs(lat)))°" as NSString).draw(at: CGPoint(x: lp.x-6, y: lp.y-4),
+                        withAttributes:[.font:UIFont.boldSystemFont(ofSize:6.5),.foregroundColor:UIColor.gray])
                 }
             }
             if spokes {
-                for lon in stride(from: -180.0, to: 180.0, by: 15.0) {
-                    let t = CGFloat(lon * .pi / 180), sign: CGFloat = south ? -1 : 1
+                for lon in stride(from: -180.0, to: 180.0, by: 30.0) {
+                    let t = CGFloat(lon * .pi / 180)
+                    cg.setStrokeColor(UIColor.lightGray.cgColor); cg.setLineWidth(0.55)
                     cg.move(to:center); cg.addLine(to:CGPoint(x:center.x+sign*radius*sin(t),y:center.y+radius*cos(t))); cg.strokePath()
                 }
             }
             for lon in stride(from: -150, through: 180, by: 30) {
-                let t = CGFloat(Double(lon) * .pi / 180), sign: CGFloat = south ? -1 : 1
+                let t = CGFloat(Double(lon) * .pi / 180)
                 let p = CGPoint(x:center.x+sign*(radius+16)*sin(t), y:center.y+(radius+16)*cos(t))
                 let txt = "\(abs(lon))°\(lon < 0 ? "W" : lon > 0 ? "E" : "")"
                 (txt as NSString).draw(at: CGPoint(x:p.x-13,y:p.y-5),
@@ -1057,25 +1083,288 @@ struct OrbitExportService {
                       subtitle: String(format: "Inclination %.1f° · period %.1f min · successive node shift %.1f° %@ per orbit", satellite.inclinationDeg, satellite.periodMinutes, abs(shift), shift < 0 ? "W" : "E"))
             drawFrame(cg, rings: true, spokes: false)
             strokeGeo(canonical, color: .systemBlue, width: 2.6)
-            for idx in stride(from: 0, to: rawTrack.count, by: max(1, Int(600.0/30.0))) {
-                let pnt = canonical[idx]
-                if let p = point(lat: pnt.0, lon: pnt.1) {
-                    UIColor.systemBlue.setFill(); cg.fillEllipse(in:CGRect(x:p.x-2.2,y:p.y-2.2,width:4.4,height:4.4))
+            // Minute marks after the ascending node: a small perpendicular tick each
+            // whole minute, a labelled dot every `labelStep` minutes. The label step
+            // scales with the period (≤14 labels), matching desktop OSCARLOCATOR.
+            var labelStep = 10
+            for cand in [10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300] where satellite.periodMinutes / Double(cand) <= 14 { labelStep = cand; break }
+            var lastMinute = Int.min
+            let periodMinPA = max(1, periodSeconds / 60)
+            for i in canonical.indices where i < rawTrack.count {
+                // Minutes since the node, wrapped to [0, period) so the whole
+                // visible arc (including across the equator) is tick-marked.
+                let rawMin = rawTrack[i].0.timeIntervalSince(nodeDate) / 60.0
+                let minutes = (rawMin.truncatingRemainder(dividingBy: periodMinPA) + periodMinPA).truncatingRemainder(dividingBy: periodMinPA)
+                let minute = Int(minutes.rounded())
+                guard minute != lastMinute, abs(minutes - Double(minute)) <= 0.26 else { continue }
+                lastMinute = minute
+                guard let p = point(lat: canonical[i].0, lon: canonical[i].1) else { continue }
+                let j = i + 1 < canonical.count ? i + 1 : max(0, i - 1)
+                guard let q = point(lat: canonical[j].0, lon: canonical[j].1) else { continue }
+                var dx = q.x - p.x, dy = q.y - p.y
+                let len = hypot(dx, dy)
+                guard len > 0.001 else { continue }
+                dx /= len; dy /= len
+                let nx = -dy, ny = dx
+                if minute % labelStep == 0 {
+                    UIColor.systemBlue.setFill(); cg.fillEllipse(in: CGRect(x: p.x-2.2, y: p.y-2.2, width: 4.4, height: 4.4))
+                    if minute != 0 {
+                        ("\(minute)" as NSString).draw(at: CGPoint(x: p.x + nx*6 - 3, y: p.y + ny*6 - 3),
+                            withAttributes: [.font: UIFont.boldSystemFont(ofSize: 6), .foregroundColor: UIColor.systemBlue])
+                    }
+                } else {
+                    let tick = UIBezierPath()
+                    tick.move(to: CGPoint(x: p.x - nx*3, y: p.y - ny*3))
+                    tick.addLine(to: CGPoint(x: p.x + nx*3, y: p.y + ny*3))
+                    UIColor.systemBlue.setStroke(); tick.lineWidth = 0.6; tick.stroke()
                 }
             }
-            if let eq = point(lat: 0, lon: 0) {
-                UIColor.systemRed.setFill(); cg.fillEllipse(in:CGRect(x:eq.x-4,y:eq.y-4,width:8,height:8))
-                ("EQX 0°" as NSString).draw(at:CGPoint(x:eq.x+6,y:eq.y-6),withAttributes:[.font:UIFont.boldSystemFont(ofSize:7),.foregroundColor:UIColor.systemRed])
+            // EQX (minute 0) alignment marker: a red arrowed radial line from the
+            // centre out through the node to the rim, matching desktop OSCARLOCATOR.
+            let eqSign: CGFloat = south ? -1 : 1
+            let eqTip = CGPoint(x: center.x, y: center.y + eqSign * radius)   // node at sheet-lon 0
+            cg.setStrokeColor(UIColor.systemRed.cgColor); cg.setLineWidth(2.4)
+            cg.move(to: center); cg.addLine(to: eqTip); cg.strokePath()
+            let ah: CGFloat = 7
+            let arrow = UIBezierPath()
+            arrow.move(to: eqTip)
+            arrow.addLine(to: CGPoint(x: eqTip.x - ah*0.6, y: eqTip.y - eqSign*ah))
+            arrow.addLine(to: CGPoint(x: eqTip.x + ah*0.6, y: eqTip.y - eqSign*ah))
+            arrow.close(); UIColor.systemRed.setFill(); arrow.fill()
+            (south ? "EQX · 0 min (descending node)" : "EQX · 0 min (ascending node)" as NSString)
+                .draw(at: CGPoint(x: eqTip.x + 6, y: eqTip.y - eqSign*14),
+                      withAttributes: [.font: UIFont.boldSystemFont(ofSize: 7), .foregroundColor: UIColor.systemRed])
+
+            // Per-pass rotation indicator: which way and how far to turn the overlay
+            // between successive passes (node drift = Earth rotation + J2 regression).
+            let west = shift < 0
+            let ccw = south ? west : !west
+            let sense = ccw ? "counter-clockwise" : "clockwise"
+            let geo = west ? "west" : "east"
+            if !cleanTransparencies {
+                let rotText = String(format: "Rotate sheet %.1f° %@ (node moves %@) each pass", abs(shift), sense, geo)
+                let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.boldSystemFont(ofSize: 10), .foregroundColor: UIColor.systemRed]
+                let sz = (rotText as NSString).size(withAttributes: attrs)
+                (rotText as NSString).draw(at: CGPoint(x: center.x - sz.width/2, y: center.y - radius - 22), withAttributes: attrs)
+                // A short curved arrow above the top rim indicating the sense.
+                let arcR = radius + 12
+                let a0 = CGFloat(-0.18) - .pi/2, a1 = CGFloat(0.18) - .pi/2
+                cg.setStrokeColor(UIColor.systemRed.cgColor); cg.setLineWidth(2.0)
+                cg.addArc(center: center, radius: arcR, startAngle: a0, endAngle: a1, clockwise: false); cg.strokePath()
+                let headAngle = ccw ? a0 : a1
+                let hx = center.x + arcR*cos(headAngle), hy = center.y + arcR*sin(headAngle)
+                let head = UIBezierPath()
+                head.move(to: CGPoint(x: hx, y: hy))
+                head.addLine(to: CGPoint(x: hx + (ccw ? 5 : -5), y: hy - 4))
+                head.addLine(to: CGPoint(x: hx + (ccw ? 2 : -2), y: hy + 5))
+                head.close(); UIColor.systemRed.setFill(); head.fill()
             }
             if !cleanTransparencies {
-                drawFooter("PATH ARC — Print on transparency at 100%. Rotate the EQX 0° mark to the sub-longitude listed in Reference Orbits for the desired UTC day/time. Advance the overlay by the stated node shift for successive passes.")
+                drawFooter(String(format: "PATH ARC — Print on transparency at 100%%. Lay over the base map with centres aligned and the EQX arrow at the node longitude from Reference Orbits, then rotate the sheet %.1f° %@ about the centre for each successive pass. Ticks count minutes after the EQX; labelled marks every %d min.", abs(shift), sense, labelStep))
             }
         }
 
+        // ---- QTH-centered azimuthal-equidistant sheets ----
+        let d2r = Double.pi / 180
+        let qthReach = max(50.0, min(80.0, abs(observer.latitude) + 25.0))
+        let kmPerDeg = Double.pi / 180 * 6378.135
+        func centralAngleBearing(_ qlat: Double, _ qlon: Double, _ lat: Double, _ lon: Double) -> (Double, Double) {
+            let p1 = qlat*d2r, p2 = lat*d2r, dl = (lon - qlon)*d2r
+            let ca = acos(max(-1, min(1, sin(p1)*sin(p2) + cos(p1)*cos(p2)*cos(dl))))
+            let y = sin(dl)*cos(p2), x = cos(p1)*sin(p2) - sin(p1)*cos(p2)*cos(dl)
+            let br = (atan2(y, x)/d2r + 360).truncatingRemainder(dividingBy: 360)
+            return (ca/d2r, br)
+        }
+        func qpoint(_ qlat: Double, _ qlon: Double, _ lat: Double, _ lon: Double) -> CGPoint? {
+            let (rho, br) = centralAngleBearing(qlat, qlon, lat, lon)
+            guard rho <= qthReach else { return nil }
+            let r = radius * CGFloat(rho / qthReach), b = CGFloat(br * d2r)
+            return CGPoint(x: center.x + r * sin(b), y: center.y - r * cos(b))
+        }
+        func qStrokeGeo(_ pts: [(Double, Double)], qlat: Double, qlon: Double, color: UIColor, width: CGFloat) {
+            let path = UIBezierPath(); var open = false; var prev: CGPoint?
+            for ll in pts {
+                guard let p = qpoint(qlat, qlon, ll.0, ll.1) else { open = false; prev = nil; continue }
+                if let prev, hypot(p.x-prev.x, p.y-prev.y) > radius*0.75 { open = false }
+                if open { path.addLine(to: p) } else { path.move(to: p); open = true }
+                prev = p
+            }
+            color.setStroke(); path.lineWidth = width; path.stroke()
+        }
+        func elevRingDeg(_ elDeg: Double, _ altKm: Double) -> Double {
+            let re = 6378.135, r = re + max(1, altKm), e = elDeg*d2r
+            return (acos(max(-1, min(1, re/r*cos(e)))) - e)/d2r
+        }
+        func drawQTHFrame(_ cg: CGContext, altKm: Double, elevationRings: Bool, kmRings: Bool) {
+            cg.setStrokeColor(UIColor.black.cgColor); cg.setLineWidth(1.3)
+            cg.strokeEllipse(in: CGRect(x:center.x-radius, y:center.y-radius, width:2*radius, height:2*radius))
+            for deg in 0..<360 {   // rim ticks by azimuth
+                let b = CGFloat(Double(deg)*d2r), ux = sin(b), uy = -cos(b)
+                let rim = CGPoint(x: center.x+radius*ux, y: center.y+radius*uy)
+                let cardinal = deg % 90 == 0
+                let len: CGFloat = deg % 10 == 0 ? 7.6 : (deg % 5 == 0 ? 4.8 : 2.4)
+                cg.setLineWidth(cardinal ? 2.2 : (deg % 10 == 0 ? 1.1 : (deg % 5 == 0 ? 0.8 : 0.5)))
+                cg.setStrokeColor((cardinal ? UIColor.black : UIColor.darkGray).cgColor)
+                cg.move(to: rim); cg.addLine(to: CGPoint(x: rim.x+len*ux, y: rim.y+len*uy)); cg.strokePath()
+            }
+            cg.setStrokeColor(UIColor.lightGray.cgColor); cg.setLineWidth(0.55)
+            for az in stride(from: 0.0, to: 360.0, by: 30.0) {
+                let b = CGFloat(az*d2r)
+                cg.move(to: center); cg.addLine(to: CGPoint(x: center.x+radius*sin(b), y: center.y-radius*cos(b))); cg.strokePath()
+            }
+            for az in stride(from: 0, through: 330, by: 30) {
+                let b = Double(az)*d2r
+                let p = CGPoint(x: center.x+(radius+14)*CGFloat(sin(b)), y: center.y-(radius+14)*CGFloat(cos(b)))
+                let card = ["0":"N","90":"E","180":"S","270":"W"]["\(az)"]
+                let font = card != nil ? UIFont.boldSystemFont(ofSize: 11) : UIFont.systemFont(ofSize: 8)
+                ((card ?? "\(az)°") as NSString).draw(at: CGPoint(x:p.x-6, y:p.y-6), withAttributes:[.font:font,.foregroundColor:UIColor.darkGray])
+            }
+            if kmRings {
+                var km = 1000.0
+                while km/kmPerDeg <= qthReach {
+                    let rr = radius*CGFloat((km/kmPerDeg)/qthReach)
+                    cg.setStrokeColor(UIColor(white:0.82,alpha:1).cgColor); cg.setLineWidth(0.5)
+                    cg.strokeEllipse(in: CGRect(x:center.x-rr,y:center.y-rr,width:2*rr,height:2*rr))
+                    ("\(Int(km)) km" as NSString).draw(at: CGPoint(x:center.x+rr*0.7,y:center.y+rr*0.7),
+                        withAttributes:[.font:UIFont.monospacedSystemFont(ofSize:6,weight:.regular),.foregroundColor:UIColor.gray])
+                    km += 1000
+                }
+            }
+            if elevationRings {
+                for el in [0.0, 10.0, 30.0, 60.0] {
+                    let rho = elevRingDeg(el, altKm)
+                    guard rho > 0, rho <= qthReach else { continue }
+                    let rr = radius*CGFloat(rho/qthReach)
+                    cg.setStrokeColor((el == 0 ? UIColor.darkGray : UIColor(white:0.6,alpha:1)).cgColor); cg.setLineWidth(el == 0 ? 1.2 : 0.7)
+                    cg.strokeEllipse(in: CGRect(x:center.x-rr,y:center.y-rr,width:2*rr,height:2*rr))
+                    ("\(Int(el))° el" as NSString).draw(at: CGPoint(x:center.x-9,y:center.y-rr-9),
+                        withAttributes:[.font:UIFont.boldSystemFont(ofSize:6.5),.foregroundColor:UIColor.darkGray])
+                }
+            }
+        }
+        func centerCross(_ cg: CGContext, color: UIColor) {
+            cg.setStrokeColor(color.cgColor); cg.setLineWidth(2.0)
+            cg.move(to:CGPoint(x:center.x-8,y:center.y)); cg.addLine(to:CGPoint(x:center.x+8,y:center.y))
+            cg.move(to:CGPoint(x:center.x,y:center.y-8)); cg.addLine(to:CGPoint(x:center.x,y:center.y+8)); cg.strokePath()
+        }
+        let meanAlt = max(0, satellite.semiMajorAxisKm - 6378.135)
+
+        func drawQTHBaseMap(_ context: UIGraphicsPDFRendererContext) {
+            context.beginPage(); let cg = context.cgContext
+            drawTitle("\(satellite.name) — OSCARLOCATOR Base Map",
+                      subtitle: String(format: "Azimuthal-equidistant map centred on %@ (%.3f°, %.3f°) — rings are elevation at %.0f km", observer.name, observer.latitude, observer.longitude, meanAlt))
+            drawQTHFrame(cg, altKm: meanAlt, elevationRings: true, kmRings: false)
+            for coast in WorldMapData.coastlines {
+                qStrokeGeo(coast.map { ($0.1, $0.0) }, qlat: observer.latitude, qlon: observer.longitude, color: .black, width: 0.6)
+            }
+            centerCross(cg, color: .systemOrange)
+            ("QTH" as NSString).draw(at: CGPoint(x:center.x+8,y:center.y+4), withAttributes:[.font:UIFont.boldSystemFont(ofSize:7),.foregroundColor:UIColor.systemOrange])
+            drawFooter("QTH BASE MAP — Print on paper/card at 100%. Centre is your station; rings are the satellite's elevation angle (0° ring is its range-circle edge), spokes are azimuth (N up). Register overlays on the centre cross and rim ticks.")
+        }
+        func drawQTHRange(_ context: UIGraphicsPDFRendererContext) {
+            context.beginPage(); let cg = context.cgContext
+            let footDeg = FeatureEngine.footprintRadiusDegrees(altitudeKm: meanAlt)
+            drawTitle("\(satellite.name) — OSCARLOCATOR Range Circle Overlay",
+                      subtitle: String(format: "Range-circle radius %.1f° (~%.0f km) at %.0f km — concentric on the QTH-centred sheet", footDeg, footDeg*kmPerDeg, meanAlt))
+            drawQTHFrame(cg, altKm: meanAlt, elevationRings: false, kmRings: true)
+            let fr = radius*CGFloat(min(footDeg, qthReach)/qthReach)
+            cg.setStrokeColor(UIColor.systemRed.cgColor); cg.setLineWidth(3.0)
+            cg.strokeEllipse(in: CGRect(x:center.x-fr,y:center.y-fr,width:2*fr,height:2*fr))
+            centerCross(cg, color: .black)
+            if !cleanTransparencies {
+                drawFooter("QTH RANGE CIRCLE — Print on transparency at 100%. Pin the centre cross over the QTH at the base-map centre. The satellite is in range while the path-arc lies inside the red circle; inner rings are ground distance, spokes are azimuth.")
+            }
+        }
+        func drawQTHPathArc(_ context: UIGraphicsPDFRendererContext) {
+            context.beginPage(); let cg = context.cgContext
+            let periodSeconds = max(1, satellite.periodMinutes * 60)
+            let asc = observer.latitude >= 0
+            let nodes = (try? OrbitPredictor.equatorCrossings(satellite, from: date.addingTimeInterval(-periodSeconds), to: date.addingTimeInterval(periodSeconds), ascending: asc, step: 120)) ?? []
+            let node = nodes.min { abs($0.0.timeIntervalSince(date)) < abs($1.0.timeIntervalSince(date)) }
+            let nodeDate = node?.0 ?? date, nodeLon = node?.1 ?? 0
+            let centered = nodeDate.addingTimeInterval(periodSeconds / 2)
+            let rawTrack = (try? OrbitPredictor.groundTrack(satellite, centeredAt: centered, durationMinutes: satellite.periodMinutes, step: 30)) ?? []
+            let canonical = rawTrack.map { ($0.1, wrappedLon($0.2 - nodeLon)) }
+            let rates = LearnMath.j2Rates(meanMotionRevDay: satellite.meanMotionRevPerDay, inclinationDeg: satellite.inclinationDeg, eccentricity: satellite.eccentricity)
+            let shift = -360 * periodSeconds / siderealDay + rates.nodeDegDay * periodSeconds / 86400
+            drawTitle("\(satellite.name) — OSCARLOCATOR Path Arc Overlay",
+                      subtitle: String(format: "Ground track projected for a QTH at %.1f° latitude · period %.1f min · advance %.1f° %@ per pass", observer.latitude, satellite.periodMinutes, abs(shift), shift < 0 ? "W" : "E"))
+            drawQTHFrame(cg, altKm: meanAlt, elevationRings: false, kmRings: false)
+            // canonical track as seen from a QTH at (observer.lat, 0)
+            let trackPath = UIBezierPath(); var open = false; var prev: CGPoint?
+            for c in canonical {
+                guard let p = qpoint(observer.latitude, 0, c.0, c.1) else { open = false; prev = nil; continue }
+                if let prev, hypot(p.x-prev.x, p.y-prev.y) > radius*0.75 { open = false }
+                if open { trackPath.addLine(to: p) } else { trackPath.move(to: p); open = true }
+                prev = p
+            }
+            UIColor.systemBlue.setStroke(); trackPath.lineWidth = 2.6; trackPath.stroke()
+            var labelStep = 10
+            for cand in [10,15,20,30,45,60,90,120,180,240,300] where satellite.periodMinutes/Double(cand) <= 14 { labelStep = cand; break }
+            var lastMinute = Int.min
+            let periodMinQA = max(1, periodSeconds / 60)
+            for i in canonical.indices where i < rawTrack.count {
+                // Wrap minutes-since-node to [0, period) so the QTH disc is
+                // fully tick-marked on both sides of the equator.
+                let rawMin = rawTrack[i].0.timeIntervalSince(nodeDate)/60.0
+                let minutes = (rawMin.truncatingRemainder(dividingBy: periodMinQA) + periodMinQA).truncatingRemainder(dividingBy: periodMinQA)
+                let minute = Int(minutes.rounded())
+                guard minute != lastMinute, abs(minutes - Double(minute)) <= 0.26 else { continue }
+                lastMinute = minute
+                guard let p = qpoint(observer.latitude, 0, canonical[i].0, canonical[i].1) else { continue }
+                let j = i + 1 < canonical.count ? i + 1 : max(0, i - 1)
+                guard let q = qpoint(observer.latitude, 0, canonical[j].0, canonical[j].1) else { continue }
+                var dx = q.x-p.x, dy = q.y-p.y; let len = hypot(dx, dy); guard len > 0.001 else { continue }
+                dx /= len; dy /= len; let nx = -dy, ny = dx
+                if minute % labelStep == 0 {
+                    UIColor.systemBlue.setFill(); cg.fillEllipse(in: CGRect(x:p.x-2.2,y:p.y-2.2,width:4.4,height:4.4))
+                    if minute != 0 {
+                        ("\(minute)" as NSString).draw(at: CGPoint(x:p.x+nx*6-3,y:p.y+ny*6-3), withAttributes:[.font:UIFont.boldSystemFont(ofSize:6),.foregroundColor:UIColor.systemBlue])
+                    }
+                } else {
+                    let tick = UIBezierPath()
+                    tick.move(to: CGPoint(x:p.x-nx*3,y:p.y-ny*3)); tick.addLine(to: CGPoint(x:p.x+nx*3,y:p.y+ny*3))
+                    UIColor.systemBlue.setStroke(); tick.lineWidth = 0.6; tick.stroke()
+                }
+            }
+            if let eqp = qpoint(observer.latitude, 0, 0, 0) {
+                UIColor.systemRed.setFill(); cg.fillEllipse(in: CGRect(x:eqp.x-4,y:eqp.y-4,width:8,height:8))
+                (asc ? "EQX · 0 min (asc)" : "EQX · 0 min (desc)" as NSString).draw(at: CGPoint(x:eqp.x+6,y:eqp.y-6), withAttributes:[.font:UIFont.boldSystemFont(ofSize:7),.foregroundColor:UIColor.systemRed])
+            }
+            if !cleanTransparencies {
+                let west = shift < 0
+                let sense = west ? "counter-clockwise" : "clockwise"
+                drawFooter(String(format: "QTH PATH ARC — Print on transparency at 100%%. Pin the centre cross over the QTH, align the EQX to the node longitude from Reference Orbits, then rotate the arc %.1f° %@ about the centre for each successive pass. Ticks are minutes after the EQX; labels every %d min.", abs(shift), sense, labelStep))
+            }
+        }
+
+        func drawQTHCombined(_ context: UIGraphicsPDFRendererContext) {
+            context.beginPage(); let cg = context.cgContext
+            let footDeg = FeatureEngine.footprintRadiusDegrees(altitudeKm: meanAlt)
+            drawTitle("\(satellite.name) — OSCARLOCATOR — Map + Range Circle at QTH",
+                      subtitle: String(format: "Range circle over %@ (%.3f°, %.3f°) — radius %.1f° (~%.0f km) at %.0f km", observer.name, observer.latitude, observer.longitude, footDeg, footDeg*kmPerDeg, meanAlt))
+            drawQTHFrame(cg, altKm: meanAlt, elevationRings: true, kmRings: false)
+            for coast in WorldMapData.coastlines {
+                qStrokeGeo(coast.map { ($0.1, $0.0) }, qlat: observer.latitude, qlon: observer.longitude, color: .black, width: 0.6)
+            }
+            let fr = radius*CGFloat(min(footDeg, qthReach)/qthReach)
+            cg.setStrokeColor(UIColor.systemRed.cgColor); cg.setLineWidth(3.0)
+            cg.strokeEllipse(in: CGRect(x:center.x-fr,y:center.y-fr,width:2*fr,height:2*fr))
+            centerCross(cg, color: .systemOrange)
+            ("QTH" as NSString).draw(at: CGPoint(x:center.x+8,y:center.y+4), withAttributes:[.font:UIFont.boldSystemFont(ofSize:7),.foregroundColor:UIColor.systemOrange])
+            drawFooter("QTH MAP + RANGE — Print on paper/card at 100%. The red circle is the satellite's range circle centred on your station; rings are elevation, spokes are azimuth. Use the path-arc overlay to see when the satellite enters this circle.")
+        }
+
         return renderer.pdfData { context in
-            if kind.includesBaseMap { drawBaseMap(context) }
-            if kind.includesRangeCircle { drawRangeCircle(context) }
-            if kind.includesPathArc { drawPathArc(context) }
+            if kind == .qthCombined {
+                drawQTHCombined(context); drawQTHPathArc(context)
+            } else if kind.isQTHCentered {
+                drawQTHBaseMap(context); drawQTHRange(context); drawQTHPathArc(context)
+            } else {
+                if kind.includesBaseMap { drawBaseMap(context) }
+                if kind.includesRangeCircle { drawRangeCircle(context) }
+                if kind.includesPathArc { drawPathArc(context) }
+            }
         }
 #else
         let meanAltitude = max(0, satellite.semiMajorAxisKm - 6378.135)

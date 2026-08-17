@@ -41,6 +41,15 @@ struct HomeView: View {
                                 store.preferences.observer.longitude
                             )
                         )
+                        MetricRow("Grid", store.operatorGrid6)
+                        let vucc = store.operatorVuccGrids
+                        if vucc.count > 1 {
+                            MetricRow(
+                                vucc.count >= 4 ? "On grid corner — VUCC grids" : "On grid line — VUCC grids",
+                                vucc.joined(separator: ", "),
+                                valueColor: ODTheme.good
+                            )
+                        }
                         MetricRow("Altitude", String(format: "%.0f m", store.preferences.observer.altitudeMeters))
                         MetricRow("Minimum elevation", ODFormat.angle(store.preferences.minElevation))
                     }
@@ -82,6 +91,7 @@ struct HomeView: View {
             }
             .padding(.bottom, 24)
         }
+        .task { await store.refreshSpaceWeatherIfNeeded() }
         .task(id: passTaskKey) {
             await loadNextPass()
         }

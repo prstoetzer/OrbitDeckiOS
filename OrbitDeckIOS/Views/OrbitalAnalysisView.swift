@@ -35,8 +35,14 @@ struct OrbitalAnalysisView: View {
                 LoadingOrError(isLoading: store.isRefreshingGP, error: store.lastError, emptyText: "No satellite selected")
             }
         }
-        .task(id: nodalKey) { if tab == .nodal { await loadCrossings() } }
-        .onChange(of: store.preferences.selectedNorad) { _, _ in selectedTransponderID = nil }
+        .task { if tab == .nodal { await loadCrossings() } }
+        // `.task(id:)` does not reliably re-fire when `tab` (local Picker state)
+        // changes in this view, so trigger the nodal load from an explicit onChange.
+        .onChange(of: tab) { _, _ in if tab == .nodal { Task { await loadCrossings() } } }
+        .onChange(of: store.preferences.selectedNorad) { _, _ in
+            selectedTransponderID = nil
+            if tab == .nodal { Task { await loadCrossings() } }
+        }
     }
 
     private func selectedTransponder(_ satellite: SatelliteRecord) -> TransponderRecord? {
@@ -64,6 +70,9 @@ struct OrbitalAnalysisView: View {
                     MetricRow("Footprint diameter", String(format: "%.0f km", look.footprintRadiusKm * 2))
                     MetricRow("Beta angle", String(format: "%+.2f°", look.betaAngleDeg))
                     MetricRow("Illumination", look.sunlit ? "Sunlit" : "Eclipsed", valueColor: look.sunlit ? ODTheme.warning : ODTheme.muted)
+                    let eclFrac = LearnMath.eclipseFraction(altitudeKm: look.altitudeKm, betaDeg: look.betaAngleDeg)
+                    MetricRow("Eclipse per orbit", eclFrac <= 0 ? "0% — continuous sun" : String(format: "%.1f%% of orbit", eclFrac * 100),
+                              valueColor: eclFrac <= 0 ? ODTheme.good : ODTheme.muted)
                 } else {
                     Text("Propagation unavailable for the selected element set.").foregroundStyle(ODTheme.warning)
                 }
@@ -92,6 +101,16 @@ struct OrbitalAnalysisView: View {
                 MetricRow("Apogee", String(format: "%.1f km", satellite.apogeeKm))
                 MetricRow("J2 node regression", String(format: "%+.4f°/day", j2.nodeDegDay))
                 MetricRow("J2 perigee precession", String(format: "%+.4f°/day", j2.perigeeDegDay))
+                MetricRow("B* drag term", String(format: "%.4e (1/R⊕)", satellite.bstar))
+                // Sun-synchronous orbits precess ~+0.9856°/day to track the Sun.
+                let sunSync = abs(j2.nodeDegDay - 0.98565) < 0.10
+                MetricRow("Sun-synchronous", sunSync ? "Yes" : "No",
+                          valueColor: sunSync ? ODTheme.good : ODTheme.muted)
+                if sunSync {
+                    let ltan = FeatureEngine.localTimeOfAscendingNode(raanDeg: satellite.raanDeg, at: satellite.epoch)
+                    let hh = Int(ltan), mm = Int((ltan - Double(Int(ltan))) * 60)
+                    MetricRow("LTAN", String(format: "%02d:%02d local", hh, mm))
+                }
                 if decay.days >= 0 {
                     MetricRow("B* lifetime estimate", decayLabel(decay.days))
                     MetricRow("Decay anchor", decay.source)
@@ -100,7 +119,9 @@ struct OrbitalAnalysisView: View {
                 }
             }
         case .nodal:
-            SectionCard("Ascending equator crossings") {
+            // Northern QTHs use the ascending node; southern QTHs the descending node.
+            let ascendingNodes = store.preferences.observer.latitude >= 0
+            SectionCard("\(ascendingNodes ? "Ascending" : "Descending") equator crossings") {
                 if crossingsLoading {
                     HStack { Spacer(); ProgressView(); Spacer() }
                 } else if crossings.isEmpty {
@@ -151,9 +172,11 @@ struct OrbitalAnalysisView: View {
         crossingsLoading = crossings.isEmpty
         let start = Date()
         let end = start.addingTimeInterval(max(90, satellite.periodMinutes) * 60 * 12)
+        // Southern-hemisphere stations reference the descending node.
+        let ascending = store.preferences.observer.latitude >= 0
         do {
             crossings = try await Task.detached(priority: .userInitiated) {
-                try OrbitPredictor.equatorCrossings(satellite, from: start, to: end, ascending: true)
+                try OrbitPredictor.equatorCrossings(satellite, from: start, to: end, ascending: ascending)
             }.value
         } catch {
             crossings = []

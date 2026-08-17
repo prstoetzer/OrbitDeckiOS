@@ -265,6 +265,8 @@ private struct DXDopplerSheet: View {
     @State private var mode: DXDopplerMode = .trueRule
     @State private var anchor: DXDopplerAnchor = .myTX
     @State private var passbandPercent = 50.0
+    @State private var calDlHz = 0.0
+    @State private var calUlHz = 0.0
     @State private var rows: [DXDopplerRow] = []
     @State private var loading = false
     @State private var error: String?
@@ -318,6 +320,30 @@ private struct DXDopplerSheet: View {
                             }
                         }
                     }
+                    SectionCard("Radio calibration") {
+                        HStack {
+                            Text("Downlink offset")
+                            Spacer()
+                            TextField("Hz", value: $calDlHz, format: .number)
+                                .keyboardType(.numbersAndPunctuation)
+                                .multilineTextAlignment(.trailing)
+                                .textFieldStyle(.odField)
+                                .frame(width: 110)
+                            Text("Hz").foregroundStyle(ODTheme.muted)
+                        }
+                        HStack {
+                            Text("Uplink offset")
+                            Spacer()
+                            TextField("Hz", value: $calUlHz, format: .number)
+                                .keyboardType(.numbersAndPunctuation)
+                                .multilineTextAlignment(.trailing)
+                                .textFieldStyle(.odField)
+                                .frame(width: 110)
+                            Text("Hz").foregroundStyle(ODTheme.muted)
+                        }
+                        Text("Fixed per-radio corrections added to every RX/TX dial to compensate for your transceiver's frequency error.")
+                            .font(.caption).foregroundStyle(ODTheme.muted)
+                    }
                     SectionCard("Window") {
                         MetricRow("Satellite", satellite.name)
                         MetricRow("DX station", dx.name)
@@ -344,11 +370,14 @@ private struct DXDopplerSheet: View {
             .navigationTitle("DX Doppler")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .task(id: computeKey) { await compute() }
+            .task { await compute() }
+            // `.task(id:)` doesn't reliably re-fire on local control changes here,
+            // so recompute whenever any setup control (folded into computeKey) changes.
+            .onChange(of: computeKey) { _, _ in Task { await compute() } }
         }
     }
 
-    private var computeKey: String { "\(selectedTransponderID ?? "")-\(mode.rawValue)-\(anchor.rawValue)-\(Int(passbandPercent))" }
+    private var computeKey: String { "\(selectedTransponderID ?? "")-\(mode.rawValue)-\(anchor.rawValue)-\(Int(passbandPercent))-\(Int(calDlHz))-\(Int(calUlHz))" }
 
     private var dialTable: some View {
         ScrollView(.horizontal) {
@@ -383,12 +412,14 @@ private struct DXDopplerSheet: View {
         error = nil
         let sat = satellite, homeSite = home, dxSite = dx, win = window, m = mode, a = anchor
         let offset = offsetHz(tp)
+        let calDl = Int64(calDlHz.rounded()), calUl = Int64(calUlHz.rounded())
         let span = max(1, win.end.timeIntervalSince(win.start))
         let step = max(15.0, span / 40.0)
         do {
             let result = try await Task.detached(priority: .userInitiated) {
                 try DXDopplerEngine.table(satellite: sat, home: homeSite, dx: dxSite, transponder: tp,
-                                          window: win, offsetHz: offset, mode: m, anchor: a, step: step)
+                                          window: win, offsetHz: offset, mode: m, anchor: a,
+                                          calDlHz: calDl, calUlHz: calUl, step: step)
             }.value
             rows = result
         } catch {
@@ -413,6 +444,7 @@ struct MutualView: View {
     @State private var computedAt = Date()
     @State private var seededMinEl = false
     @State private var dxDopplerWindow: MutualWindowRecord?
+    @State private var skyPlotWindowID: Date?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -491,11 +523,21 @@ struct MutualView: View {
                                 }
                                 .font(.caption.monospaced())
                                 .foregroundStyle(ODTheme.accent)
-                                if store.selectedSatellite?.transponders.isEmpty == false {
-                                    Button { dxDopplerWindow = window } label: {
-                                        Label("DX Doppler", systemImage: "waveform.path.ecg")
+                                HStack {
+                                    Button { skyPlotWindowID = (skyPlotWindowID == window.id) ? nil : window.id } label: {
+                                        Label(skyPlotWindowID == window.id ? "Hide sky plots" : "Sky plots",
+                                              systemImage: "scope")
                                     }
                                     .font(.caption).buttonStyle(.bordered)
+                                    if store.selectedSatellite?.transponders.isEmpty == false {
+                                        Button { dxDopplerWindow = window } label: {
+                                            Label("DX Doppler", systemImage: "waveform.path.ecg")
+                                        }
+                                        .font(.caption).buttonStyle(.bordered)
+                                    }
+                                }
+                                if skyPlotWindowID == window.id {
+                                    pairedSkyPlots(for: window)
                                 }
                             }
                             .padding(.vertical, 4)
@@ -517,6 +559,33 @@ struct MutualView: View {
         }
         .sheet(item: $dxDopplerWindow) { window in
             dxDopplerSheet(for: window)
+        }
+    }
+
+    /// Paired home/DX sky-track polar plots for a mutual window, so the operator
+    /// can see where to point at each end simultaneously.
+    @ViewBuilder
+    private func pairedSkyPlots(for window: MutualWindowRecord) -> some View {
+        if let sat = store.selectedSatellite, let parsed = FeatureEngine.parseLocation(dxLocation) {
+            let dx = ObserverSite(name: dxLocation, latitude: parsed.latitude,
+                                  longitude: parsed.longitude, altitudeMeters: 0)
+            let home = store.preferences.observer
+            let homeTrack = (try? DXDopplerEngine.skyTrack(satellite: sat, observer: home, window: window)) ?? []
+            let dxTrack = (try? DXDopplerEngine.skyTrack(satellite: sat, observer: dx, window: window)) ?? []
+            ViewThatFits {
+                HStack(spacing: 12) {
+                    ActivationSkyPlot(title: home.name.isEmpty ? "Home" : home.name, points: homeTrack)
+                    ActivationSkyPlot(title: dxLocation, points: dxTrack)
+                }
+                VStack(spacing: 12) {
+                    ActivationSkyPlot(title: home.name.isEmpty ? "Home" : home.name, points: homeTrack)
+                    ActivationSkyPlot(title: dxLocation, points: dxTrack)
+                }
+            }
+            .padding(.top, 4)
+        } else {
+            Text("Enter a valid DX grid or lat,lon to plot the paired sky tracks.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
         }
     }
 
@@ -811,11 +880,18 @@ struct PlanningView: View {
                 if let r = horizonResult {
                     LabeledContent("US states", value: "\(r.states.count)")
                     LabeledContent("DXCC entities", value: "\(r.dxcc.count)")
-                    if horizonGrids { LabeledContent("Grid fields", value: "\(r.grids.count)") }
+                    if horizonGrids {
+                        // r.grids are 4-character grid squares (e.g. "FM18"). A grid
+                        // field is the 2-character prefix ("FM"), so distinct fields
+                        // are far fewer than squares — count them separately.
+                        let fields = Set(r.grids.map { String($0.prefix(2)) }).count
+                        LabeledContent("Grid fields", value: "\(fields)")
+                        LabeledContent("Grid squares", value: "\(r.grids.count)")
+                    }
                     LabeledContent("Passes sampled", value: "\(r.passCount)")
                     DisclosureGroup("States (\(r.states.count))") { Text(r.states.joined(separator: ", ")).font(.caption.monospaced()) }
                     DisclosureGroup("DXCC (\(r.dxcc.count))") { Text(r.dxcc.joined(separator: " • ")).font(.caption) }
-                    if horizonGrids { DisclosureGroup("Grids (\(r.grids.count))") { Text(r.grids.joined(separator: " ")).font(.caption.monospaced()) } }
+                    if horizonGrids { DisclosureGroup("Grid squares (\(r.grids.count))") { Text(r.grids.joined(separator: " ")).font(.caption.monospaced()) } }
                 }
             }
         case .search:
@@ -1803,8 +1879,12 @@ struct TransitsView: View {
                     } else if let error {
                         Text(error).foregroundStyle(ODTheme.warning)
                     } else if events.isEmpty {
-                        Text("No approaches found in the selected window.")
-                            .foregroundStyle(ODTheme.muted)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("No approaches found in the selected window.")
+                            Text("Disk transits from a fixed site are rare — a satellite often stays several degrees from the Sun/Moon for days. Widen “Within” (try 5°) or lengthen the window to see near-misses.")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(ODTheme.muted)
                     } else {
                         ForEach(events) { event in
                             VStack(alignment: .leading, spacing: 5) {
@@ -1979,6 +2059,22 @@ private struct EclipseGroundTrackPlot: View {
             }
             context.stroke(grid, with: .color(ODTheme.grid.opacity(0.65)), lineWidth: 0.7)
 
+            // Coastline base map (Natural Earth 110m; points are (lon, lat)).
+            var coast = Path()
+            for polyline in WorldMapData.coastlines {
+                var prev: CGPoint?
+                for (lon, lat) in polyline {
+                    let p = map(lat, lon)
+                    if let prev, abs(p.x - prev.x) < size.width * 0.45 {
+                        coast.addLine(to: p)
+                    } else {
+                        coast.move(to: p)
+                    }
+                    prev = p
+                }
+            }
+            context.stroke(coast, with: .color(ODTheme.mapLand), lineWidth: 0.7)
+
             var track = Path()
             var previous: CGPoint?
             for point in points {
@@ -2035,7 +2131,10 @@ struct AstronomyView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
         }
-        .task(id: tab) { await loadHeavyTab() }
+        .task { await loadHeavyTab() }
+        // `.task(id:)` does not reliably re-fire when `tab` (local Picker state)
+        // changes in this view, so drive the heavy loads from an explicit onChange.
+        .onChange(of: tab) { _, _ in Task { await loadHeavyTab() } }
     }
 
     @ViewBuilder private var content: some View {
@@ -2524,7 +2623,7 @@ struct SpaceWeatherView: View {
                     if let mean = snapshot.flux90Day { LabeledContent("F10.7 90-day mean", value: String(format: "%.1f sfu", mean)) }
                     LabeledContent("Planetary Kp", value: snapshot.kp.map { String(format: "%.2f — %@", $0, snapshot.kpLabel) } ?? "—")
                     LabeledContent("Aurora likelihood", value: auroraLikelihood(kp: snapshot.kp))
-                    LabeledContent(snapshot.aIndexSource == "NOAA daily planetary A" ? "Planetary A" : "A / ap equivalent", value: snapshot.aIndex.map { String(format: "%.0f", $0) } ?? "—")
+                    LabeledContent((snapshot.aIndexSource?.contains("planetary A") ?? false) ? "Planetary A" : "A / ap equivalent", value: snapshot.aIndex.map { String(format: "%.0f", $0) } ?? "—")
                     if let source = snapshot.aIndexSource { LabeledContent("A-index source", value: source) }
                     LabeledContent("Fetched", value: ODFormat.utc.string(from: snapshot.fetchedAt))
                 }
@@ -2539,7 +2638,11 @@ struct SpaceWeatherView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
         }
-        .task { if store.spaceWeather == nil { refresh() } }
+        .task {
+            isLoading = (store.spaceWeather == nil)
+            await store.refreshSpaceWeatherIfNeeded()
+            isLoading = false
+        }
     }
 
     /// Kp-derived aurora visibility outlook (matches the desktop's guidance bands).
@@ -2651,10 +2754,20 @@ struct NewLaunchesView: View {
     }
 
     private func scan() {
+        // The launch scan is a bulk CelesTrak group query (last-30-days); honour
+        // CelesTrak's one-request-per-2-hours policy to avoid an IP ban.
+        guard store.celestrakAllowed("newlaunch") else {
+            hasScanned = true
+            error = "CelesTrak permits one launch scan every 2 hours (try again in ~\(store.celestrakCooldownMinutes("newlaunch")) min)."
+            return
+        }
         isLoading = true; error = nil; hasScanned = true; shareURL = nil
         let known = Set(store.satellites.map(\.id))
         Task {
-            do { allHits = try await NewLaunchService.discover(knownNorads: known) }
+            do {
+                allHits = try await NewLaunchService.discover(knownNorads: known)
+                store.recordCelestrakFetch("newlaunch")
+            }
             catch { self.error = error.localizedDescription }
             isLoading = false
         }
@@ -2767,10 +2880,14 @@ struct MUFView: View {
             }
         }
         .task {
-            if store.spaceWeather == nil { await store.refreshSpaceWeather() }
+            // Seed from the cached snapshot immediately so the screen is usable,
+            // then pull fresh space weather if it's stale and reseed from it.
             seedFromWeather()
             compute()
             seeded = true
+            await store.refreshSpaceWeatherIfNeeded()
+            seedFromWeather()
+            compute()
         }
         .onChange(of: store.spaceWeather?.sunspotNumber) { _, _ in seedFromWeather(); compute() }
         .onChange(of: ssn) { _, _ in if seeded { compute() } }
@@ -2812,10 +2929,18 @@ struct PropagationView: View {
     @EnvironmentObject private var store: OrbitStore
     private var outlook: PropagationOutlookSnapshot { PropagationEngine.outlook(weather: store.spaceWeather) }
 
+    // The engine emits lowercase status words ("quiet", "low — 80/40 normal")
+    // so they read naturally inside the summary sentence ("field quiet").
+    // Presented on their own in a row or as a headline they need a capital.
+    private func sentenceCased(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.uppercased() + text.dropFirst()
+    }
+
     var body: some View {
         Form {
             Section("Operating outlook") {
-                Text(outlook.summary)
+                Text(sentenceCased(outlook.summary))
                 Button("Update Space Wx") { Task { await store.refreshSpaceWeather() } }
                 if let flux = outlook.flux { LabeledContent("Solar flux", value: String(format: "%.0f sfu", flux)) }
                 if let kp = outlook.kp { LabeledContent("Kp", value: String(format: "%.1f", kp)) }
@@ -2824,11 +2949,11 @@ struct PropagationView: View {
                 }
             }
             Section("Modes & conditions") {
-                LabeledContent("Geomagnetic", value: outlook.geomagnetic)
-                LabeledContent("Aurora (VHF)", value: outlook.aurora)
-                LabeledContent("Absorption", value: outlook.absorption)
-                LabeledContent("Meteor scatter", value: outlook.meteor)
-                LabeledContent("Sporadic E", value: outlook.sporadicE)
+                LabeledContent("Geomagnetic", value: sentenceCased(outlook.geomagnetic))
+                LabeledContent("Aurora (VHF)", value: sentenceCased(outlook.aurora))
+                LabeledContent("Absorption", value: sentenceCased(outlook.absorption))
+                LabeledContent("Meteor scatter", value: sentenceCased(outlook.meteor))
+                LabeledContent("Sporadic E", value: sentenceCased(outlook.sporadicE))
             }
             Section("Band outlook") {
                 ForEach(outlook.bands) { row in
@@ -2845,7 +2970,7 @@ struct PropagationView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
         }
-        .task { if store.spaceWeather == nil { await store.refreshSpaceWeather() } }
+        .task { await store.refreshSpaceWeatherIfNeeded() }
     }
 }
 
@@ -3326,6 +3451,9 @@ private struct ActivationOperatingDetailView: View {
     }()
 }
 
+/// A titled sky-track plot built on the shared `PolarSkyPlot` (compass rose,
+/// elevation-ring labels, rise/set + peak markers). Used for the paired
+/// home/DX plots on Activation detail and Mutual Windows.
 private struct ActivationSkyPlot: View {
     let title: String
     let points: [SkyPoint]
@@ -3333,28 +3461,9 @@ private struct ActivationSkyPlot: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption.bold())
-            Canvas { context, size in
-                let r = min(size.width, size.height) / 2 - 16
-                let center = CGPoint(x: size.width / 2, y: size.height / 2)
-                for elevation in [0.0, 30.0, 60.0] {
-                    let rr = r * (90 - elevation) / 90
-                    context.stroke(Path(ellipseIn: CGRect(x: center.x-rr, y: center.y-rr, width: 2*rr, height: 2*rr)),
-                                   with: .color(ODTheme.grid), lineWidth: 0.8)
-                }
-                var path = Path()
-                var started = false
-                for point in points {
-                    let rr = r * (90 - max(0, min(90, point.elevation))) / 90
-                    let a = point.azimuth * .pi / 180
-                    let p = CGPoint(x: center.x + rr * sin(a), y: center.y - rr * cos(a))
-                    if started { path.addLine(to: p) } else { path.move(to: p); started = true }
-                }
-                if started { context.stroke(path, with: .color(ODTheme.accent), lineWidth: 2) }
-                context.draw(Text("N").font(.caption2).foregroundStyle(ODTheme.muted),
-                             at: CGPoint(x: center.x, y: center.y-r-8))
-            }
-            .frame(minWidth: 260, minHeight: 260)
-            .odPanel()
+            PolarSkyPlot(points: points, currentPoint: nil, minimumElevation: 0)
+                .frame(minWidth: 260, minHeight: 260)
+                .odPanel()
         }
         .frame(maxWidth: .infinity)
     }
@@ -3373,6 +3482,8 @@ private struct SiteComparisonRow: Identifiable, Sendable {
 
 struct SitesView: View {
     @EnvironmentObject private var store: OrbitStore
+    @StateObject private var locationProvider = LocationProvider()
+    @State private var pollingForNewSite = false
     @State private var newName = ""
     @State private var newLocation = ""
     @State private var newAltitude = 0.0
@@ -3386,13 +3497,18 @@ struct SitesView: View {
         Form {
             Section("Primary site") {
                 siteSummary(store.preferences.observer)
-                TextField("Primary site name", text: Binding(
-                    get: { store.preferences.observer.name },
-                    set: { store.preferences.observer.name = $0 }
-                ))
-                .textFieldStyle(.odField)
-                Text("The primary site drives Track, passes, MUF, mutual visibility and every other observer-relative screen.")
-                    .font(.caption).foregroundStyle(ODTheme.muted)
+                if store.locationMode == .currentLocation {
+                    Text("Following device location — the primary site is “\(OrbitStore.currentLocationName)” and can't be renamed. Switch to a fixed site in Settings to edit it.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                } else {
+                    TextField("Primary site name", text: Binding(
+                        get: { store.preferences.observer.name },
+                        set: { store.preferences.observer.name = $0 }
+                    ))
+                    .textFieldStyle(.odField)
+                    Text("The primary site drives Track, passes, MUF, mutual visibility and every other observer-relative screen.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
             }
             Section("Add secondary site") {
                 TextField("Nickname", text: $newName).textFieldStyle(.odField)
@@ -3400,8 +3516,10 @@ struct SitesView: View {
                     .textInputAutocapitalization(.characters)
                     .textFieldStyle(.odField)
                 HStack { Text("Altitude"); Spacer(); TextField("m", value: $newAltitude, format: .number).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).textFieldStyle(.odField) }
+                Button { pollCurrentLocation() } label: { Label("Use current location", systemImage: "location") }
                 Button("Add Site") { addSite() }
                 if !message.isEmpty { Text(message).font(.caption).foregroundStyle(ODTheme.muted) }
+                if let error = locationProvider.errorMessage { Text(error).font(.caption).foregroundStyle(ODTheme.warning) }
             }
             Section("Secondary sites") {
                 let sites = store.preferences.savedSites ?? []
@@ -3436,7 +3554,21 @@ struct SitesView: View {
                     }
                 }
             }
-        }.task(id: store.selectedSatellite?.id) { compare() }
+        }
+        .task(id: store.selectedSatellite?.id) { compare() }
+        .onChange(of: locationProvider.location) { _, location in
+            guard pollingForNewSite, let location else { return }
+            pollingForNewSite = false
+            newLocation = String(format: "%.5f,%.5f", location.coordinate.latitude, location.coordinate.longitude)
+            if location.altitude.isFinite { newAltitude = location.altitude }
+            message = "Filled from current location (\(FeatureEngine.latLonToGrid6(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)))."
+        }
+    }
+
+    private func pollCurrentLocation() {
+        pollingForNewSite = true
+        message = "Getting current location…"
+        locationProvider.requestLocation()
     }
 
     private func prepareCSV() {
@@ -3454,7 +3586,7 @@ struct SitesView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(site.name).font(.headline)
             Text(String(format: "%.4f, %.4f • %@ • %.0f m", site.latitude, site.longitude,
-                        FeatureEngine.latLonToGrid4(latitude: site.latitude, longitude: site.longitude), site.altitudeMeters))
+                        FeatureEngine.latLonToGrid6(latitude: site.latitude, longitude: site.longitude), site.altitudeMeters))
                 .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
         }
     }
@@ -3483,6 +3615,9 @@ struct SitesView: View {
                                                  bestMaximumElevation: best?.maxElevation)
                     }
                 }.value
+            } catch is CancellationError {
+                // Navigated away mid-compare — nothing to report.
+            } catch let error as URLError where error.code == .cancelled {
             } catch { message = error.localizedDescription }
             isComparing = false
         }

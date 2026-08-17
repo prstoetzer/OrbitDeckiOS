@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 struct RadioView: View {
     private enum RadioTab: String, CaseIterable, Identifiable {
@@ -23,6 +24,7 @@ struct RadioView: View {
     @State private var lineLossDb = 1.5
     @State private var satelliteTxPowerW = 1.0
     @State private var satelliteGainDb = 2.0
+    @State private var rxSensitivityDbm = -110.0
     @State private var isLoading = false
     @State private var error: String?
     @State private var shareURL: URL?
@@ -96,6 +98,21 @@ struct RadioView: View {
         }
     }
 
+    /// Downlink margin (received power − RX sensitivity) sampled across elevation
+    /// 0–90° at a fixed altitude, using the same link-budget math as the readout.
+    private func downlinkMarginCurve(altitudeKm: Double, frequencyHz: Double) -> [MarginPoint] {
+        let re = OrbitPredictor.earthRadiusKm
+        return stride(from: 0.0, through: 90.0, by: 5.0).map { elDeg in
+            let el = elDeg * .pi / 180
+            let slantKm = (re * re * sin(el) * sin(el) + 2 * re * altitudeKm + altitudeKm * altitudeKm).squareRoot() - re * sin(el)
+            let budget = FeatureCompletionEngine.linkBudget(
+                rangeKm: max(1, slantKm), frequencyHz: frequencyHz,
+                txPowerW: satelliteTxPowerW, txGainDb: satelliteGainDb,
+                rxGainDb: groundRxGainDb, lineLossDb: lineLossDb)
+            return MarginPoint(el: elDeg, margin: budget.receivedPowerDbm - rxSensitivityDbm)
+        }
+    }
+
     @ViewBuilder
     private func linkBudgetView(satellite: SatelliteRecord, transponder: TransponderRecord) -> some View {
         if let pass = selectedPass,
@@ -147,13 +164,36 @@ struct RadioView: View {
                 HStack { numericField("Your TX power", value: $groundTxPowerW, unit: "W"); numericField("TX gain", value: $groundTxGainDb, unit: "dBi") }
                 HStack { numericField("RX gain", value: $groundRxGainDb, unit: "dBi"); numericField("Line loss", value: $lineLossDb, unit: "dB") }
                 HStack { numericField("Sat TX power", value: $satelliteTxPowerW, unit: "W"); numericField("Sat gain", value: $satelliteGainDb, unit: "dBi") }
+                HStack { numericField("RX sensitivity", value: $rxSensitivityDbm, unit: "dBm"); Spacer() }
             }
 
             SectionCard("Downlink \(ODFormat.frequency(nominal.downlink))") {
                 MetricRow("Satellite EIRP", String(format: "%.1f dBm", downlink.eirpDbm))
                 MetricRow("Free-space path loss", String(format: "%.1f dB", downlink.freeSpacePathLossDb))
                 MetricRow("Estimated received power", String(format: "%.1f dBm", downlink.receivedPowerDbm))
+                MetricRow("Downlink margin", String(format: "%+.1f dB", downlink.receivedPowerDbm - rxSensitivityDbm),
+                          valueColor: (downlink.receivedPowerDbm - rxSensitivityDbm) >= 0 ? ODTheme.good : ODTheme.warning)
                 MetricRow("Doppler-corrected RX", ODFormat.frequency(corrected.rx), valueColor: ODTheme.good)
+            }
+
+            let curve = downlinkMarginCurve(altitudeKm: look.altitudeKm,
+                                            frequencyHz: Double(max(1, nominal.downlink)))
+            SectionCard("Downlink margin vs elevation") {
+                Chart {
+                    ForEach(curve) { point in
+                        LineMark(x: .value("Elevation", point.el), y: .value("Margin", point.margin))
+                            .foregroundStyle(ODTheme.accent)
+                    }
+                    RuleMark(y: .value("Threshold", 0))
+                        .foregroundStyle(ODTheme.warning.opacity(0.7))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                }
+                .chartXScale(domain: 0...90)
+                .chartXAxisLabel("Elevation (°)")
+                .chartYAxisLabel("Margin (dB)")
+                .frame(height: 180)
+                Text("Downlink margin (received power − RX sensitivity) across the pass geometry, at the current altitude. Above the dashed 0 dB line the link should close.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
             }
             if let uplink {
                 SectionCard("Uplink \(ODFormat.frequency(nominal.uplink))") {
@@ -354,4 +394,10 @@ struct RadioView: View {
             }
         } catch { self.error = error.localizedDescription }
     }
+}
+
+private struct MarginPoint: Identifiable {
+    let el: Double
+    let margin: Double
+    var id: Double { el }
 }

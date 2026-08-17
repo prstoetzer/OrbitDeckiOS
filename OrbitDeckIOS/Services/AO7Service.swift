@@ -56,8 +56,9 @@ enum AO7Service {
     private static let negativeWeight = 0.35
 
     static func fetchAndFit(now: Date = .now, hours: Int = 30 * 24, sinceSunlightStart: Date? = nil) async throws -> AO7FitResult {
-        async let modeA = fetchReports(mode: 0, hours: hours)
-        async let modeB = fetchReports(mode: 1, hours: hours)
+        let names = await resolveModeNames()
+        async let modeA = fetchReports(apiName: names[0] ?? modeNames[0]!, mode: 0, hours: hours)
+        async let modeB = fetchReports(apiName: names[1] ?? modeNames[1]!, mode: 1, hours: hours)
         let (a, b) = try await (modeA, modeB)
         var observations = (a + b).sorted { $0.date < $1.date }
         guard !observations.isEmpty else { throw AO7ServiceError.noReports }
@@ -74,8 +75,23 @@ enum AO7Service {
         return try fit(observations, now: now)
     }
 
-    private static func fetchReports(mode: Int, hours: Int) async throws -> [AO7Observation] {
-        guard let apiName = modeNames[mode] else { return [] }
+    /// Resolve the AMSAT status-API names for AO-7's two transponder modes from
+    /// the live catalog, so a rename (e.g. "OSCAR-7_[V/a]") still works. Falls
+    /// back to the built-in names. Mirrors the desktop's resolve_api_names.
+    private static func resolveModeNames() async -> [Int: String] {
+        var resolved = modeNames
+        if let catalog = try? await AmsatStatusService.catalogNames() {
+            for name in catalog {
+                let tag = name.uppercased()
+                guard tag.contains("AO-7") || tag.contains("OSCAR 7") || tag.contains("OSCAR-7") else { continue }
+                if tag.contains("V/A") { resolved[0] = name }
+                else if tag.contains("U/V") { resolved[1] = name }
+            }
+        }
+        return resolved
+    }
+
+    private static func fetchReports(apiName: String, mode: Int, hours: Int) async throws -> [AO7Observation] {
         var components = URLComponents(string: reportBase)!
         components.queryItems = [
             URLQueryItem(name: "name", value: apiName),

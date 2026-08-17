@@ -70,7 +70,9 @@ struct GroundTrackView: View {
                 }
                 .mapStyle(.standard(elevation: .flat))
                 .id(store.selectedSatellite?.id ?? 0)
-                .overlay(alignment: .bottomLeading) {
+                // Top-trailing keeps the readout clear of Apple Maps' bottom-leading
+                // logo and bottom-trailing legal attribution link.
+                .overlay(alignment: .topTrailing) {
                     if let current = nearestToNow {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(ODFormat.utc.string(from: current.date))
@@ -100,10 +102,14 @@ struct GroundTrackView: View {
             cameraPosition = .automatic
             Task { await load() }
         }
+        .onChange(of: orbitsAhead) { _, _ in
+            cameraPosition = .automatic
+            Task { await load() }
+        }
     }
 
     private var taskKey: String {
-        "\(store.selectedSatellite?.id ?? 0)-\(store.selectedSatellite?.epoch.timeIntervalSince1970 ?? 0)-\(orbitsAhead)"
+        "\(store.selectedSatellite?.id ?? 0)-\(store.selectedSatellite?.epoch.timeIntervalSince1970 ?? 0)"
     }
 
     private var nearestToNow: GroundTrackPoint? {

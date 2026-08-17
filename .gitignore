@@ -12,6 +12,14 @@ xcuserdata/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 Package.resolved
 
+# Built products (do not commit binaries)
+OrbitDeckIOS/Products/
+
+# Fastlane (generated screenshots/artifacts)
+fastlane/screenshots/
+fastlane/report.xml
+fastlane/test_output/
+
 # macOS
 .DS_Store
 .AppleDouble

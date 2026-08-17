@@ -12,6 +12,7 @@
 		08EDC310E824B8CB90D8A3EE /* Views/HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A72471D03E195359C63155A /* Views/HomeView.swift */; };
 		0C4C1D39CC489508720D4198 /* Views/SkyRadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C400D0BA43629F11E97C6234 /* Views/SkyRadarView.swift */; };
 		24A2EC1FCE037F1FA7FD744D /* Services/LocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CC53E0E4F549F7E5A4BF44 /* Services/LocationProvider.swift */; };
+		2E75B92E303228E000338037 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */; };
 		2E946B4130308C7600960A39 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2E946B4030308C7600960A39 /* Assets.xcassets */; };
 		64DDAC67D6894708F4CDE021 /* Views/PassesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8FF6BE81A9340A8D932821F /* Views/PassesView.swift */; };
 		66289466ED75BEC0DCF9ABC8 /* Views/SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D031980CF45765481210B /* Views/SettingsView.swift */; };
@@ -57,6 +58,7 @@
 		25C9F5562B8D8E90BE1FE63E /* Views/RadioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/RadioView.swift; sourceTree = "<group>"; };
 		288DA342A9387B413727BBE4 /* Views/OrbitalAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/OrbitalAnalysisView.swift; sourceTree = "<group>"; };
 		2A72471D03E195359C63155A /* Views/HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/HomeView.swift; sourceTree = "<group>"; };
+		2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		2E946B4030308C7600960A39 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2FDDA8C92EE5F5541001A77A /* Services/TransponderService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/TransponderService.swift; sourceTree = "<group>"; };
 		32CC53E0E4F549F7E5A4BF44 /* Services/LocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocationProvider.swift; sourceTree = "<group>"; };
@@ -163,6 +165,7 @@
 		870B3294C0CBD48AF6BBCC1B = {
 			isa = PBXGroup;
 			children = (
+				2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */,
 				2E946B4030308C7600960A39 /* Assets.xcassets */,
 				8309DD304D804F9D7F6302F5 /* OrbitDeckIOS */,
 				615B463D1028E4E24B674CF7 /* Products */,
@@ -233,6 +236,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2E75B92E303228E000338037 /* PrivacyInfo.xcprivacy in Resources */,
 				2E946B4130308C7600960A39 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -298,6 +302,7 @@
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				GCC_C_LANGUAGE_STANDARD = gnu17;
+				"INFOPLIST_KEY_ITSAppUsesNonExemptEncryption[sdk=*]" = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -316,6 +321,7 @@
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_OPTIMIZATION_LEVEL = 0;
+				"INFOPLIST_KEY_ITSAppUsesNonExemptEncryption[sdk=*]" = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
@@ -334,11 +340,14 @@
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = OrbitDeck;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 0.9.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.prstoetzer.OrbitDeckIOS;
@@ -361,11 +370,14 @@
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = OrbitDeck;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 0.9.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.prstoetzer.OrbitDeckIOS;

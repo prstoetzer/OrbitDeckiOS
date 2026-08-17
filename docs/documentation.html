@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Documentation — OrbitDeck for iOS</title>
+    <meta name="description" content="Documentation for OrbitDeck for iOS: setting your station, grids and VUCC, passes and Doppler, orbital analysis, space weather, OSCARLOCATOR, tools and data sources.">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav">
+            <a class="brand" href="index.html"><span class="dot"></span>OrbitDeck</a>
+            <a class="navlink" href="index.html">Home</a>
+            <a class="navlink" href="documentation.html" aria-current="page">Documentation</a>
+            <a class="navlink" href="privacy.html">Privacy</a>
+        </nav>
+    </header>
+
+    <section class="container">
+        <h1>Documentation</h1>
+        <p class="section-intro">This guide covers the main features of OrbitDeck for iOS. OrbitDeck is organized as a sidebar of screens grouped into Live, Passes, Analysis, Operating Tools, Sky &amp; Space, and Catalog &amp; Configuration.</p>
+
+        <div class="doc">
+            <aside class="toc">
+                <h4>Contents</h4>
+                <a href="#getting-started">Getting started</a>
+                <a href="#station">Setting your station</a>
+                <a href="#grids">Grid squares &amp; VUCC</a>
+                <a href="#catalog">Satellites &amp; catalog</a>
+                <a href="#passes">Passes &amp; tracking</a>
+                <a href="#radio">Radio &amp; Doppler</a>
+                <a href="#analysis">Orbital analysis</a>
+                <a href="#spacewx">Space weather &amp; propagation</a>
+                <a href="#oscarlocator">OSCARLOCATOR</a>
+                <a href="#tools">Bench tools</a>
+                <a href="#exports">Exports &amp; alarms</a>
+                <a href="#data">Data sources</a>
+                <a href="#troubleshooting">Troubleshooting</a>
+            </aside>
+
+            <div class="doc-body">
+                <h2 id="getting-started">Getting started</h2>
+                <p>On first launch, OrbitDeck downloads a satellite catalog and sets a default station. To get useful results:</p>
+                <ul>
+                    <li>Set your <a href="#station">station location</a> in Settings.</li>
+                    <li>Add a few satellites to your favorites from the <strong>Satellites</strong> screen (for example the ISS and an active FM or linear bird).</li>
+                    <li>Open <strong>Home</strong> to see live look angles and your next qualifying pass.</li>
+                </ul>
+
+                <h2 id="station">Setting your station</h2>
+                <p>Your observer station drives every observer-relative screen: Track, passes, MUF, mutual visibility, and more. Open <strong>Settings &rarr; Observer station</strong>.</p>
+                <h3>Location source</h3>
+                <p>Choose how OrbitDeck resolves your position:</p>
+                <ul>
+                    <li><strong>Fixed site</strong> — a named location you enter and edit manually. This is preserved and is the default.</li>
+                    <li><strong>Always use current location</strong> — OrbitDeck follows your device's GPS. While following, the station is named <code>Current location</code>, its fields are managed automatically, and your fixed site is preserved so switching back restores it exactly.</li>
+                </ul>
+                <h3>Entering coordinates</h3>
+                <p>In fixed mode you can enter your position three ways:</p>
+                <ul>
+                    <li>Type a <strong>latitude</strong> and <strong>longitude</strong> in decimal degrees.</li>
+                    <li>Type a <strong>Maidenhead grid square</strong> (4, 6 or 8 characters, e.g. <code>FM18</code> or <code>FM18lv</code>) and tap <strong>Set</strong>. OrbitDeck places you at the grid center.</li>
+                    <li>Tap <strong>Use Current Location</strong> for a one-time fix.</li>
+                </ul>
+                <p>Set your <strong>altitude</strong> in meters for the most accurate look angles.</p>
+
+                <h2 id="grids">Grid squares &amp; VUCC</h2>
+                <p>OrbitDeck shows your six-character Maidenhead locator wherever your station is displayed, including the <strong>Station</strong> card on Home.</p>
+                <p>Under ARRL VUCC rules, a station physically on the line between two grid squares may count both, and a station on the corner where four grids meet may count all four. When your position is on a boundary, the Home Station card lists every grid you may claim, labeled <em>On grid line</em> or <em>On grid corner</em>.</p>
+                <div class="note">
+                    Per the VUCC rules, "on the line" means physically on the boundary as established by a GPS receiver whose error figure does not exceed 20 feet. OrbitDeck treats a position within that tolerance (about 6 meters) of a grid boundary as on it. Grid-square-entered locations sit at the grid center and will not trigger a boundary claim.
+                </div>
+
+                <h2 id="catalog">Satellites &amp; catalog</h2>
+                <p>The <strong>Satellites</strong> screen lists the catalog and lets you mark favorites, which drive the Home dashboard and all-sky radar. The <strong>New Launches</strong> screen surfaces recently launched objects.</p>
+                <p>Choose your element source in <strong>Settings &rarr; GP element source</strong>:</p>
+                <ul>
+                    <li><strong>AMSAT</strong> — the AMSAT daily bulletin GP feed (default).</li>
+                    <li><strong>CelesTrak</strong> — select a group such as the amateur satellites set.</li>
+                    <li><strong>Custom</strong> — a URL to your own OMM JSON.</li>
+                </ul>
+                <p>You can also add manual satellites and transponders, and recover elements from a state vector using the <strong>Tools</strong> screen.</p>
+
+                <h2 id="passes">Passes &amp; tracking</h2>
+                <ul>
+                    <li><strong>Home</strong> — live look angles, the next qualifying pass, and your favorites' upcoming passes.</li>
+                    <li><strong>Track</strong> — a real-time polar sky plot; toggle north-up or compass-up.</li>
+                    <li><strong>Next Passes</strong> and <strong>Pass Detail</strong> — pass lists with polar plots and elevation-vs-time profiles.</li>
+                    <li><strong>Ground Track</strong> — the sub-point path and footprint on a map.</li>
+                    <li><strong>Pass Progression</strong> — passes across the coming days.</li>
+                    <li><strong>Sky Radar</strong> — every favorite plotted on one all-sky chart.</li>
+                </ul>
+                <p>Set the <strong>minimum elevation</strong> in Settings to filter marginal passes.</p>
+
+                <h2 id="radio">Radio &amp; Doppler</h2>
+                <p>The <strong>Radio</strong> screen provides:</p>
+                <ul>
+                    <li>A four-dial DX Doppler display and a single-station RX/TX Doppler playbook.</li>
+                    <li>Per-radio tuning calibration.</li>
+                    <li>A link budget with a per-elevation margin curve.</li>
+                    <li>Transponder listings from the SatNOGS database, with two-way transponders shown first.</li>
+                </ul>
+
+                <h2 id="analysis">Orbital analysis</h2>
+                <p>The Analysis group includes orbital elements and derived quantities (J2 nodal and apsidal rates, beta angle, eclipse fraction, local time of the ascending node), equator crossings, Sun/Moon transits, illumination, orbital zones, conjunctions, AO-7 mode timing, mutual-visibility windows, and workable-grid discovery.</p>
+
+                <h2 id="spacewx">Space weather &amp; propagation</h2>
+                <p><strong>Space Wx</strong> shows live values from NOAA SWPC: 10.7 cm solar flux, sunspot number, planetary Kp and the A index, along with geomagnetic condition and aurora likelihood. <strong>MUF / HF Prop</strong> and the operating outlook use these to summarize HF and 6 m conditions. Space weather refreshes automatically when stale and on returning to the app.</p>
+
+                <h2 id="oscarlocator">OSCARLOCATOR</h2>
+                <p>The <strong>OSCARLOCATOR Sim</strong> reproduces the classic azimuthal-equidistant tracking overlay, in both polar and QTH-centered projections, with minute ticks along the ground track. <strong>Reference Orbits</strong> lists the schedule, and you can export printable OSCARLOCATOR sheets as PDF from Exports.</p>
+
+                <h2 id="tools">Bench tools</h2>
+                <p>The <strong>Tools</strong> screen collects more than 60 calculators for antennas, feedline, RF, link budgets and orbits. It also includes:</p>
+                <ul>
+                    <li>A receipt-tape <strong>scientific calculator</strong> with a DEG/RAD toggle, metric-prefix literals (for example <code>100k</code>, <code>2.2n</code>), an <code>Ans</code> register, and RF/orbit helper functions.</li>
+                    <li>A <strong>graphing calculator</strong> with trace, root finding, an integral readout, a data table, and CSV export.</li>
+                    <li>A <strong>grid &harr; lat/lon</strong> converter, <strong>Tiny BASIC</strong>, and a <strong>DXCC</strong> lookup.</li>
+                </ul>
+
+                <h2 id="exports">Exports &amp; alarms</h2>
+                <p>The <strong>Exports</strong> screen produces PDF and CSV/XLSX files for passes, site comparisons and OSCARLOCATOR overlays, sharable via the standard iOS share sheet. You can also schedule a local <strong>pass alarm</strong>; OrbitDeck requests notification permission only when you first schedule one, using the lead time set in Settings.</p>
+
+                <h2 id="data">Data sources</h2>
+                <p>OrbitDeck retrieves data from public services and identifies itself politely:</p>
+                <table>
+                    <tr><th>Service</th><th>Used for</th></tr>
+                    <tr><td>CelesTrak</td><td>General Perturbations (GP) orbital elements</td></tr>
+                    <tr><td>AMSAT</td><td>Daily bulletin GP feed and status reports</td></tr>
+                    <tr><td>NOAA SWPC</td><td>Solar flux, sunspot number, planetary Kp and A index</td></tr>
+                    <tr><td>SatNOGS</td><td>Transponder database</td></tr>
+                    <tr><td>hams.at</td><td>Upcoming satellite activations</td></tr>
+                    <tr><td>QRZ (optional)</td><td>Callsign lookup, if you provide credentials</td></tr>
+                    <tr><td>Space-Track (optional)</td><td>Archival elements for Orbital History, if you provide credentials</td></tr>
+                </table>
+                <p>OrbitDeck honors CelesTrak's usage policy — at most one request per dataset every two hours, with back-off on rate-limit responses — so normal use will not get your address blocked. Catalog and transponder data also refresh automatically about once a week.</p>
+
+                <h2 id="troubleshooting">Troubleshooting</h2>
+                <h3>No passes or empty screens</h3>
+                <p>Confirm your station location is set correctly and that you have added favorite satellites. Lower the minimum elevation if you expect marginal passes.</p>
+                <h3>Space weather shows blank K or A</h3>
+                <p>OrbitDeck refreshes space weather when it is stale or on returning to the app. If values are blank, tap the refresh control on the Space Wx screen; a connection is required for the first fetch.</p>
+                <h3>Location not updating</h3>
+                <p>If you chose "Always use current location," ensure OrbitDeck has Location permission in the iOS Settings app. You can switch back to a fixed site at any time without losing it.</p>
+                <h3>Compass heading looks off</h3>
+                <p>Compass-up mode uses true heading, which requires a location fix to correct for magnetic declination; allow a moment after enabling it.</p>
+            </div>
+        </div>
+    </section>
+
+    <footer class="site-footer">
+        <div class="container">
+            <span>&copy; 2026 Paul Stoetzer, N8HM</span>
+            <span>
+                <a href="index.html">Home</a> &nbsp;·&nbsp;
+                <a href="privacy.html">Privacy</a> &nbsp;·&nbsp;
+                <a href="https://www.amsat.org" rel="noopener">Support AMSAT</a>
+            </span>
+        </div>
+    </footer>
+</body>
+</html>

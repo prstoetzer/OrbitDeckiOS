@@ -463,6 +463,42 @@ enum FeatureEngine {
         return "\(square)\(Character(c))\(Character(d))"
     }
 
+    /// ARRL VUCC tolerance for a station being "on" a grid boundary. The rules
+    /// require the position be established with a GPS receiver whose error figure
+    /// does not exceed 20 feet (≈6.1 m), so a fix within that distance of a grid
+    /// line/corner is treated as sitting on it.
+    static let vuccBoundaryToleranceMeters = 20.0 * 0.3048
+
+    /// The 4-character (VUCC) grid squares a station at this position may claim.
+    /// Normally one, but under ARRL VUCC rules a station physically on the line
+    /// between two grids may count both, and one on the corner where four grids
+    /// meet may count all four. A position within `toleranceMeters` of a boundary
+    /// is considered on it (see `vuccBoundaryToleranceMeters`). Result is sorted.
+    static func vuccGrids(latitude: Double, longitude: Double,
+                          toleranceMeters: Double = vuccBoundaryToleranceMeters) -> [String] {
+        var grids: Set<String> = [latLonToGrid4(latitude: latitude, longitude: longitude)]
+
+        // 4-character grid squares are 1° tall (lat boundaries at integer degrees)
+        // and 2° wide (lon boundaries at even offsets from the −180° antimeridian).
+        let latBoundary = latitude.rounded()
+        let lonBoundary = ((longitude + 180.0) / 2.0).rounded() * 2.0 - 180.0
+
+        let metersPerDegLat = 111_320.0
+        let metersPerDegLon = 111_320.0 * cos(latitude * .pi / 180.0)
+        let onLat = abs(latitude - latBoundary) * metersPerDegLat <= toleranceMeters
+        let onLon = abs(longitude - lonBoundary) * metersPerDegLon <= toleranceMeters
+
+        // A point nudged just across the nearest boundary lands in the neighbour.
+        let otherLat = latBoundary - (latitude >= latBoundary ? 0.001 : -0.001)
+        let otherLon = lonBoundary - (longitude >= lonBoundary ? 0.001 : -0.001)
+
+        if onLat { grids.insert(latLonToGrid4(latitude: otherLat, longitude: longitude)) }
+        if onLon { grids.insert(latLonToGrid4(latitude: latitude, longitude: otherLon)) }
+        if onLat && onLon { grids.insert(latLonToGrid4(latitude: otherLat, longitude: otherLon)) }
+
+        return grids.sorted()
+    }
+
     // MARK: - Sun, Moon, planets and sky positions
 
     static func sunMoon(site: ObserverSite, at date: Date = .now) -> SunMoonSnapshot {
@@ -728,8 +764,10 @@ enum FeatureEngine {
             for fieldLat in 0..<18 {
                 for squareLon in 0..<10 {
                     let lon = -180.0 + Double(fieldLon) * 20.0 + Double(squareLon) * 2.0 + 1.0
-                    let roughLonDelta = abs(normalizedLongitude(lon - subLongitude))
-                    if roughLonDelta > radius + 3.0 && abs(subLatitude) < 75 { continue }
+                    // No longitude fast-prune: a raw Δlon is not a valid bound on
+                    // angular separation where meridians converge, so it would drop
+                    // valid high-latitude / antimeridian cells for large footprints.
+                    // The latitude prune below plus the exact check keep this correct.
                     for squareLat in 0..<10 {
                         let lat = -90.0 + Double(fieldLat) * 10.0 + Double(squareLat) + 0.5
                         if abs(lat - subLatitude) > radius + 2.0 { continue }
@@ -1157,15 +1195,20 @@ enum FeatureEngine {
         let jupiter = planetRaDec(name: "Jupiter", date: date).map {
             raDecToAzEl(raDegrees: $0.ra, decDegrees: $0.dec, site: site, date: date)
         } ?? (azimuth: 0.0, elevation: -90.0)
-        let sources: [(String, ClosedRange<Double>, ClosedRange<Double>, Bool)] = [
-            ("Io-A", 200...270, 200...270, false),
-            ("Io-B", 105...190, 75...105, false),
-            ("Io-C", 300...360, 225...260, true)
+        // CML and Io-phase boxes for the classic Io-A/B/C decametric sources.
+        // A box is expressed as (low, high); when low > high it wraps through
+        // 360° (Io-C's CML spans 300°→360°→20°).
+        func inBox(_ value: Double, _ low: Double, _ high: Double) -> Bool {
+            low <= high ? (value >= low && value <= high) : (value >= low || value <= high)
+        }
+        let sources: [(name: String, cLow: Double, cHigh: Double, iLow: Double, iHigh: Double)] = [
+            ("Io-A", 200, 270, 200, 270),
+            ("Io-B", 105, 190, 75, 105),
+            ("Io-C", 300, 20, 225, 260)
         ]
         var active: [String] = []
-        for (name, cRange, iRange, wraps) in sources {
-            let cOkay = wraps ? (cml >= 300 || cml <= 20) : cRange.contains(cml)
-            if cOkay && iRange.contains(io) { active.append(name) }
+        for s in sources where inBox(cml, s.cLow, s.cHigh) && inBox(io, s.iLow, s.iHigh) {
+            active.append(s.name)
         }
         let verdict = active.isEmpty ? "No Io source active" : "\(active.joined(separator: ", ")) active"
         return JupiterRadioStatus(cmlDegrees: cml, ioPhaseDegrees: io,
@@ -1412,17 +1455,17 @@ enum FeatureEngine {
             let result = OrbitDecayModel.estimate(meanMotion: satellite.meanMotionRevPerDay,
                                                    ecc: satellite.eccentricity,
                                                    bstar: satellite.bstar, ndot: fitted, solar: 1)
-            if result.1 == "observed decay rate" {
+            if result.1 == .observedNdot {
                 return .init(days: result.0, source: "element archive", fittedNdot: fitted,
                              note: "Archive-fitted mean-motion trend anchors the decay model.")
             }
-            return .init(days: result.0, source: result.1, fittedNdot: fitted,
+            return .init(days: result.0, source: result.1.label, fittedNdot: fitted,
                          note: "Archive trend fell outside the physical n-dot anchor range; using the model fallback.")
         }
         let result = OrbitDecayModel.estimate(meanMotion: satellite.meanMotionRevPerDay,
                                                ecc: satellite.eccentricity,
                                                bstar: satellite.bstar, ndot: 0, solar: 1)
-        return .init(days: result.0, source: result.1, fittedNdot: nil,
+        return .init(days: result.0, source: result.1.label, fittedNdot: nil,
                      note: "Archive is too short, sparse, flat, or rising to supply a decay anchor.")
     }
 
@@ -1569,6 +1612,18 @@ enum FeatureEngine {
         let epsilon = (23.439 - 0.0000004 * n) * degreesToRadians
         return (Vector(cos(lambda), cos(epsilon) * sin(lambda), sin(epsilon) * sin(lambda)),
                 lambdaDegrees)
+    }
+
+    /// Local (mean solar) Time of the Ascending Node, in hours [0,24). For a
+    /// sun-synchronous orbit this is nearly constant and characterises the bird
+    /// (e.g. a 10:30 morning crossing). LTAN = 12h + (RAAN − α☉)/15°.
+    static func localTimeOfAscendingNode(raanDeg: Double, at date: Date) -> Double {
+        let sun = sunECIUnit(date.julianDate).vector
+        let raSunDeg = normalizedDegrees(atan2(sun.y, sun.x) * 180 / Double.pi)
+        var hours = (raanDeg - raSunDeg) / 15.0 + 12.0
+        hours = hours.truncatingRemainder(dividingBy: 24)
+        if hours < 0 { hours += 24 }
+        return hours
     }
 
     static func moonSolution(_ jd: Double) -> (vector: Vector, longitudeDegrees: Double, distanceKm: Double) {
@@ -1761,6 +1816,10 @@ actor SpaceTrackHistoryService {
     }
 
     private static let columns = "EPOCH,SEMIMAJOR_AXIS,ECCENTRICITY,INCLINATION,PERIOD,APOAPSIS,PERIAPSIS,BSTAR"
+    /// Space-Track asks for a minimum ~3 s between queries; the actor serializes
+    /// requests and spaces them to stay well within the published rate limits.
+    private var lastRequestAt: Date?
+    private static let minRequestInterval: TimeInterval = 3
 
     func cachedHistory(norad: UInt) -> [OrbitalHistorySample]? {
         let url = cacheURL(norad: norad)
@@ -1772,9 +1831,21 @@ actor SpaceTrackHistoryService {
         guard !identity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !password.isEmpty else { throw ServiceError.missingCredentials }
 
+        // Space these requests to respect Space-Track's minimum query interval.
+        if let last = lastRequestAt {
+            let wait = Self.minRequestInterval - Date().timeIntervalSince(last)
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+        }
+        lastRequestAt = Date()
+
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = true
         configuration.httpCookieAcceptPolicy = .always
+        // Bound the requests so a dropped connection surfaces an error instead of
+        // hanging on the system default (~60 s request / 7 day resource).
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 60
+        configuration.waitsForConnectivity = false
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
 
@@ -1840,7 +1911,10 @@ actor SpaceTrackHistoryService {
 struct SpaceWeatherService {
     static func fetch() async throws -> SpaceWeatherSnapshot {
         async let fluxData = get(URL(string: "https://services.swpc.noaa.gov/json/f107_cm_flux.json")!)
-        async let kpData = get(URL(string: "https://services.swpc.noaa.gov/json/planetary_k_index_1m.json")!)
+        // Official 3-hour estimated planetary Kp (fractional) + running A index —
+        // the value other space-weather sources display. The older 1-minute file
+        // carried an integer `kp_index` (floor) that read as 0 for a real Kp of 0.33.
+        async let kpData = get(URL(string: "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")!)
         async let cycleData = get(URL(string: "https://services.swpc.noaa.gov/json/solar-cycle/observed-solar-cycle-indices.json")!)
         async let geomagneticData = getOptional(URL(string: "https://services.swpc.noaa.gov/text/daily-geomagnetic-indices.txt")!)
         let (fData, kData, cData, gData) = try await (fluxData, kpData, cycleData, geomagneticData)
@@ -1862,20 +1936,62 @@ struct SpaceWeatherService {
                 if flux90 == nil { flux90 = numeric(newest["f10.7"]) }
             }
         }
-        var kp: Double?
-        if let rows = try JSONSerialization.jsonObject(with: kData) as? [[String: Any]] {
-            let valid = rows.filter { row in
-                row["time_tag"] != nil && (numeric(row["kp_index"]) ?? numeric(row["estimated_kp"]) ?? numeric(row["kp"])) != nil
-            }
-            if let newest = valid.max(by: { String(describing: $0["time_tag"] ?? "") < String(describing: $1["time_tag"] ?? "") }) {
-                kp = numeric(newest["kp_index"]) ?? numeric(newest["estimated_kp"]) ?? numeric(newest["kp"])
-            }
-        }
+        let (kp, aRunning) = parsePlanetaryKp(kData)
         let reportedA = gData.flatMap(parsePlanetaryA)
+        // Prefer the finalized daily planetary A; fall back to the running A from
+        // the Kp product, then to a Kp→ap conversion.
+        let aIndex = reportedA ?? aRunning ?? kp.map(kpToAP)
+        let aSource: String?
+        if reportedA != nil { aSource = "NOAA daily planetary A" }
+        else if aRunning != nil { aSource = "NOAA running planetary A" }
+        else { aSource = kp == nil ? nil : "Kp→ap equivalent" }
         return SpaceWeatherSnapshot(fetchedAt: .now, flux: flux, kp: kp,
-                                    aIndex: reportedA ?? kp.map(kpToAP),
-                                    aIndexSource: reportedA == nil ? (kp == nil ? nil : "Kp→ap equivalent") : "NOAA daily planetary A",
+                                    aIndex: aIndex, aIndexSource: aSource,
                                     sunspotNumber: ssn, flux90Day: flux90)
+    }
+
+    /// Parse NOAA's 3-hour planetary Kp product for the newest fractional Kp and
+    /// its running A index. NOAA serves this in two shapes over time, so handle
+    /// both:
+    ///   • array of objects: [{"time_tag":…,"Kp":0.33,"a_running":2,…}, …]
+    ///   • array of arrays with a header row:
+    ///       [["time_tag","Kp","a_running","station_count"], ["…","0.33","2","6"], …]
+    static func parsePlanetaryKp(_ data: Data) -> (kp: Double?, aRunning: Double?) {
+        guard let top = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return (nil, nil) }
+
+        // Shape 1: array of dictionaries (current SWPC format).
+        let dicts: [[String: Any]] = top.compactMap { $0 as? [String: Any] }
+        if dicts.count == top.count && !dicts.isEmpty {
+            func kpOf(_ d: [String: Any]) -> Double? {
+                numeric(d["Kp"] ?? d["kp"] ?? d["kp_index"] ?? d["estimated_kp"])
+            }
+            let valid = dicts.filter { kpOf($0) != nil }
+            guard let newest = valid.max(by: {
+                String(describing: $0["time_tag"] ?? "") < String(describing: $1["time_tag"] ?? "")
+            }) else { return (nil, nil) }
+            let a = numeric(newest["a_running"] ?? newest["a"])
+            return (kpOf(newest), a.flatMap { $0 >= 0 ? $0 : nil })
+        }
+
+        // Shape 2: array of arrays with a leading header row.
+        // Cast the outer array then map each row: a direct `as? [[Any]]` deep-cast
+        // of the bridged NSArray fails at runtime even for valid nested arrays.
+        let rows: [[Any]] = top.compactMap { $0 as? [Any] }
+        guard rows.count > 1 else { return (nil, nil) }
+        // Locate columns from the header so we tolerate reordering.
+        let header = rows[0].map { String(describing: $0).lowercased() }
+        let kpCol = header.firstIndex(where: { $0 == "kp" }) ?? 1
+        let aCol = header.firstIndex(where: { $0.contains("a_running") || $0 == "a" }) ?? 2
+        let timeCol = header.firstIndex(where: { $0.contains("time") }) ?? 0
+        let body = rows.dropFirst().filter { row in
+            row.count > max(kpCol, timeCol) && numeric(row[kpCol]) != nil
+        }
+        guard let newest = body.max(by: {
+            String(describing: $0[timeCol]) < String(describing: $1[timeCol])
+        }) else { return (nil, nil) }
+        let kp = numeric(newest[kpCol])
+        let a = newest.count > aCol ? numeric(newest[aCol]) : nil
+        return (kp, a.flatMap { $0 >= 0 ? $0 : nil })
     }
 
     /// Parse NOAA SWPC's Daily Geomagnetic Data product. The file contains
@@ -2161,6 +2277,8 @@ enum DXDopplerEngine {
         offsetHz: Int64,
         mode: DXDopplerMode,
         anchor: DXDopplerAnchor,
+        calDlHz: Int64 = 0,
+        calUlHz: Int64 = 0,
         step: TimeInterval = 30
     ) throws -> [DXDopplerRow] {
         var rows: [DXDopplerRow] = []
@@ -2168,7 +2286,8 @@ enum DXDopplerEngine {
         let safeStep = max(5, step)
         while t <= window.end.addingTimeInterval(0.5), rows.count < 100_000 {
             let d = try dials(at: t, reference: window.start, satellite: satellite, home: home, dx: dx,
-                              transponder: transponder, offsetHz: offsetHz, mode: mode, anchor: anchor)
+                              transponder: transponder, offsetHz: offsetHz, mode: mode, anchor: anchor,
+                              calDlHz: calDlHz, calUlHz: calUlHz)
             rows.append(.init(date: t, myRX: d.0, myTX: d.1, dxRX: d.2, dxTX: d.3))
             t = t.addingTimeInterval(safeStep)
         }
@@ -2248,14 +2367,16 @@ enum DXDopplerEngine {
         transponder: TransponderRecord,
         offsetHz: Int64,
         mode: DXDopplerMode,
-        anchor: DXDopplerAnchor
+        anchor: DXDopplerAnchor,
+        calDlHz: Int64 = 0,
+        calUlHz: Int64 = 0
     ) throws -> (Int64, Int64, Int64, Int64) {
         let nominal = OrbitPredictor.passbandFrequencies(transponder, offsetHz: offsetHz)
         let homeLook = try OrbitPredictor.look(satellite, observer: home, at: date)
         let dxLook = try OrbitPredictor.look(satellite, observer: dx, at: date)
         if mode == .trueRule {
-            let me = OrbitPredictor.dopplerFrequencies(downlinkHz: nominal.downlink, uplinkHz: nominal.uplink, rangeRateKmS: homeLook.rangeRateKmS)
-            let them = OrbitPredictor.dopplerFrequencies(downlinkHz: nominal.downlink, uplinkHz: nominal.uplink, rangeRateKmS: dxLook.rangeRateKmS)
+            let me = OrbitPredictor.dopplerFrequencies(downlinkHz: nominal.downlink, uplinkHz: nominal.uplink, rangeRateKmS: homeLook.rangeRateKmS, downlinkCalibrationHz: Double(calDlHz), uplinkCalibrationHz: Double(calUlHz))
+            let them = OrbitPredictor.dopplerFrequencies(downlinkHz: nominal.downlink, uplinkHz: nominal.uplink, rangeRateKmS: dxLook.rangeRateKmS, downlinkCalibrationHz: Double(calDlHz), uplinkCalibrationHz: Double(calUlHz))
             return (me.rx, me.tx, them.rx, them.tx)
         }
 
@@ -2282,8 +2403,8 @@ enum DXDopplerEngine {
         }
         func stationDials(_ look: LiveLook) -> (Int64, Int64) {
             let b = look.rangeRateKmS * 1000 / OrbitPredictor.speedOfLightMS
-            let rx = Int64((dlSat * (1 - b)).rounded())
-            let tx = ulSat > 0 ? Int64((ulSat / (1 - b)).rounded()) : 0
+            let rx = Int64((dlSat * (1 - b) + Double(calDlHz)).rounded())
+            let tx = ulSat > 0 ? Int64((ulSat / (1 - b) + Double(calUlHz)).rounded()) : 0
             return (rx, tx)
         }
         let me = stationDials(homeLook), them = stationDials(dxLook)
@@ -2415,7 +2536,8 @@ enum MUFEngine {
         let y2 = 0.409 * cos(y1)
         ft = min(halfPiC, 2.5 * dist / k6)
         ft = sin(ft)
-        let m9 = 1 + 2.5 * ft * sqrt(max(0, ft))
+        // ft = sin(θ), θ ∈ [0, π/2], so ft ≥ 0 here — no clamp (matches MINIMUF-3.5).
+        let m9 = 1 + 2.5 * ft * sqrt(ft)
         var j9 = 100.0
         var step = abs(0.9999 - 1.0 / k6)
         if step <= 0 { step = 1 }

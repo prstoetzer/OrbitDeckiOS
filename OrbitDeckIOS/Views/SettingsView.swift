@@ -5,6 +5,8 @@ struct SettingsView: View {
     @StateObject private var locationProvider = LocationProvider()
     @State private var qrzPassword = ""
     @State private var qrzLoaded = false
+    @State private var gridEntry = ""
+    @State private var gridMessage: String?
     @AppStorage("orbitdeck.spacetrack.identity") private var spaceTrackIdentity = ""
     @State private var spaceTrackPassword = ""
     @State private var spaceTrackLoaded = false
@@ -12,11 +14,22 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
+                Picker("Location source", selection: Binding(
+                    get: { store.locationMode },
+                    set: { store.setLocationMode($0) }
+                )) {
+                    Text("Fixed site").tag(LocationMode.fixed)
+                    Text("Always use current location").tag(LocationMode.currentLocation)
+                }
+
+                let following = store.locationMode == .currentLocation
+
                 TextField("Name", text: Binding(
                     get: { store.preferences.observer.name },
                     set: { store.preferences.observer.name = $0 }
                 ))
                 .textFieldStyle(.odField)
+                .disabled(following)
 
                 HStack {
                     TextField("Latitude", value: Binding(
@@ -27,6 +40,7 @@ struct SettingsView: View {
                     .textFieldStyle(.odField)
                     Text("°").foregroundStyle(ODTheme.muted)
                 }
+                .disabled(following)
 
                 HStack {
                     TextField("Longitude", value: Binding(
@@ -37,6 +51,7 @@ struct SettingsView: View {
                     .textFieldStyle(.odField)
                     Text("°").foregroundStyle(ODTheme.muted)
                 }
+                .disabled(following)
 
                 HStack {
                     TextField("Altitude", value: Binding(
@@ -47,11 +62,35 @@ struct SettingsView: View {
                     .textFieldStyle(.odField)
                     Text("m").foregroundStyle(ODTheme.muted)
                 }
+                .disabled(following)
 
-                Button {
-                    locationProvider.requestLocation()
-                } label: {
-                    Label("Use Current Location", systemImage: "location")
+                // Enter a station as a Maidenhead grid square (4/6/8 characters).
+                HStack {
+                    TextField("Grid square (e.g. FM18lv)", text: $gridEntry)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .textFieldStyle(.odField)
+                    Button("Set") { applyGrid() }
+                        .buttonStyle(.bordered)
+                        .disabled(gridEntry.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .disabled(following)
+
+                LabeledContent("Station grid", value: store.operatorGrid6)
+                if let gridMessage {
+                    Text(gridMessage).font(.caption).foregroundStyle(ODTheme.muted)
+                }
+
+                if following {
+                    Label("Following device location. Coordinates update automatically.",
+                          systemImage: "location.fill")
+                        .font(.caption).foregroundStyle(ODTheme.accent)
+                } else {
+                    Button {
+                        locationProvider.requestLocation()
+                    } label: {
+                        Label("Use Current Location", systemImage: "location")
+                    }
                 }
 
                 if let error = locationProvider.errorMessage {
@@ -184,14 +223,6 @@ struct SettingsView: View {
                         .foregroundStyle(store.lastError == nil ? ODTheme.muted : ODTheme.warning)
                 }
             }
-
-            Section("About this port") {
-                LabeledContent("OrbitDeck iOS", value: "0.9.7")
-                LabeledContent("UI", value: "Native SwiftUI")
-                LabeledContent("Propagation", value: "SatelliteKit SGP4/SDP4")
-                Text("Preferences and the GP cache are stored in the iOS application sandbox. Settings are saved as you change them.")
-                    .font(.caption).foregroundStyle(ODTheme.muted)
-            }
         }
         .task {
             if !qrzLoaded {
@@ -217,10 +248,76 @@ struct SettingsView: View {
         }
     }
 
+    private func applyGrid() {
+        let entry = gridEntry.trimmingCharacters(in: .whitespaces)
+        guard let ll = FeatureEngine.gridToLatLon(entry) else {
+            gridMessage = "Enter a valid Maidenhead grid (e.g. FM18 or FM18lv)."
+            return
+        }
+        store.preferences.observer.latitude = ll.latitude
+        store.preferences.observer.longitude = ll.longitude
+        gridMessage = "Station set to \(FeatureEngine.latLonToGrid6(latitude: ll.latitude, longitude: ll.longitude))."
+        gridEntry = ""
+    }
+
     private static func normalizedLongitude(_ value: Double) -> Double {
         var lon = value.truncatingRemainder(dividingBy: 360)
         if lon > 180 { lon -= 360 }
         if lon < -180 { lon += 360 }
         return lon
+    }
+}
+
+/// About screen: credits and a request to support AMSAT, mirroring the
+/// OrbitDeck desktop's About panel (Paul Stoetzer, N8HM).
+struct AboutView: View {
+    private let amsatURL = URL(string: "https://www.amsat.org")!
+    private let projectURL = URL(string: "https://orbitdeckios.n8hm.radio")!
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("OrbitDeck").font(.title2.bold())
+                    Text("Version 0.9.7 · iOS").font(.caption).foregroundStyle(ODTheme.muted)
+                    Text("A native tracker and orbital-analysis tool for amateur radio satellites.")
+                        .font(.subheadline).padding(.top, 2)
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("Author") {
+                LabeledContent("Author", value: "Paul Stoetzer, N8HM")
+            }
+
+            Section("Project") {
+                Link(destination: projectURL) {
+                    Label("orbitdeckios.n8hm.radio", systemImage: "link")
+                }
+                Text("Features, documentation, and privacy policy.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
+            Section("Support AMSAT") {
+                Text("If you find OrbitDeck useful, please consider joining and/or donating to AMSAT — the Radio Amateur Satellite Corporation. AMSAT is a volunteer, member-supported non-profit that designs, builds, and helps launch the amateur radio satellites this program is built to track, and works to keep amateur radio in space. Your membership and donations directly fund the next generation of satellites.")
+                    .font(.callout)
+                Link(destination: amsatURL) {
+                    Label("www.amsat.org", systemImage: "antenna.radiowaves.left.and.right")
+                }
+            }
+
+            Section("This port") {
+                LabeledContent("OrbitDeck iOS", value: "0.9.7")
+                LabeledContent("UI", value: "Native SwiftUI")
+                LabeledContent("Propagation", value: "SatelliteKit SGP4/SDP4")
+                Text("Preferences and the GP cache are stored in the iOS application sandbox. Settings are saved as you change them.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
+            Section {
+                Text("MIT License · Copyright © 2026 Paul Stoetzer, N8HM")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+        }
     }
 }

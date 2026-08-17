@@ -24,6 +24,36 @@ final class OrbitStore: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private let prefsKey = "OrbitDeckIOS.preferences.v1"
+    /// CelesTrak asks clients not to re-request the same data more than once every
+    /// two hours (their GP updates no faster than that); exceeding it risks an IP
+    /// ban. Timestamps are per-dataset and persisted so the limit is honoured
+    /// across app launches. Keys: "gp" (chosen group) and "newlaunch" (last-30-days).
+    static let celestrakMinInterval: TimeInterval = 2 * 3600
+
+    private func celestrakLastFetch(_ key: String) -> Date? {
+        let t = defaults.double(forKey: "OrbitDeckIOS.celestrak.\(key)")
+        return t > 0 ? Date(timeIntervalSince1970: t) : nil
+    }
+    func recordCelestrakFetch(_ key: String) {
+        defaults.set(Date().timeIntervalSince1970, forKey: "OrbitDeckIOS.celestrak.\(key)")
+    }
+    /// True when enough time has elapsed to politely query the given CelesTrak dataset.
+    func celestrakAllowed(_ key: String = "gp") -> Bool {
+        guard let last = celestrakLastFetch(key) else { return true }
+        return Date().timeIntervalSince(last) >= Self.celestrakMinInterval
+    }
+    /// Whole minutes until the next request for the given dataset is allowed.
+    func celestrakCooldownMinutes(_ key: String = "gp") -> Int {
+        guard let last = celestrakLastFetch(key) else { return 0 }
+        return max(0, Int(ceil((Self.celestrakMinInterval - Date().timeIntervalSince(last)) / 60)))
+    }
+
+    /// GP and the SatNOGS transmitter DB are refreshed on at least a weekly cadence.
+    static let weeklyRefreshInterval: TimeInterval = 7 * 86400
+    private var lastTransponderRefresh: Date? {
+        get { let t = defaults.double(forKey: "OrbitDeckIOS.transponders.lastFetch"); return t > 0 ? Date(timeIntervalSince1970: t) : nil }
+        set { defaults.set(newValue?.timeIntervalSince1970 ?? 0, forKey: "OrbitDeckIOS.transponders.lastFetch") }
+    }
 
     var selectedSatellite: SatelliteRecord? {
         guard let id = preferences.selectedNorad else { return satellites.first }
@@ -61,6 +91,24 @@ final class OrbitStore: ObservableObject {
         if satellites.isEmpty || (catalogAgeDays ?? .infinity) > 1.0 {
             await refreshGP()
         }
+        await refreshAllTranspondersIfNeeded()
+        await refreshSpaceWeatherIfNeeded()
+    }
+
+    /// Auto-refresh the catalogs on at least a weekly cadence: GP when the loaded
+    /// elements are more than a day old (also covering the weekly floor), and the
+    /// SatNOGS transmitter database once per week.
+    func refreshCatalogsIfNeeded() async {
+        if satellites.isEmpty || (catalogAgeDays ?? .infinity) > 1.0 { await refreshGP() }
+        await refreshAllTranspondersIfNeeded()
+    }
+
+    /// Refresh the SatNOGS transmitter DB if it has never been cached or is more
+    /// than a week old.
+    func refreshAllTranspondersIfNeeded() async {
+        if !allTransponders.isEmpty, let last = lastTransponderRefresh,
+           Date().timeIntervalSince(last) < Self.weeklyRefreshInterval { return }
+        await refreshAllTransponders()
     }
 
     func select(_ norad: UInt) {
@@ -89,14 +137,30 @@ final class OrbitStore: ObservableObject {
         statusMessage = "Updating GP data…"
         defer { isRefreshingGP = false }
 
+        let usingCelestrak = preferences.sourceKind == .celestrak
+        let extraIDs = (preferences.extraSatellites ?? []).map(\.norad)
+        // fetchExtraNorads always queries CelesTrak (individual CATNR lookups).
+        let allowedAtStart = celestrakAllowed("gp")
+
+        // Honour CelesTrak's ≤1-request-per-2-hours policy when it is the source.
+        if usingCelestrak && !allowedAtStart && !satellites.isEmpty {
+            statusMessage = "Using cached elements — CelesTrak permits one update every 2 hours (try again in ~\(celestrakCooldownMinutes("gp")) min)."
+            return
+        }
+
         do {
             let result = try await GPService.fetch(preferences: preferences)
-            let extraIDs = (preferences.extraSatellites ?? []).map(\.norad)
-            let refreshedExtras = await GPService.fetchExtraNorads(extraIDs)
-            if !refreshedExtras.isEmpty {
-                var byID = Dictionary(uniqueKeysWithValues: (preferences.extraSatellites ?? []).map { ($0.norad, $0) })
-                for record in refreshedExtras { byID[record.id] = ManualSatelliteDefinition(record: record) }
-                preferences.extraSatellites = byID.values.sorted { $0.norad < $1.norad }
+            if usingCelestrak { recordCelestrakFetch("gp") }
+
+            var refreshedExtras: [SatelliteRecord] = []
+            if !extraIDs.isEmpty && allowedAtStart {
+                refreshedExtras = await GPService.fetchExtraNorads(extraIDs)
+                recordCelestrakFetch("gp")
+                if !refreshedExtras.isEmpty {
+                    var byID = Dictionary(uniqueKeysWithValues: (preferences.extraSatellites ?? []).map { ($0.norad, $0) })
+                    for record in refreshedExtras { byID[record.id] = ManualSatelliteDefinition(record: record) }
+                    preferences.extraSatellites = byID.values.sorted { $0.norad < $1.norad }
+                }
             }
             let downloaded = result.records + refreshedExtras
             satellites = mergeLocalCatalog(mergeTransponders(old: satellites, new: downloaded))
@@ -106,7 +170,14 @@ final class OrbitStore: ObservableObject {
             normalizeSelection()
             statusMessage = "GP updated: \(satellites.count) objects"
         } catch {
-            lastError = error.localizedDescription
+            // A CelesTrak 403/429 means we're being rate-limited; back off a full
+            // window so we never escalate toward an IP ban.
+            if usingCelestrak, case GPServiceError.badResponse(let code) = error, code == 403 || code == 429 {
+                recordCelestrakFetch("gp")
+                lastError = "CelesTrak rate limit reached (HTTP \(code)). OrbitDeck will wait 2 hours before querying again to avoid an IP ban; cached elements remain in use."
+            } else {
+                lastError = error.localizedDescription
+            }
             statusMessage = "GP update failed"
         }
     }
@@ -129,6 +200,7 @@ final class OrbitStore: ObservableObject {
                 try? data.write(to: Self.transpondersCacheURL, options: [.atomic])
             }
             satellites = satellites.map { applyManualTransponders(to: $0) }
+            lastTransponderRefresh = .now
             statusMessage = "Cached transmitters for \(byString.count) satellites"
         } catch {
             lastError = error.localizedDescription
@@ -170,6 +242,20 @@ final class OrbitStore: ObservableObject {
     }
 
 
+    /// Refresh space weather only when it is missing or older than `maxAge`
+    /// (NOAA's planetary Kp updates every ~3 hours; an hourly ceiling keeps the
+    /// indices current without hammering the feeds). Call freely on screen entry
+    /// and on app foregrounding.
+    func refreshSpaceWeatherIfNeeded(maxAge: TimeInterval = 3600) async {
+        // A fresh-enough snapshot short-circuits — but only if it actually carries
+        // the geomagnetic indices. A cached snapshot missing Kp/A (e.g. saved
+        // before a feed-format fix) must not block a corrective refresh.
+        if let snap = spaceWeather,
+           Date().timeIntervalSince(snap.fetchedAt) < maxAge,
+           snap.kp != nil, snap.aIndex != nil { return }
+        await refreshSpaceWeather()
+    }
+
     func refreshSpaceWeather() async {
         do {
             let snapshot = try await SpaceWeatherService.fetch()
@@ -206,6 +292,11 @@ final class OrbitStore: ObservableObject {
     }
 
     func makePrimarySite(_ site: ObserverSite) {
+        // Choosing an explicit site is a request for a fixed station. Stop following
+        // the device first, otherwise the next GPS fix would immediately overwrite
+        // the chosen site (and leave it renamed "Current location").
+        preferences.locationMode = .fixed
+        preferences.savedFixedSite = nil
         preferences.observer = site
     }
 
@@ -313,6 +404,54 @@ final class OrbitStore: ObservableObject {
                                     longitude: preferences.observer.longitude)
     }
 
+    /// Six-character station locator for display.
+    var operatorGrid6: String {
+        FeatureEngine.latLonToGrid6(latitude: preferences.observer.latitude,
+                                    longitude: preferences.observer.longitude)
+    }
+
+    /// Every 4-character VUCC grid the station may currently claim (more than one
+    /// when sitting on a grid line or corner).
+    var operatorVuccGrids: [String] {
+        FeatureEngine.vuccGrids(latitude: preferences.observer.latitude,
+                                longitude: preferences.observer.longitude)
+    }
+
+    var locationMode: LocationMode { preferences.locationMode ?? .fixed }
+
+    /// The name used for the observer while following the device.
+    static let currentLocationName = "Current location"
+
+    /// Switch between a fixed primary site and following the device. Preserves the
+    /// operator's fixed site across the round trip: entering "current location"
+    /// stashes the fixed site and renames the active observer; returning restores
+    /// it. Coordinates are then filled in by `applyCurrentLocation` from a fix.
+    func setLocationMode(_ mode: LocationMode) {
+        guard mode != locationMode else { return }
+        switch mode {
+        case .currentLocation:
+            preferences.savedFixedSite = preferences.observer
+            preferences.observer.name = Self.currentLocationName
+            preferences.locationMode = .currentLocation
+        case .fixed:
+            if let fixed = preferences.savedFixedSite { preferences.observer = fixed }
+            preferences.savedFixedSite = nil
+            preferences.locationMode = .fixed
+        }
+    }
+
+    /// Update the observer from a live device fix while in current-location mode.
+    /// Keeps the "Current location" name so it never masquerades as the fixed site.
+    func applyCurrentLocation(latitude: Double, longitude: Double, altitudeMeters: Double) {
+        preferences.observer.name = Self.currentLocationName
+        preferences.observer.latitude = max(-90, min(90, latitude))
+        var lon = longitude.truncatingRemainder(dividingBy: 360)
+        if lon > 180 { lon -= 360 }
+        if lon < -180 { lon += 360 }
+        preferences.observer.longitude = lon
+        if altitudeMeters.isFinite { preferences.observer.altitudeMeters = altitudeMeters }
+    }
+
     func clearError() {
         lastError = nil
     }
@@ -366,7 +505,11 @@ final class OrbitStore: ObservableObject {
         var byID: [String: TransponderRecord] = [:]
         for item in first { byID[item.id] = item }
         for item in second { byID[item.id] = item }
-        return byID.values.sorted { $0.description.localizedCaseInsensitiveCompare($1.description) == .orderedAscending }
+        return byID.values.sorted {
+            // Two-way transponders (uplink + downlink) come first, then alphabetical.
+            if $0.isTwoWay != $1.isTwoWay { return $0.isTwoWay }
+            return $0.description.localizedCaseInsensitiveCompare($1.description) == .orderedAscending
+        }
     }
 
     private func loadPreferences() {

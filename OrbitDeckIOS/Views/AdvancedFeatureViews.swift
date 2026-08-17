@@ -7,6 +7,9 @@ private struct OscarGeoPoint: Identifiable, Sendable {
     let id = UUID()
     let latitude: Double
     let longitude: Double
+    // Minutes elapsed since the ascending equator crossing for this track point
+    // (NaN for coastlines/footprint circles, which carry no time).
+    var minutesSinceNode: Double = .nan
 }
 
 private struct OscarLabSnapshot: Sendable {
@@ -323,6 +326,7 @@ struct OscarLocatorView: View {
                 }
             }
             drawGeoPath(track, mode: mode, center: center, radius: radius, context: &context, color: ODTheme.accent, width: 2.2)
+            drawMinuteTicks(track, mode: mode, center: center, radius: radius, context: &context)
 
             if showRange, let sat = activeSatellite {
                 let angular = footprintAngle(altitudeKm: max(1, sat.semiMajorAxisKm - OrbitPredictor.earthRadiusKm))
@@ -492,15 +496,30 @@ struct OscarLocatorView: View {
             let date = displayDate
             let gt = try OrbitPredictor.groundTrack(sat, centeredAt: date, durationMinutes: max(1, sat.periodMinutes), step: 45)
             var current = try OrbitPredictor.look(sat, observer: store.preferences.observer, at: date)
+            // Number minutes from the node the visible hemisphere shows: the
+            // ascending node for northern/QTH-north views, the descending node for
+            // southern views. Wrap into [0, period) so the whole visible track —
+            // including the pre-node arc across the equator — is tick-marked.
+            let projForNodes: OscarProjection = projection == .automatic
+                ? (current.subLatitude < 0 ? .south : .north) : projection
+            let southern = projForNodes == .south
+                || (projForNodes == .qth && store.preferences.observer.latitude < 0)
+            let nodeT = nodeTime(gt, ascending: !southern)
+            let periodMin = max(1, sat.periodMinutes)
+            func minutes(_ t: Date) -> Double {
+                guard let nodeT else { return .nan }
+                let raw = t.timeIntervalSince(nodeT) / 60
+                return (raw.truncatingRemainder(dividingBy: periodMin) + periodMin).truncatingRemainder(dividingBy: periodMin)
+            }
             if drive == .live {
-                track = gt.map { OscarGeoPoint(latitude: $0.1, longitude: $0.2) }
+                track = gt.map { OscarGeoPoint(latitude: $0.1, longitude: $0.2, minutesSinceNode: minutes($0.0)) }
             } else {
                 // Rotate the propagated orbit east/west so its selected equator
                 // crossing sits at the operator-controlled EQX longitude. This
                 // is the digital equivalent of rotating the OSCARLOCATOR overlay.
                 let trueNode = try OrbitPredictor.subpoint(sat, at: nodeDate)
                 let delta = wrappedLongitude(nodeLongitude - trueNode.longitude)
-                track = gt.map { OscarGeoPoint(latitude: $0.1, longitude: wrappedLongitude($0.2 + delta)) }
+                track = gt.map { OscarGeoPoint(latitude: $0.1, longitude: wrappedLongitude($0.2 + delta), minutesSinceNode: minutes($0.0)) }
                 current.subLongitude = wrappedLongitude(current.subLongitude + delta)
                 let topo = topocentric(latitude: current.subLatitude,
                                        longitude: current.subLongitude,
@@ -613,6 +632,56 @@ struct OscarLocatorView: View {
             var lon = lon2 * 180 / .pi
             while lon > 180 { lon -= 360 }; while lon < -180 { lon += 360 }
             return OscarGeoPoint(latitude: lat2 * 180 / .pi, longitude: lon)
+        }
+    }
+
+    /// The time of an equator crossing within a ground-track sample series,
+    /// interpolated between samples. `ascending` selects the south→north (node)
+    /// or north→south (descending node) crossing.
+    private func nodeTime(_ gt: [(Date, Double, Double, Double)], ascending: Bool) -> Date? {
+        guard gt.count > 1 else { return nil }
+        for i in 1..<gt.count {
+            let (t0, lat0, _, _) = gt[i - 1]
+            let (t1, lat1, _, _) = gt[i]
+            let crossed = ascending ? (lat0 < 0 && lat1 >= 0) : (lat0 > 0 && lat1 <= 0)
+            if crossed {
+                let frac = lat1 == lat0 ? 0.5 : (0 - lat0) / (lat1 - lat0)
+                return t0.addingTimeInterval(t1.timeIntervalSince(t0) * frac)
+            }
+        }
+        return nil
+    }
+
+    /// Classic OSCARLOCATOR minute marks: a small tick across the ground track at
+    /// each whole minute after the ascending equator crossing, numbered every 5.
+    private func drawMinuteTicks(_ points: [OscarGeoPoint], mode: OscarProjection, center: CGPoint, radius: Double, context: inout GraphicsContext) {
+        var lastMinute = Int.min
+        for i in points.indices {
+            let m = points[i].minutesSinceNode
+            guard m.isFinite, m >= -0.001 else { continue }
+            let minute = Int(m.rounded())
+            guard minute != lastMinute else { continue }
+            // Only mark a minute once, at the sample closest to that whole minute.
+            guard abs(m - Double(minute)) <= 0.4 else { continue }
+            lastMinute = minute
+            guard let p = projected(latitude: points[i].latitude, longitude: points[i].longitude, mode: mode, center: center, radius: radius) else { continue }
+            let neighbor = i + 1 < points.count ? points[i + 1] : points[max(0, i - 1)]
+            guard let q = projected(latitude: neighbor.latitude, longitude: neighbor.longitude, mode: mode, center: center, radius: radius) else { continue }
+            var dx = q.x - p.x, dy = q.y - p.y
+            let len = hypot(dx, dy)
+            guard len > 0.001 else { continue }
+            dx /= len; dy /= len
+            let nx = -dy, ny = dx                      // unit normal to the track
+            let major = minute % 5 == 0
+            let half = major ? 6.0 : 3.0
+            var tick = Path()
+            tick.move(to: CGPoint(x: p.x - nx * half, y: p.y - ny * half))
+            tick.addLine(to: CGPoint(x: p.x + nx * half, y: p.y + ny * half))
+            context.stroke(tick, with: .color(ODTheme.accent), lineWidth: major ? 1.6 : 0.9)
+            if major {
+                context.draw(Text("\(minute)").font(.system(size: 7, design: .monospaced)).foregroundStyle(ODTheme.accent),
+                             at: CGPoint(x: p.x + nx * (half + 7), y: p.y + ny * (half + 7)))
+            }
         }
     }
 
@@ -1195,5 +1264,103 @@ struct ManualTransponderManager: View {
         let tx = TransponderRecord(id: "manual-\(satellite.id)-\(UUID().uuidString)", description: description, downlinkLow: dl, downlinkHigh: dlhi, uplinkLow: ul, uplinkHigh: ulhi, mode: mode, invert: invert, type: "Manual", baud: 0, service: "Amateur")
         store.addManualTransponder(tx, to: satellite.id)
         description = ""; downlink = ""; downlinkHigh = ""; uplink = ""; uplinkHigh = ""; error = ""
+    }
+}
+
+// MARK: - OSCARLOCATOR Reference Orbits
+
+/// Lists the first equator crossing of each UTC day for the loaded satellite —
+/// the time and longitude to set on a physical OSCARLOCATOR. Northern-hemisphere
+/// stations use the ascending node; southern-hemisphere stations the descending.
+struct OscarReferenceOrbitsView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @State private var rows: [ReferenceOrbitEntry] = []
+    @State private var days = 30
+    @State private var loading = false
+    @State private var shareURL: URL?
+
+    private static let dayFmt: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyy-MM-dd EEE"; return f
+    }()
+    private static let timeFmt: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "HH:mm:ss"; return f
+    }()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SelectedSatelliteHeader()
+            if let satellite = store.selectedSatellite {
+                content(satellite)
+            } else {
+                Spacer()
+                ContentUnavailableView("No satellite selected", systemImage: "calendar.badge.clock",
+                    description: Text("Load or select a satellite to list its daily reference orbits."))
+                Spacer()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func content(_ satellite: SatelliteRecord) -> some View {
+        let node = store.preferences.observer.latitude < 0 ? "descending" : "ascending"
+        Form {
+            Section {
+                Text("The first equator crossing of each UTC day for the loaded satellite: the time and longitude to set on a real OSCARLOCATOR. Northern-hemisphere stations use the ascending node; southern-hemisphere stations use the descending node.")
+                    .font(.callout)
+                Picker("Days", selection: $days) { Text("30").tag(30); Text("60").tag(60) }
+                    .pickerStyle(.segmented)
+            }
+            Section("First \(node) crossing per UTC day") {
+                if loading {
+                    HStack { Spacer(); ProgressView(); Spacer() }
+                } else if satellite.periodMinutes > 600 {
+                    Text("This satellite is geosynchronous / high-altitude and has no useful daily equator-crossing reference orbit.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                } else if rows.isEmpty {
+                    Text("No crossings found.").foregroundStyle(ODTheme.muted)
+                } else {
+                    ForEach(rows) { row in
+                        HStack(spacing: 10) {
+                            Text(Self.dayFmt.string(from: row.date)).font(.caption.monospaced())
+                            Spacer()
+                            Text(row.crossing.map { Self.timeFmt.string(from: $0) } ?? "—")
+                                .font(.caption.monospaced()).foregroundStyle(ODTheme.good)
+                            Text(row.longitude.map { String(format: "%.1f°%@", abs($0), $0 >= 0 ? "E" : "W") } ?? "—")
+                                .font(.caption.monospaced()).foregroundStyle(ODTheme.accent)
+                                .frame(width: 66, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+            Section {
+                Button("Prepare printable PDF") { preparePDF(satellite) }
+                if let shareURL {
+                    ShareLink(item: shareURL) { Label("Share Reference Orbits PDF", systemImage: "square.and.arrow.up") }
+                }
+            }
+        }
+        .task { await load(satellite) }
+        .onChange(of: days) { _, _ in Task { await load(satellite) } }
+        .onChange(of: store.preferences.selectedNorad) { _, _ in Task { await load(satellite) } }
+        .onChange(of: store.preferences.observer.latitude) { _, _ in Task { await load(satellite) } }
+    }
+
+    @MainActor
+    private func load(_ satellite: SatelliteRecord) async {
+        loading = rows.isEmpty
+        shareURL = nil
+        let observer = store.preferences.observer, d = days
+        rows = (try? await Task.detached(priority: .userInitiated) {
+            (try? OrbitExportService.referenceOrbitRows(satellite: satellite, observer: observer, days: d, start: Date())) ?? []
+        }.value) ?? []
+        loading = false
+    }
+
+    private func preparePDF(_ satellite: SatelliteRecord) {
+        let data = OrbitExportService.referenceOrbitsPDF(satellites: [satellite], observer: store.preferences.observer, days: days)
+        let base = satellite.name.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "/", with: "-")
+        shareURL = try? OrbitExportService.temporaryFile(name: "reference_orbits_\(base).pdf", data: data)
     }
 }

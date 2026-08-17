@@ -35,6 +35,12 @@ struct TransponderRecord: Identifiable, Codable, Equatable, Sendable {
     }
     var bandwidth: Int64 { isLinear ? downlinkHigh - downlinkLow : 0 }
 
+    // A two-way transponder has both an uplink and a downlink passband (a linear
+    // transponder or an FM repeater) — the kind you actually work through.
+    // Beacons and telemetry are downlink-only, so they are one-way. Two-way
+    // transponders are listed first.
+    var isTwoWay: Bool { uplinkLow > 0 && downlinkLow > 0 }
+
     var downlinkCenter: Int64 {
         downlinkHigh > downlinkLow ? (downlinkLow + downlinkHigh) / 2 : downlinkLow
     }
@@ -172,6 +178,21 @@ struct StorePreferences: Codable, Sendable {
     var manualTransponders: [String: [TransponderRecord]]?
     var passAlarmLeadMinutes: Int?
     var labOrbit: LabOrbitDefinition?
+    // Whether observer-relative screens use the fixed primary site or continuously
+    // follow the device's current location. Optional preserves decoding of older
+    // preference blobs; nil is treated as .fixed.
+    var locationMode: LocationMode?
+    // While following the device, `observer` holds the live "Current location"
+    // site; the operator's real fixed primary site is preserved here so switching
+    // back to Fixed restores it intact.
+    var savedFixedSite: ObserverSite?
+}
+
+/// How OrbitDeck resolves the observer station.
+enum LocationMode: String, Codable, CaseIterable, Sendable, Identifiable {
+    case fixed            // use the entered primary site
+    case currentLocation  // always follow the device's current location
+    var id: String { rawValue }
 }
 
 

@@ -108,6 +108,9 @@ struct SatellitesView: View {
             modeContent
                 .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Name, NORAD, or designator")
                 .task(id: visibleScanKey) { if mode == .visible { await scanVisible() } }
+                // `.task(id:)` does not reliably re-fire when `mode` (local Picker
+                // state) changes, so scan explicitly when switching to "What's up".
+                .onChange(of: mode) { _, _ in if mode == .visible { Task { await scanVisible() } } }
         }
         .sheet(isPresented: $showingOnlineSearch) {
             CelesTrakSearchSheet()

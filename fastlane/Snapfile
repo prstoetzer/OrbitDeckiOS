@@ -1,0 +1,31 @@
+# fastlane snapshot configuration for OrbitDeck App Store screenshots.
+# Run with:  fastlane snapshot
+# Requires: fastlane's SnapshotHelper.swift added to the OrbitDeckUITests target,
+#           and `useFastlaneSnapshot = true` in OrbitDeckScreenshots.swift.
+
+# App Store required sizes: one 6.9"/6.7" iPhone set and one 13" iPad set.
+devices([
+  "iPhone 16 Pro Max",       # 6.9"  (1320 x 2868)
+  "iPad Pro 13-inch (M4)"    # 13"   (2064 x 2752)
+])
+
+languages([
+  "en-US"
+])
+
+# Only run the screenshot UI test.
+scheme("OrbitDeckIOS")
+only_testing(["OrbitDeckUITests/OrbitDeckScreenshots"])
+
+output_directory("./fastlane/screenshots")
+clear_previous_screenshots(true)
+
+# Status bar: clean time/battery/signal for App Store shots.
+override_status_bar(true)
+
+# Don't stop the whole run if one device hiccups.
+stop_after_first_error(false)
+
+# Reinstall for a clean state each run (comment out to keep seeded data).
+# reinstall_app(true)
+# app_identifier("com.prstoetzer.OrbitDeckIOS")

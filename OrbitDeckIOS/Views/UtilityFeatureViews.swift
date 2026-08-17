@@ -232,14 +232,189 @@ struct GlobeView: View {
 struct GraphCalcView: View {
     @State private var f1="sin(x)"
     @State private var f2=""
-    @State private var xmin="-6.283"
-    @State private var xmax="6.283"
+    @State private var xmin="-180"
+    @State private var xmax="180"
     @State private var ymin="-2"
     @State private var ymax="2"
     @State private var autoY=true
+    @State private var showTable=false
+    @State private var traceX: Double?
     private let engine=GraphCalculatorEngine()
-    var body:some View{ScrollView{VStack(spacing:12){HStack{Text("y =");TextField("sin(x)",text:$f1).textFieldStyle(.odField);Text("y =");TextField("optional second trace",text:$f2).textFieldStyle(.odField)};HStack{Text("x");TextField("min",text:$xmin).textFieldStyle(.odField);Text("to");TextField("max",text:$xmax).textFieldStyle(.odField);Toggle("Auto y",isOn:$autoY);if !autoY{TextField("y min",text:$ymin).textFieldStyle(.odField);TextField("y max",text:$ymax).textFieldStyle(.odField)}};graph.frame(minHeight:420).odPanel();Text("Safe evaluator only: arithmetic, x, pi/e, and whitelisted math functions such as sin, cos, tan, log, sqrt, exp, deg and rad. Undefined points break the trace.").font(.caption).foregroundStyle(ODTheme.muted)}.padding()}}
-    @ViewBuilder private var graph:some View{let lo=Double(xmin) ?? -6.283,hi=max(lo+0.001,Double(xmax) ?? 6.283);let a=engine.sample(f1,xmin:lo,xmax:hi),b=f2.trimmingCharacters(in:.whitespaces).isEmpty ? []:engine.sample(f2,xmin:lo,xmax:hi);Chart{ForEach(a){p in if let y=p.y{LineMark(x:.value("x",p.x),y:.value("y",y)).foregroundStyle(ODTheme.good)}};ForEach(b){p in if let y=p.y{LineMark(x:.value("x",p.x),y:.value("y2",y)).foregroundStyle(ODTheme.accent)}}}.chartXScale(domain:lo...hi).modifier(OptionalYDomain(enabled:!autoY,lo:Double(ymin) ?? -2,hi:Double(ymax) ?? 2)).padding()}
+    private var lo: Double { Double(xmin) ?? -180 }
+    private var hi: Double { max(lo + 0.001, Double(xmax) ?? 180) }
+    private var hasF2: Bool { !f2.trimmingCharacters(in: .whitespaces).isEmpty }
+    private func yAt(_ expr: String, _ x: Double) -> Double? {
+        guard !expr.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let y = try? SafeMathEvaluator().evaluate(expr, variables: ["x": x], degrees: true)
+        return y.flatMap { $0.isFinite ? $0 : nil }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                HStack { Text("y ="); TextField("sin(x)", text: $f1).textFieldStyle(.odField); Text("y ="); TextField("optional second trace", text: $f2).textFieldStyle(.odField) }
+                HStack {
+                    Text("x"); TextField("min", text: $xmin).textFieldStyle(.odField)
+                    Text("to"); TextField("max", text: $xmax).textFieldStyle(.odField)
+                    Toggle("Auto y", isOn: $autoY)
+                    if !autoY { TextField("y min", text: $ymin).textFieldStyle(.odField); TextField("y max", text: $ymax).textFieldStyle(.odField) }
+                }
+                HStack(spacing: 8) {
+                    Button { zoom(0.5) } label: { Image(systemName: "plus.magnifyingglass") }
+                    Button { zoom(1.6) } label: { Image(systemName: "minus.magnifyingglass") }
+                    Button { pan(-0.25) } label: { Image(systemName: "arrow.left") }
+                    Button { pan(0.25) } label: { Image(systemName: "arrow.right") }
+                    Button("Reset") { xmin = "-180"; xmax = "180"; autoY = true }
+                    Spacer()
+                }
+                .buttonStyle(.bordered).font(.caption)
+                HStack {
+                    Picker("View", selection: $showTable) { Text("Plot").tag(false); Text("Table").tag(true) }
+                        .pickerStyle(.segmented).frame(width: 150)
+                    Spacer()
+                    ShareLink(item: csvText()) { Label("CSV", systemImage: "square.and.arrow.up") }
+                        .buttonStyle(.bordered).font(.caption)
+                }
+                if showTable {
+                    tableView.odPanel()
+                } else {
+                    graph.frame(minHeight: 380).odPanel()
+                    if let tx = traceX {
+                        let y1 = yAt(f1, tx), y2 = yAt(f2, tx)
+                        HStack {
+                            Text(String(format: "x = %.4g", tx))
+                            if let y1 { Text(String(format: "· y₁ = %.5g", y1)).foregroundStyle(ODTheme.good) }
+                            if let y2 { Text(String(format: "· y₂ = %.5g", y2)).foregroundStyle(ODTheme.accent) }
+                            Spacer()
+                            Button("Clear trace") { traceX = nil }.font(.caption2)
+                        }
+                        .font(.caption.monospaced())
+                    }
+                    analysis
+                }
+                Text("Degrees mode. Drag on the plot to trace. Evaluator supports x, pi/e and the same functions as the scientific calculator (trig/inverse/hyperbolic, ln/log/log2/exp, sqrt/cbrt, RF/orbit helpers, metric prefixes). Undefined points break the trace.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+            .padding()
+        }
+    }
+
+    @ViewBuilder private var graph: some View {
+        let a = engine.sample(f1, xmin: lo, xmax: hi)
+        let b = f2.trimmingCharacters(in: .whitespaces).isEmpty ? [] : engine.sample(f2, xmin: lo, xmax: hi)
+        let roots = zeros(of: a)
+        Chart {
+            ForEach(a) { p in if let y = p.y { LineMark(x: .value("x", p.x), y: .value("y", y)).foregroundStyle(ODTheme.good) } }
+            ForEach(b) { p in if let y = p.y { LineMark(x: .value("x", p.x), y: .value("y2", y)).foregroundStyle(ODTheme.accent) } }
+            ForEach(Array(roots.enumerated()), id: \.offset) { _, rx in
+                RuleMark(x: .value("root", rx)).foregroundStyle(ODTheme.warning.opacity(0.5)).lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+            }
+            if let tx = traceX {
+                RuleMark(x: .value("trace", tx)).foregroundStyle(ODTheme.muted).lineStyle(StrokeStyle(lineWidth: 1))
+                if let y1 = yAt(f1, tx) { PointMark(x: .value("x", tx), y: .value("y", y1)).foregroundStyle(ODTheme.good) }
+                if let y2 = yAt(f2, tx) { PointMark(x: .value("x", tx), y: .value("y2", y2)).foregroundStyle(ODTheme.accent) }
+            }
+        }
+        .chartXScale(domain: lo...hi)
+        .modifier(OptionalYDomain(enabled: !autoY, lo: Double(ymin) ?? -2, hi: Double(ymax) ?? 2))
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                Rectangle().fill(Color.clear).contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                        let originX = geo[proxy.plotAreaFrame].origin.x
+                        if let x: Double = proxy.value(atX: value.location.x - originX) {
+                            traceX = min(hi, max(lo, x))
+                        }
+                    })
+            }
+        }
+        .padding()
+    }
+
+    @ViewBuilder private var tableView: some View {
+        let rows = tableRows()
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("x").frame(width: 90, alignment: .leading)
+                Text("y₁").frame(maxWidth: .infinity, alignment: .leading)
+                if hasF2 { Text("y₂").frame(maxWidth: .infinity, alignment: .leading) }
+            }.font(.caption.bold().monospaced())
+            Divider()
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+                HStack {
+                    Text(String(format: "%.4g", r.0)).frame(width: 90, alignment: .leading)
+                    Text(r.1.map { String(format: "%.5g", $0) } ?? "—").frame(maxWidth: .infinity, alignment: .leading)
+                    if hasF2 { Text(r.2.map { String(format: "%.5g", $0) } ?? "—").frame(maxWidth: .infinity, alignment: .leading) }
+                }.font(.caption.monospaced())
+            }
+        }
+        .padding()
+    }
+
+    /// ~24 evenly spaced rows across the window: (x, y1, y2?).
+    private func tableRows() -> [(Double, Double?, Double?)] {
+        let n = 24
+        return (0...n).map { i in
+            let x = lo + (hi - lo) * Double(i) / Double(n)
+            return (x, yAt(f1, x), hasF2 ? yAt(f2, x) : nil)
+        }
+    }
+
+    private func csvText() -> String {
+        var out = hasF2 ? "x,y1,y2\n" : "x,y1\n"
+        for r in tableRows() {
+            let y1 = r.1.map { String(format: "%.8g", $0) } ?? ""
+            if hasF2 {
+                let y2 = r.2.map { String(format: "%.8g", $0) } ?? ""
+                out += String(format: "%.8g,%@,%@\n", r.0, y1, y2)
+            } else {
+                out += String(format: "%.8g,%@\n", r.0, y1)
+            }
+        }
+        return out
+    }
+
+    @ViewBuilder private var analysis: some View {
+        let a = engine.sample(f1, xmin: lo, xmax: hi)
+        let roots = zeros(of: a)
+        let area = integral(of: a)
+        HStack {
+            Text(roots.isEmpty ? "No zeros of y₁ in view" : "Zeros of y₁: " + roots.prefix(6).map { String(format: "%.3g", $0) }.joined(separator: ", ") + (roots.count > 6 ? "…" : ""))
+            Spacer()
+            Text(String(format: "∫y₁ dx ≈ %.4g", area))
+        }
+        .font(.caption.monospaced()).foregroundStyle(ODTheme.muted)
+    }
+
+    private func zoom(_ factor: Double) {
+        let c = (lo + hi) / 2, half = (hi - lo) / 2 * factor
+        xmin = String(format: "%.4g", c - half); xmax = String(format: "%.4g", c + half)
+    }
+    private func pan(_ frac: Double) {
+        let d = (hi - lo) * frac
+        xmin = String(format: "%.4g", lo + d); xmax = String(format: "%.4g", hi + d)
+    }
+    /// Zero crossings of the sampled trace, refined by linear interpolation.
+    private func zeros(of pts: [GraphPoint]) -> [Double] {
+        var out: [Double] = []; var prev: GraphPoint?
+        for p in pts {
+            if let pr = prev, let y0 = pr.y, let y1 = p.y, y0.isFinite, y1.isFinite, (y0 <= 0) != (y1 <= 0), y0 != y1 {
+                out.append(pr.x + (y0 / (y0 - y1)) * (p.x - pr.x))
+                if out.count >= 24 { break }
+            }
+            prev = p
+        }
+        return out
+    }
+    /// Trapezoidal definite integral of the sampled trace across the window.
+    private func integral(of pts: [GraphPoint]) -> Double {
+        var s = 0.0; var prev: GraphPoint?
+        for p in pts {
+            if let pr = prev, let y0 = pr.y, let y1 = p.y, y0.isFinite, y1.isFinite { s += 0.5 * (y0 + y1) * (p.x - pr.x) }
+            prev = p
+        }
+        return s
+    }
 }
 private struct OptionalYDomain:ViewModifier{let enabled:Bool,lo:Double,hi:Double;@ViewBuilder func body(content:Content)->some View{if enabled{content.chartYScale(domain:min(lo,hi-0.001)...max(hi,lo+0.001))}else{content}}}
 

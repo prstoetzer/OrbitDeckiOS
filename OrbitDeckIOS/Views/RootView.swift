@@ -4,9 +4,9 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     case home, track, globe, radar
     case passes, skyglance, passdetail, groundtrack, tenday
     case orbit, orbithistory, illum, zones, ao7, mutual, transits, astronomy, skymap, conjunction, grids
-    case radio, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, oscarsim, learn, references, exports
+    case radio, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, oscarsim, oscarref, learn, references, exports
     case sunmoon, celestial, eme, spacewx, muf, propagation
-    case satellites, newlaunch, sites, settings
+    case satellites, newlaunch, sites, settings, about
 
     var id: String { rawValue }
 
@@ -40,6 +40,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .datafeeds: "Activations / QRZ"
         case .amsatstatus: "AMSAT Status"
         case .oscarsim: "OSCARLOCATOR Sim"
+        case .oscarref: "OSCARLOCATOR Reference Orbits"
         case .learn: "Learn"
         case .references: "References"
         case .exports: "Exports"
@@ -53,6 +54,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .newlaunch: "New Launches"
         case .sites: "Sites"
         case .settings: "Settings"
+        case .about: "About"
         }
     }
 
@@ -86,6 +88,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .datafeeds: "antenna.radiowaves.left.and.right"
         case .amsatstatus: "waveform.path.ecg"
         case .oscarsim: "scope"
+        case .oscarref: "calendar.badge.clock"
         case .learn: "book"
         case .references: "books.vertical"
         case .exports: "square.and.arrow.up"
@@ -99,6 +102,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .newlaunch: "airplane.departure"
         case .sites: "mappin.and.ellipse"
         case .settings: "gearshape"
+        case .about: "info.circle"
         }
     }
 
@@ -108,7 +112,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .radar, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
              .datafeeds, .learn, .references, .newlaunch, .sites, .astronomy, .eme,
-             .satellites, .settings:
+             .satellites, .settings, .about:
             return false
         default:
             return true
@@ -120,8 +124,8 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .home, .track, .globe, .radar, .passes, .skyglance, .passdetail, .groundtrack, .tenday,
              .orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy,
              .skymap, .conjunction, .grids,
-             .radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
-             .satellites, .newlaunch, .sites, .settings:
+             .radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
+             .satellites, .newlaunch, .sites, .settings, .about:
             true
         default:
             false
@@ -139,13 +143,15 @@ private let navGroups: [NavGroup] = [
     NavGroup(id: "live", title: "LIVE", items: [.home, .globe, .radar]),
     NavGroup(id: "passes", title: "PASSES", items: [.passes, .skyglance, .groundtrack, .tenday]),
     NavGroup(id: "analysis", title: "ANALYSIS", items: [.orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy, .skymap, .conjunction, .grids]),
-    NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .learn, .references, .exports]),
+    NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports]),
     NavGroup(id: "sky", title: "SKY & SPACE", items: [.sunmoon, .celestial, .eme, .spacewx, .muf, .propagation]),
-    NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .settings])
+    NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .settings, .about])
 ]
 
 struct RootView: View {
     @EnvironmentObject private var store: OrbitStore
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var autoLocation = LocationProvider()
     @State private var selection: OrbitDestination? = .home
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
@@ -193,6 +199,32 @@ struct RootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .tint(ODTheme.accent)
+        // On returning to the foreground, refresh space weather if stale and the
+        // catalogs on their weekly cadence.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                Task {
+                    await store.refreshSpaceWeatherIfNeeded()
+                    await store.refreshCatalogsIfNeeded()
+                }
+                if store.locationMode == .currentLocation { autoLocation.requestLocation() }
+            }
+        }
+        // Follow the device when the operator has chosen "always use current
+        // location": request a fix at launch and whenever the mode turns on, and
+        // write each fix into the primary observer site.
+        .task {
+            if store.locationMode == .currentLocation { autoLocation.requestLocation() }
+        }
+        .onChange(of: store.locationMode) { _, mode in
+            if mode == .currentLocation { autoLocation.requestLocation() }
+        }
+        .onChange(of: autoLocation.location) { _, location in
+            guard store.locationMode == .currentLocation, let location else { return }
+            store.applyCurrentLocation(latitude: location.coordinate.latitude,
+                                       longitude: location.coordinate.longitude,
+                                       altitudeMeters: location.altitude)
+        }
         .alert("OrbitDeck", isPresented: Binding(
             get: { store.lastError != nil },
             set: { if !$0 { store.clearError() } }
@@ -234,6 +266,7 @@ struct RootView: View {
         case .datafeeds: DataFeedsView()
         case .amsatstatus: AmsatStatusInteractiveView()
         case .oscarsim: OscarLocatorView()
+        case .oscarref: OscarReferenceOrbitsView()
         case .learn: DeepLearnView()
         case .references: ReferencesView()
         case .exports: ExportsView()
@@ -247,6 +280,7 @@ struct RootView: View {
         case .newlaunch: NewLaunchesView()
         case .sites: SitesView()
         case .settings: SettingsView()
+        case .about: AboutView()
         default: FeaturePlaceholderView(destination: destination)
         }
     }

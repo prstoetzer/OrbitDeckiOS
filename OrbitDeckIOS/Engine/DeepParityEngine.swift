@@ -131,7 +131,7 @@ struct TinyBasicHostContext: Sendable {
                                              bstar: sat.bstar, ndot: 0, solar: 1)
         if decay.0 >= 0 {
             out["DECAYD"] = decay.0.isInfinite ? 1e8 : decay.0
-            out["DECAYSRC"] = decay.1 == "B* drag term" ? 2 : 1
+            out["DECAYSRC"] = decay.1 == .bstar ? 2 : 1
         }
         if let passes = try? OrbitPredictor.predictPasses(
             sat, observer: observer, from: now,
@@ -1333,6 +1333,14 @@ extension BenchTools {
 
     static var allTools: [ToolDefinition] { tools + deepParityTools + deepParity2Tools }
 
+    /// Public forwarder so views can turn a State-vector→GP entry into an
+    /// exportable/trackable orbit (DeepToolMath is file-private).
+    static func stateVectorDefinition(rx: Double, ry: Double, rz: Double,
+                                      vx: Double, vy: Double, vz: Double,
+                                      frame: Int = 0, epoch: Date) -> ManualSatelliteDefinition? {
+        DeepToolMath.stateVectorDefinition(rx: rx, ry: ry, rz: rz, vx: vx, vy: vy, vz: vz, frame: frame, epoch: epoch)
+    }
+
     static func deepParityResults(for id: String, values: [String: Double]) -> [ToolResult]? {
         func v(_ key: String, _ fallback: Double = 0) -> Double { values[key] ?? fallback }
         func row(_ label:String,_ value:String,_ note:String="") -> ToolResult { .init(label:label,value:value,note:note) }
@@ -1487,8 +1495,9 @@ extension LearnMath {
 
     static func decayEstimate(meanMotion: Double, eccentricity: Double, bstar: Double,
                               ndot: Double = 0, solarIndex: Int = 1) -> (days: Double, source: String) {
-        OrbitDecayModel.estimate(meanMotion: meanMotion, ecc: eccentricity,
-                                 bstar: bstar, ndot: ndot, solar: solarIndex)
+        let r = OrbitDecayModel.estimate(meanMotion: meanMotion, ecc: eccentricity,
+                                         bstar: bstar, ndot: ndot, solar: solarIndex)
+        return (r.0, r.1.label)
     }
 
     static func fixedDownlinkUplinkHz(downlinkCenterHz: Int64, uplinkCenterHz: Int64,
@@ -1659,8 +1668,53 @@ private enum DeepToolMath {
         return [row("Condition",p.0),row("Rotations",String(format:"%.1f @ entered f",turns(freqMHz*1e6))),row("@ 146 MHz",String(format:"%.1f turns",turns(146e6))),row("@ 437 MHz",String(format:"%.2f turns",turns(437e6))),row("CP wrong hand","> 20 dB","use CP on linear sats")]
     }
 
+    /// Rotate a 3-vector from J2000 (GCRF) to TEME at `epoch` using IAU76
+    /// precession + a truncated (13-term) IAU80 nutation. Ported verbatim from
+    /// CardSat so the State-vector→GP frame switch matches the firmware.
+    static func j2000ToTeme(_ vin: (Double, Double, Double), epoch: Date) -> (Double, Double, Double) {
+        let AS2R = 4.84813681109536e-6, D2R = 0.017453292519943295
+        let jd = epoch.timeIntervalSince1970 / 86400.0 + 2440587.5
+        let T = (jd - 2451545.0) / 36525.0
+        let zeta  = (2306.2181*T + 0.30188*T*T + 0.017998*T*T*T) * AS2R
+        let zang  = (2306.2181*T + 1.09468*T*T + 0.018203*T*T*T) * AS2R
+        let theta = (2004.3109*T - 0.42665*T*T - 0.041833*T*T*T) * AS2R
+        let eps0  = (84381.448 - 46.8150*T - 0.00059*T*T + 0.001813*T*T*T) * AS2R
+        let rr = 360.0
+        let l  = (134.96298139 + (1325*rr+198.8673981)*T + 0.0086972*T*T) * D2R
+        let lp = (357.52772333 + (99*rr+359.0503400)*T - 0.0001603*T*T) * D2R
+        let F  = (93.27191028 + (1342*rr+82.0175381)*T - 0.0036825*T*T) * D2R
+        let D  = (297.85036306 + (1236*rr+307.1114800)*T - 0.0019142*T*T) * D2R
+        let Om = (125.04452222 - (5*rr+134.1362608)*T + 0.0020708*T*T) * D2R
+        let NT: [[Double]] = [
+            [0,0,0,0,1,-171996,-174.2,92025,8.9], [0,0,2,-2,2,-13187,-1.6,5736,-3.1],
+            [0,0,2,0,2,-2274,-0.2,977,-0.5], [0,0,0,0,2,2062,0.2,-895,0.5],
+            [0,1,0,0,0,1426,-3.4,54,-0.1], [1,0,0,0,0,712,0.1,-7,0.0],
+            [0,1,2,-2,2,-517,1.2,224,-0.6], [0,0,2,0,1,-386,-0.4,200,0.0],
+            [1,0,2,0,2,-301,0.0,129,-0.1], [0,-1,2,-2,2,217,-0.5,-95,0.3],
+            [1,0,0,-2,0,-158,0.0,0,0.0], [0,0,2,-2,1,129,0.1,-70,0.0],
+            [-1,0,2,0,2,123,0.0,-53,0.0]
+        ]
+        var dpsi = 0.0, deps = 0.0
+        for t in NT {
+            let arg = t[0]*l + t[1]*lp + t[2]*F + t[3]*D + t[4]*Om
+            dpsi += (t[5] + t[6]*T) * sin(arg)
+            deps += (t[7] + t[8]*T) * cos(arg)
+        }
+        dpsi *= 0.0001 * AS2R; deps *= 0.0001 * AS2R
+        let epsT = eps0 + deps, eqe = dpsi * cos(eps0)
+        func rot1(_ a: Double, _ v: inout (Double, Double, Double)) { let c=cos(a),s=sin(a),y=v.1,z=v.2; v.1=c*y+s*z; v.2 = -s*y+c*z }
+        func rot2(_ a: Double, _ v: inout (Double, Double, Double)) { let c=cos(a),s=sin(a),x=v.0,z=v.2; v.0=c*x-s*z; v.2=s*x+c*z }
+        func rot3(_ a: Double, _ v: inout (Double, Double, Double)) { let c=cos(a),s=sin(a),x=v.0,y=v.1; v.0=c*x+s*y; v.1 = -s*x+c*y }
+        var w = vin
+        rot3(-zeta, &w); rot2(theta, &w); rot3(-zang, &w)
+        rot1(eps0, &w); rot3(-dpsi, &w); rot1(-epsT, &w)
+        rot3(eqe, &w)
+        return w
+    }
+
     static func stateVector(rx: Double, ry: Double, rz: Double,
-                            vx: Double, vy: Double, vz: Double) -> [ToolResult] {
+                            vx: Double, vy: Double, vz: Double,
+                            frame: Int = 0, epoch: Date = Date()) -> [ToolResult] {
         typealias V = (Double, Double, Double)
         func dot(_ a: V, _ b: V) -> Double { a.0*b.0 + a.1*b.1 + a.2*b.2 }
         func cross(_ a: V, _ b: V) -> V {
@@ -1669,7 +1723,9 @@ private enum DeepToolMath {
         func norm(_ a: V) -> Double { sqrt(dot(a, a)) }
         func ac(_ x: Double) -> Double { acos(max(-1, min(1, x))) }
 
-        let r: V = (rx, ry, rz), v: V = (vx, vy, vz)
+        // Rotate J2000 input into TEME before recovering elements, matching CardSat.
+        let r: V = frame == 1 ? j2000ToTeme((rx, ry, rz), epoch: epoch) : (rx, ry, rz)
+        let v: V = frame == 1 ? j2000ToTeme((vx, vy, vz), epoch: epoch) : (vx, vy, vz)
         let radius = norm(r), speed2 = dot(v, v)
         guard radius > 0 else { return [row("error", "position vector is zero")] }
         let h = cross(r, v), hmag = norm(h)
@@ -1712,6 +1768,48 @@ private enum DeepToolMath {
             row("Perigee",String(format:"%.1f km",a*(1-ecc)-earthKm),"altitude"),
             row("note","osculating elements","SGP4 wants mean elements")
         ]
+    }
+
+    /// The same TEME state-vector → classical-elements recovery, returned as a
+    /// ManualSatelliteDefinition (epoch = supplied time) so the derived orbit can
+    /// be added to the catalog or exported. Returns nil for non-elliptical input.
+    static func stateVectorDefinition(rx: Double, ry: Double, rz: Double,
+                                      vx: Double, vy: Double, vz: Double,
+                                      frame: Int = 0, epoch: Date) -> ManualSatelliteDefinition? {
+        typealias V = (Double, Double, Double)
+        func dot(_ a: V, _ b: V) -> Double { a.0*b.0 + a.1*b.1 + a.2*b.2 }
+        func cross(_ a: V, _ b: V) -> V { (a.1*b.2-a.2*b.1, a.2*b.0-a.0*b.2, a.0*b.1-a.1*b.0) }
+        func norm(_ a: V) -> Double { sqrt(dot(a, a)) }
+        func ac(_ x: Double) -> Double { acos(max(-1, min(1, x))) }
+        let r: V = frame == 1 ? j2000ToTeme((rx, ry, rz), epoch: epoch) : (rx, ry, rz)
+        let v: V = frame == 1 ? j2000ToTeme((vx, vy, vz), epoch: epoch) : (vx, vy, vz)
+        let radius = norm(r), speed2 = dot(v, v)
+        guard radius > 0 else { return nil }
+        let h = cross(r, v), hmag = norm(h)
+        guard hmag > 1e-9 else { return nil }
+        let node: V = (-h.1, h.0, 0), nmag = hypot(node.0, node.1), rv = dot(r, v)
+        let ev: V = (((speed2 - muKm/radius)*r.0 - rv*v.0)/muKm,
+                     ((speed2 - muKm/radius)*r.1 - rv*v.1)/muKm,
+                     ((speed2 - muKm/radius)*r.2 - rv*v.2)/muKm)
+        let ecc = norm(ev), energy = speed2/2 - muKm/radius
+        guard energy < 0, ecc < 1 else { return nil }
+        let a = -muKm/(2*energy)
+        let incl = ac(h.2/hmag)*180/Double.pi
+        var raan = nmag > 1e-9 ? ac(node.0/nmag)*180/Double.pi : 0
+        if nmag > 1e-9 && node.1 < 0 { raan = 360-raan }
+        var argp = nmag > 1e-9 && ecc > 1e-9 ? ac(dot(node,ev)/(nmag*ecc))*180/Double.pi : 0
+        if nmag > 1e-9 && ecc > 1e-9 && ev.2 < 0 { argp = 360-argp }
+        var nu = 0.0
+        if ecc > 1e-9 { nu = ac(dot(ev,r)/(ecc*radius)); if rv < 0 { nu = 2*Double.pi-nu } }
+        else if nmag > 1e-9 { nu = ac((node.0*r.0+node.1*r.1)/(nmag*radius)); if r.2 < 0 { nu = 2*Double.pi-nu } }
+        let ea = atan2(sqrt(max(0,1-ecc*ecc))*sin(nu), ecc+cos(nu))
+        let ma = ((ea - ecc*sin(ea))*180/Double.pi + 360).truncatingRemainder(dividingBy: 360)
+        let n = sqrt(muKm/pow(a,3))*86400/(2*Double.pi)
+        guard n > 0, n.isFinite else { return nil }
+        return ManualSatelliteDefinition(name: "State-vector orbit", norad: 99001, epoch: epoch,
+                                         inclinationDeg: incl, raanDeg: raan, eccentricity: ecc,
+                                         argumentOfPerigeeDeg: argp, meanAnomalyDeg: ma,
+                                         meanMotionRevPerDay: n, bstar: 0)
     }
 
     static func stateSanity(rx:Double,ry:Double,rz:Double,vx:Double,vy:Double,vz:Double)->[ToolResult]{
@@ -1780,6 +1878,19 @@ private enum DeepToolMath {
     }
 }
 
+/// What anchored a decay estimate — an observed n-dot trend, the B* drag term,
+/// or nothing usable. Replaces brittle string-sentinel comparisons.
+enum DecayAnchor: Sendable, Equatable {
+    case observedNdot, bstar, noData
+    var label: String {
+        switch self {
+        case .observedNdot: "observed decay rate"
+        case .bstar: "B* drag term"
+        case .noData: "no usable data"
+        }
+    }
+}
+
 enum OrbitDecayModel {
     static let mu = 3.986004418e14, re = 6.378137e6, twoPi = 2 * Double.pi
     static let atmosphere:[(Double,Double,Double)] = [(100,5.297e-7,5.877),(110,9.661e-8,7.263),(120,2.438e-8,9.473),(130,8.484e-9,12.636),(140,3.845e-9,16.149),(150,2.070e-9,22.523),(180,5.464e-10,29.740),(200,2.789e-10,37.105),(250,7.248e-11,45.546),(300,2.418e-11,53.628),(350,9.518e-12,53.298),(400,3.725e-12,58.515),(450,1.585e-12,60.828),(500,6.967e-13,63.822),(600,1.454e-13,71.835),(700,3.614e-14,88.667),(800,1.170e-14,124.64),(900,5.245e-15,181.05),(1000,3.019e-15,268)]
@@ -1790,11 +1901,11 @@ enum OrbitDecayModel {
     static func i0e(_ z:Double)->Double{if z<3.75{let t=pow(z/3.75,2),v=1+t*(3.5156229+t*(3.0899424+t*(1.2067492+t*(0.2659732+t*(0.0360768+t*0.0045813)))));return v*exp(-z)};let t=3.75/z;return (0.39894228+t*(0.01328592+t*(0.00225319+t*(-0.00157565+t*(0.00916281+t*(-0.02057706+t*(0.02635537+t*(-0.01647633+t*0.00392377))))))))/sqrt(z)}
     static func i1e(_ z:Double)->Double{if z<3.75{let t=pow(z/3.75,2),v=z*(0.5+t*(0.87890594+t*(0.51498869+t*(0.15084934+t*(0.02658733+t*(0.00301532+t*0.00032411))))));return v*exp(-z)};let t=3.75/z;return (0.39894228+t*(-0.03988024+t*(-0.00362018+t*(0.00163801+t*(-0.01031555+t*(0.02282967+t*(-0.02895312+t*(0.01787654+t*(-0.00420059)))))))))/sqrt(z)}
     static func kingHele(a:Double,e:Double,h:Double)->Double{if e<=1e-4{return 1};let z=a*e/scaleHeight(h);if z<=0.05{return 1};return i0e(z)+2*e*i1e(z)}
-    static func estimate(meanMotion:Double,ecc:Double,bstar:Double,ndot:Double,solar:Int)->(Double,String){
-        let scales=[0.35,1.0,3.0],densScale=scales[max(0,min(2,solar))];guard meanMotion>0 else{return(-1,"no usable data")};let nn=meanMotion*twoPi/86400;var a=pow(mu/(nn*nn),1.0/3),e=min(0.95,max(0,ecc)),rp=a*(1-e),ra=a*(1+e),hp0=(rp-re)/1000;if hp0<80{return(0,"no usable data")}
-        func rho(_ h:Double)->Double{density(h)*densScale*densCal(h)};var ballistic=0.0,src="B* drag term";let adot = -(2.0/3.0)*(a/meanMotion)*(2*ndot),rho0=rho(hp0)
-        if adot < -0.5,rho0>0,hp0<1000{let cand=1.15*(-adot/86400)/(rho0*sqrt(mu*a)*kingHele(a:a,e:e,h:hp0));if cand>1e-4 && cand<50{ballistic=cand;src="observed decay rate"}}
-        if ballistic==0{guard bstar>0 else{return(-1,"no usable data")};ballistic=12.741621*bstar}
+    static func estimate(meanMotion:Double,ecc:Double,bstar:Double,ndot:Double,solar:Int)->(Double,DecayAnchor){
+        let scales=[0.35,1.0,3.0],densScale=scales[max(0,min(2,solar))];guard meanMotion>0 else{return(-1,.noData)};let nn=meanMotion*twoPi/86400;var a=pow(mu/(nn*nn),1.0/3),e=min(0.95,max(0,ecc)),rp=a*(1-e),ra=a*(1+e),hp0=(rp-re)/1000;if hp0<80{return(0,.noData)}
+        func rho(_ h:Double)->Double{density(h)*densScale*densCal(h)};var ballistic=0.0;var src: DecayAnchor = .bstar;let adot = -(2.0/3.0)*(a/meanMotion)*(2*ndot),rho0=rho(hp0)
+        if adot < -0.5,rho0>0,hp0<1000{let cand=1.15*(-adot/86400)/(rho0*sqrt(mu*a)*kingHele(a:a,e:e,h:hp0));if cand>1e-4 && cand<50{ballistic=cand;src = .observedNdot}}
+        if ballistic==0{guard bstar>0 else{return(-1,.noData)};ballistic=12.741621*bstar}
         var days=0.0
         for _ in 0..<200000{let hp=rp-re,h=hp/1000;a=0.5*(rp+ra);let ec=(ra-rp)/(ra+rp),end=ec<=0.02 ? 120e3:90e3;if hp<end{return(days,src)};let densityNow=rho(h);if densityNow<=0{return(Double.infinity,src)};let dadt = -ballistic*densityNow*sqrt(mu*a)*kingHele(a:a,e:ec,h:h);if dadt>=0{return(Double.infinity,src)};var dt = -((hp-120e3)*0.20+500)/dadt;let cap=h<200 ? 0.15:h<350 ? 2.0:20.0;dt=min(dt,cap*86400);dt=max(dt,1);let da=dadt*dt;if ec>1e-3{ra+=2*da;if ra<rp{let mid=0.5*(ra+rp);ra=mid;rp=mid}}else{ra+=da;rp+=da};days+=dt/86400;if days>36500{return(Double.infinity,src)}}
         return(days,src)
@@ -1809,11 +1920,12 @@ extension String {
 
 extension BenchTools {
     static let deepParity2Tools: [ToolDefinition] = [
-        .init(id:"sciCalc",category:"General",name:"Scientific calculator",description:"Safe expression evaluator with the same whitelisted math model used by Graphing Calc.",fields:[.init(id:"expression",label:"Expression",defaultValue:0,unit:"",isText:true,defaultText:"300/145.9")]),
+        .init(id:"sciCalc",category:"General",name:"Scientific calculator",description:"Infix evaluator (degrees). Trig/inverse/hyperbolic, ln/log/log2/exp, sqrt/cbrt, fact/ncr/npr, sign/mod/hypot/min/max; constants pi,e,c,kb,Re,mu,g0; and RF/orbit helpers: fspl, dop, lam/fq, dipole, db/undb, dbm2w/w2dbm, dbd/dbi, swr2rl/rl2swr/mml, nf2t/t2nf, porb/vorb/fpr/aorb, slant, dgain.",fields:[.init(id:"expression",label:"Expression",defaultValue:0,unit:"",isText:true,defaultText:"porb(500)")]),
         .init(id:"programmer",category:"General",name:"Programmer calc (hex/bin)",description:"Decimal/hex/binary/octal conversion, popcount and two's-complement view.",fields:[.init(id:"value",label:"Value",defaultValue:255,unit:"",isText:true,defaultText:"255"),.init(id:"base",label:"Input base",defaultValue:0,unit:"",choices:["decimal","hex","binary","octal"]),.init(id:"width",label:"Width",defaultValue:2,unit:"bits",choices:["8","16","32","64"])]),
         .init(id:"unitConverter",category:"General",name:"Unit converter",description:"Length, mass, power, frequency, speed, angle and temperature conversions.",fields:[.init(id:"value",label:"Value",defaultValue:1,unit:""),.init(id:"family",label:"Family",defaultValue:0,unit:"",choices:DeepToolMath.unitFamilies.map{$0.0}),.init(id:"from",label:"From",defaultValue:0,unit:"",choices:["m","km","cm","mm","in","ft","yd","mi","nmi"]),.init(id:"to",label:"To",defaultValue:1,unit:"",choices:["m","km","cm","mm","in","ft","yd","mi","nmi"])]),
         .init(id:"charLookup",category:"General",name:"Character / byte lookup",description:"Byte value in four bases, ASCII, Morse, ITA2 and BCD.",fields:[.init(id:"value",label:"Byte value",defaultValue:65,unit:"")]),
         .init(id:"dxccLookup",category:"General",name:"DXCC entity lookup",description:"Offline lookup over all 340 bundled DXCC entity reference points.",fields:[.init(id:"query",label:"Prefix or name",defaultValue:0,unit:"",isText:true,defaultText:"JA")]),
+        .init(id:"gridConvert",category:"General",name:"Grid ↔ lat/lon",description:"Convert a Maidenhead locator to latitude/longitude, or “lat,lon” to a 6-character grid square.",fields:[.init(id:"loc",label:"Grid or lat,lon",defaultValue:0,unit:"",isText:true,defaultText:"FM18")]),
         .init(id:"ampacity",category:"Electronics & power",name:"Trace & wire ampacity",description:"IPC-2221 PCB trace width or chassis-wire ampacity.",fields:[.init(id:"mode",label:"Mode",defaultValue:0,unit:"",choices:["PCB external","PCB internal","Wire (AWG)"]),.init(id:"current",label:"Current",defaultValue:1,unit:"A"),.init(id:"rise",label:"Temp rise",defaultValue:10,unit:"°C"),.init(id:"copper",label:"Copper",defaultValue:1,unit:"oz"),.init(id:"awg",label:"Wire",defaultValue:24,unit:"AWG")]),
         .init(id:"toroid",category:"Electronics & power",name:"Toroid winding",description:"Turns required on common Amidon iron-powder/ferrite cores.",fields:[.init(id:"core",label:"Core",defaultValue:2,unit:"",choices:DeepToolMath.toroids.map{$0.0}),.init(id:"target",label:"Target L",defaultValue:10,unit:"µH")]),
         .init(id:"terrestrialBudget",category:"Terrestrial VHF/UHF",name:"Terrestrial path budget",description:"Two-way terrestrial link budget with nominal 12 kHz receiver noise floor.",fields:[.init(id:"power",label:"TX power",defaultValue:25,unit:"W"),.init(id:"txgain",label:"TX gain",defaultValue:6,unit:"dBi"),.init(id:"rxgain",label:"RX gain",defaultValue:6,unit:"dBi"),.init(id:"loss",label:"Line loss",defaultValue:2,unit:"dB"),.init(id:"freq",label:"Frequency",defaultValue:146,unit:"MHz"),.init(id:"distance",label:"Distance",defaultValue:50,unit:"km")]),
@@ -1824,7 +1936,7 @@ extension BenchTools {
         .init(id:"pointingLoss",category:"Satellite & orbit",name:"Pointing loss",description:"Main-lobe dB loss from antenna pointing error and HPBW.",fields:[.init(id:"hpbw",label:"HPBW",defaultValue:30,unit:"°"),.init(id:"err",label:"Point error",defaultValue:3,unit:"°")]),
         .init(id:"linkElevation",category:"Satellite & orbit",name:"Link margin vs elevation",description:"Range-only margin improvement from horizon to overhead.",fields:[.init(id:"alt",label:"Altitude",defaultValue:550,unit:"km"),.init(id:"freq",label:"Frequency",defaultValue:435,unit:"MHz"),.init(id:"margin",label:"Margin @0°",defaultValue:6,unit:"dB")]),
         .init(id:"faraday",category:"Satellite & orbit",name:"Polarization / Faraday",description:"Order-of-magnitude ionospheric Faraday rotation for linear polarization.",fields:[.init(id:"freq",label:"Frequency",defaultValue:145.9,unit:"MHz"),.init(id:"condition",label:"Ionosphere",defaultValue:0,unit:"",choices:["Quiet (10 TECU)","Moderate (30)","Storm (80)"])]),
-        .init(id:"stateVector",category:"Satellite & orbit",name:"State vector → GP",description:"Recover classical osculating orbital elements from a TEME position/velocity vector.",fields:[.init(id:"rx",label:"Pos X",defaultValue:-4400,unit:"km"),.init(id:"ry",label:"Pos Y",defaultValue:-5100,unit:"km"),.init(id:"rz",label:"Pos Z",defaultValue:0,unit:"km"),.init(id:"vx",label:"Vel X",defaultValue:3.6,unit:"km/s"),.init(id:"vy",label:"Vel Y",defaultValue:-3.1,unit:"km/s"),.init(id:"vz",label:"Vel Z",defaultValue:6,unit:"km/s")]),
+        .init(id:"stateVector",category:"Satellite & orbit",name:"State vector → GP",description:"Recover classical osculating orbital elements from a TEME position/velocity vector.",fields:[.init(id:"rx",label:"Pos X",defaultValue:-4400,unit:"km"),.init(id:"ry",label:"Pos Y",defaultValue:-5100,unit:"km"),.init(id:"rz",label:"Pos Z",defaultValue:0,unit:"km"),.init(id:"vx",label:"Vel X",defaultValue:3.6,unit:"km/s"),.init(id:"vy",label:"Vel Y",defaultValue:-3.1,unit:"km/s"),.init(id:"vz",label:"Vel Z",defaultValue:6,unit:"km/s"),.init(id:"frame",label:"Input frame",defaultValue:0,unit:"",choices:["TEME","J2000 (→TEME)"])]),
         .init(id:"stateSanity",category:"Satellite & orbit",name:"State vector sanity",description:"Unit/plausibility diagnostics before trusting a state-vector fit.",fields:[.init(id:"rx",label:"Rx",defaultValue:6800,unit:"km"),.init(id:"ry",label:"Ry",defaultValue:0,unit:"km"),.init(id:"rz",label:"Rz",defaultValue:0,unit:"km"),.init(id:"vx",label:"Vx",defaultValue:0,unit:"km/s"),.init(id:"vy",label:"Vy",defaultValue:7.66,unit:"km/s"),.init(id:"vz",label:"Vz",defaultValue:0,unit:"km/s")]),
         .init(id:"orbitalThermal",category:"Satellite & orbit",name:"Orbital thermal (CubeSat)",description:"First-order single-node orbital thermal model including Sun, albedo, Earth IR and eclipse.",fields:[.init(id:"alt",label:"Altitude",defaultValue:550,unit:"km"),.init(id:"units",label:"Size",defaultValue:3,unit:"U"),.init(id:"mass",label:"Mass",defaultValue:4,unit:"kg"),.init(id:"alpha",label:"Absorptivity α",defaultValue:0.35,unit:""),.init(id:"eps",label:"Emissivity ε",defaultValue:0.85,unit:""),.init(id:"power",label:"Internal power",defaultValue:2,unit:"W"),.init(id:"beta",label:"Beta angle",defaultValue:0,unit:"°"),.init(id:"attitude",label:"Attitude",defaultValue:0,unit:"",choices:["Tumbling","Sun-pointing"])]),
         .init(id:"linkMargin",category:"Satellite & orbit",name:"Link margin curve",description:"Received power and sensitivity margin from horizon to zenith for a nominal 0 dBm EIRP / 0 dBi receive system.",fields:[.init(id:"alt",label:"Satellite alt",defaultValue:500,unit:"km"),.init(id:"freq",label:"Frequency",defaultValue:145.8,unit:"MHz"),.init(id:"sens",label:"RX sensitivity",defaultValue:-120,unit:"dBm")])
@@ -1833,7 +1945,7 @@ extension BenchTools {
     static func deepParity2Results(for id:String, raw:[String:String], values:[String:Double])->[ToolResult]? {
         func v(_ k:String,_ d:Double=0)->Double{values[k] ?? d}
         switch id {
-        case "sciCalc": do { let x=try SafeMathEvaluator().evaluate(raw["expression"]?.isEmpty == false ? raw["expression"]! : "300/145.9"); return [.init(label:"Result",value:String(format:"%g",x),note:""),.init(label:"Full precision",value:String(describing:x),note:"")] } catch { return [.init(label:"error",value:error.localizedDescription,note:"")] }
+        case "sciCalc": do { let x=try SafeMathEvaluator().evaluate(raw["expression"]?.isEmpty == false ? raw["expression"]! : "300/145.9", degrees: true); return [.init(label:"Result",value:String(format:"%g",x),note:""),.init(label:"Full precision",value:String(describing:x),note:"")] } catch { return [.init(label:"error",value:error.localizedDescription,note:"")] }
         case "programmer": return DeepToolMath.programmer(raw:raw["value"]?.isEmpty == false ? raw["value"]! : "255",base:Int(v("base")),width:[8,16,32,64][max(0,min(3,Int(v("width"))))])
         case "unitConverter": return DeepToolMath.unitConvert(value:v("value",1),family:Int(v("family")),from:Int(v("from")),to:Int(v("to",1)))
         case "charLookup": return DeepToolMath.charLookup(v("value",65))
@@ -1858,17 +1970,28 @@ extension BenchTools {
                 let label = code.map { "ARRL \($0) · \(entity.prefix)" } ?? entity.prefix
                 return .init(label: label, value: entity.name, note: String(format:"%.1f°, %.1f°", entity.latitude, entity.longitude))
             }
+        case "gridConvert":
+            let input = (raw["loc"]?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? "FM18"
+            guard let ll = FeatureEngine.parseLocation(input) else {
+                return [.init(label:"Grid ↔ lat/lon", value:"unrecognized", note:"Enter a Maidenhead grid (e.g. FM18lv) or “lat,lon”.")]
+            }
+            let grid = FeatureEngine.latLonToGrid6(latitude: ll.latitude, longitude: ll.longitude)
+            return [
+                .init(label:"Latitude", value:String(format:"%+.5f°", ll.latitude), note:""),
+                .init(label:"Longitude", value:String(format:"%+.5f°", ll.longitude), note:""),
+                .init(label:"Maidenhead", value:grid, note:"6-character locator")
+            ]
         case "ampacity": return DeepToolMath.ampacity(mode:Int(v("mode")),current:v("current",1),rise:v("rise",10),copperOz:v("copper",1),awg:v("awg",24))
         case "toroid": return DeepToolMath.toroid(index:Int(v("core")),targetUH:v("target",10))
         case "terrestrialBudget": return DeepToolMath.terrestrialBudget(txPowerW:v("power",25),txGain:v("txgain",6),rxGain:v("rxgain",6),lineLoss:v("loss",2),freqMHz:v("freq",146),distanceKm:v("distance",50))
         case "terrainLOS": return DeepToolMath.terrainLOS(pathKm:v("path",30),obstructionM:v("obs",200),atKm:v("at",15),txHAAT:v("txh",10),rxHAAT:v("rxh",10),freqMHz:v("freq",146),txGround:v("txg",100),rxGround:v("rxg",100))
         case "dopplerBudget": return DeepToolMath.dopplerBudget(apogeeKm:v("ap",550),perigeeKm:v("pe",550),freqMHz:v("freq",435.5))
-        case "orbitLifetime": let r=OrbitDecayModel.estimate(meanMotion:v("mm",15.5),ecc:v("ecc",0.0004),bstar:v("bstar",0.00025),ndot:v("ndot",0.0001),solar:Int(v("solar",1))); let life=r.0<0 ? "no usable data" : r.0.isInfinite ? "effectively stable" : r.0<365.25 ? String(format:"%.0f days",r.0):String(format:"%.1f years",r.0/365.25); return [.init(label:"Lifetime",value:life,note:""),.init(label:"Anchor",value:r.1,note:r.1=="observed decay rate" ? "measured":"modeled"),.init(label:"Solar activity",value:["low","mean","high"][max(0,min(2,Int(v("solar",1))))],note:""),.init(label:"25-year rule",value:(!r.0.isInfinite && r.0>=0 && r.0<=25*365.25) ? "OK":"EXCEEDS",note:""),.init(label:"5-year rule",value:(!r.0.isInfinite && r.0>=0 && r.0<=5*365.25) ? "OK":"EXCEEDS",note:"")]
+        case "orbitLifetime": let r=OrbitDecayModel.estimate(meanMotion:v("mm",15.5),ecc:v("ecc",0.0004),bstar:v("bstar",0.00025),ndot:v("ndot",0.0001),solar:Int(v("solar",1))); let life=r.0<0 ? "no usable data" : r.0.isInfinite ? "effectively stable" : r.0<365.25 ? String(format:"%.0f days",r.0):String(format:"%.1f years",r.0/365.25); return [.init(label:"Lifetime",value:life,note:""),.init(label:"Anchor",value:r.1.label,note:r.1 == .observedNdot ? "measured":"modeled"),.init(label:"Solar activity",value:["low","mean","high"][max(0,min(2,Int(v("solar",1))))],note:""),.init(label:"25-year rule",value:(!r.0.isInfinite && r.0>=0 && r.0<=25*365.25) ? "OK":"EXCEEDS",note:""),.init(label:"5-year rule",value:(!r.0.isInfinite && r.0>=0 && r.0<=5*365.25) ? "OK":"EXCEEDS",note:"")]
         case "deltaV": return DeepToolMath.deltaV(alt1:v("a1",400),alt2:v("a2",800),planeDeg:v("plane"))
         case "pointingLoss": return DeepToolMath.pointingLoss(hpbw:v("hpbw",30),error:v("err",3))
         case "linkElevation": return DeepToolMath.linkElevation(alt:v("alt",550),freq:v("freq",435),margin0:v("margin",6))
         case "faraday": return DeepToolMath.faraday(freqMHz:v("freq",145.9),condition:Int(v("condition")))
-        case "stateVector": return DeepToolMath.stateVector(rx:v("rx"),ry:v("ry"),rz:v("rz"),vx:v("vx"),vy:v("vy"),vz:v("vz"))
+        case "stateVector": return DeepToolMath.stateVector(rx:v("rx"),ry:v("ry"),rz:v("rz"),vx:v("vx"),vy:v("vy"),vz:v("vz"),frame:Int(v("frame")),epoch:Date())
         case "stateSanity": return DeepToolMath.stateSanity(rx:v("rx"),ry:v("ry"),rz:v("rz"),vx:v("vx"),vy:v("vy"),vz:v("vz"))
         case "orbitalThermal": return DeepToolMath.orbitalThermal(alt:v("alt",550),units:v("units",3),mass:v("mass",4),alpha:v("alpha",0.35),epsilon:v("eps",0.85),power:v("power",2),beta:v("beta"),attitude:Int(v("attitude")))
         case "linkMargin": let alt=v("alt",500),freq=v("freq",145.8),sens=v("sens",-120);guard alt>0,freq>0 else{return [.init(label:"error",value:"need altitude/frequency > 0",note:"")]};func range(_ el:Double)->Double{let e=el*Double.pi/180,se=sin(e);return sqrt(DeepToolMath.earthKm*DeepToolMath.earthKm*se*se+2*DeepToolMath.earthKm*alt+alt*alt)-DeepToolMath.earthKm*se};return [0.0,10,20,30,45,60,90].map{el in let rng=range(el),loss=32.44+20*log10(rng)+20*log10(freq),rx = -loss,margin=rx-sens;return .init(label:String(format:"%.0f° elevation",el),value:String(format:"%.1f dBm",rx),note:String(format:"%+.1f dB margin, %.0f km",margin,rng))}

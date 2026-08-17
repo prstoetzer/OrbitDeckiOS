@@ -164,6 +164,9 @@ struct GPService {
 
     static func parseTLEText(_ text: String) -> [SatelliteRecord] {
         preProcessTLEs(text).compactMap { tuple in
+            // Reject lines that fail the TLE mod-10 checksum so corrupted rows
+            // don't slip through as plausible-but-wrong elements.
+            guard tleLineChecksumValid(tuple.1), tleLineChecksumValid(tuple.2) else { return nil }
             do {
                 let elements = try Elements(tuple.0, tuple.1, tuple.2)
                 return record(from: elements)
@@ -171,6 +174,20 @@ struct GPService {
                 return nil
             }
         }
+    }
+
+    /// Standard TLE checksum: digits in columns 1–68 sum (with '-' counting as 1)
+    /// modulo 10 must equal the column-69 check digit. Non-standard-length lines
+    /// are left for the element parser to accept or reject.
+    private static func tleLineChecksumValid(_ line: String) -> Bool {
+        let chars = Array(line)
+        guard chars.count >= 69, let expected = chars[68].wholeNumberValue else { return true }
+        var sum = 0
+        for c in chars[0..<68] {
+            if let d = c.wholeNumberValue { sum += d }
+            else if c == "-" { sum += 1 }
+        }
+        return sum % 10 == expected
     }
 
     /// Auto-detects the element format of an imported file and returns the

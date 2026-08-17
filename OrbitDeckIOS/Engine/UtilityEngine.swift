@@ -39,6 +39,22 @@ private struct MathLexer {
             .replacingOccurrences(of: "÷", with: "/"))
     }
 
+    /// SI metric-prefix multipliers (case-sensitive: m = milli, M = mega).
+    static func metricPrefix(_ c: Character) -> Double? {
+        switch c {
+        case "f": return 1e-15
+        case "p": return 1e-12
+        case "n": return 1e-9
+        case "u", "µ": return 1e-6
+        case "m": return 1e-3
+        case "k": return 1e3
+        case "M": return 1e6
+        case "G": return 1e9
+        case "T": return 1e12
+        default: return nil
+        }
+    }
+
     mutating func next() throws -> MathToken {
         while index < chars.count, chars[index].isWhitespace { index += 1 }
         guard index < chars.count else { return .end }
@@ -64,6 +80,17 @@ private struct MathLexer {
                     } else { break }
                 }
                 guard let v = Double(s) else { throw SafeMathError.unexpectedToken(s) }
+                // Metric prefix suffix (100k, 2.2n, 5M) — only when the prefix
+                // letter stands alone (not the head of a function/identifier).
+                if index < chars.count {
+                    let p = chars[index]
+                    let after = index + 1 < chars.count ? chars[index + 1] : " "
+                    let identTail = after.isLetter || after.isNumber || after == "_"
+                    if !identTail, let mult = Self.metricPrefix(p) {
+                        index += 1
+                        return .number(v * mult)
+                    }
+                }
                 return .number(v)
             }
             if c.isLetter || c == "_" {
@@ -79,10 +106,13 @@ private struct MathLexer {
 }
 
 struct SafeMathEvaluator: Sendable {
-    func evaluate(_ expression: String, variables: [String: Double] = [:]) throws -> Double {
+    /// `degrees == true` evaluates trig in degrees (what a ham calculator expects,
+    /// matching CardSat). The default stays radians so Tiny BASIC and other
+    /// callers that pre-convert are unaffected.
+    func evaluate(_ expression: String, variables: [String: Double] = [:], degrees: Bool = false) throws -> Double {
         let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw SafeMathError.emptyExpression }
-        var parser = try MathParser(text: trimmed, variables: variables)
+        var parser = try MathParser(text: trimmed, variables: variables, degrees: degrees)
         return try parser.parse()
     }
 }
@@ -91,12 +121,14 @@ private struct MathParser {
     var lexer: MathLexer
     var look: MathToken
     let variables: [String: Double]
+    let degrees: Bool
 
-    init(text: String, variables: [String: Double]) throws {
+    init(text: String, variables: [String: Double], degrees: Bool = false) throws {
         var lex = MathLexer(text)
         let first = try lex.next()
         self.lexer = lex
         self.look = first
+        self.degrees = degrees
         self.variables = Dictionary(uniqueKeysWithValues: variables.map { ($0.key.lowercased(), $0.value) })
     }
 
@@ -165,9 +197,17 @@ private struct MathParser {
                 return try call(name, args)
             }
             if let value = variables[name] { return value }
-            if name == "pi" { return .pi }
-            if name == "e" { return M_E }
-            if name == "tau" { return 2 * .pi }
+            switch name {
+            case "pi": return .pi
+            case "e": return M_E
+            case "tau": return 2 * .pi
+            case "c": return 299_792_458            // speed of light, m/s
+            case "kb": return 1.380649e-23           // Boltzmann, J/K
+            case "re": return 6378.137               // Earth equatorial radius, km
+            case "mu": return 398_600.4418           // Earth GM, km³/s²
+            case "g0": return 9.80665                // standard gravity, m/s²
+            default: break
+            }
             throw SafeMathError.unknownName(name)
         case .lparen:
             try advance(); let value = try expression()
@@ -183,19 +223,28 @@ private struct MathParser {
             guard a.count == 1 else { throw SafeMathError.domain("\(name) expects one argument") }
             return fn(a[0])
         }
+        func two(_ fn: (Double, Double) -> Double) throws -> Double {
+            guard a.count == 2 else { throw SafeMathError.domain("\(name) expects two arguments") }
+            return fn(a[0], a[1])
+        }
+        let d2r = Double.pi / 180, r2d = 180 / Double.pi
+        let cLight = 299_792_458.0, muKm = 398_600.4418, reKm = 6378.137
+        // Trig honours the degrees mode (matches CardSat's ham-oriented default).
+        let toRad: (Double) -> Double = degrees ? { $0 * d2r } : { $0 }
+        let fromRad: (Double) -> Double = degrees ? { $0 * r2d } : { $0 }
         switch name {
         case "sqrt": return try one { sqrt($0) }
         case "cbrt": return try one { Foundation.cbrt($0) }
-        case "sin": return try one { sin($0) }
-        case "cos": return try one { cos($0) }
-        case "tan": return try one { tan($0) }
-        case "asin": return try one { asin($0) }
-        case "acos": return try one { acos($0) }
-        case "atan": return try one { atan($0) }
+        case "sin": return try one { sin(toRad($0)) }
+        case "cos": return try one { cos(toRad($0)) }
+        case "tan": return try one { tan(toRad($0)) }
+        case "asin": return try one { fromRad(asin($0)) }
+        case "acos": return try one { fromRad(acos($0)) }
+        case "atan": return try one { fromRad(atan($0)) }
         case "sinh": return try one { sinh($0) }
         case "cosh": return try one { cosh($0) }
         case "tanh": return try one { tanh($0) }
-        case "log": return try one { log($0) }
+        case "ln", "log": return try one { log($0) }
         case "log10": return try one { log10($0) }
         case "log2": return try one { log2($0) }
         case "exp": return try one { exp($0) }
@@ -203,13 +252,41 @@ private struct MathParser {
         case "floor": return try one { floor($0) }
         case "ceil": return try one { ceil($0) }
         case "round": return try one { $0.rounded() }
-        case "deg", "degrees": return try one { $0 * 180 / .pi }
-        case "rad", "radians": return try one { $0 * .pi / 180 }
-        case "atan2": guard a.count == 2 else { throw SafeMathError.domain("atan2 expects two arguments") }; return atan2(a[0], a[1])
-        case "hypot": guard a.count == 2 else { throw SafeMathError.domain("hypot expects two arguments") }; return hypot(a[0], a[1])
-        case "pow": guard a.count == 2 else { throw SafeMathError.domain("pow expects two arguments") }; return Foundation.pow(a[0], a[1])
+        case "sign": return try one { $0 > 0 ? 1 : ($0 < 0 ? -1 : 0) }
+        case "fact": return try one { tgamma($0 + 1) }
+        case "deg", "degrees", "r2d": return try one { $0 * r2d }
+        case "rad", "radians", "d2r": return try one { $0 * d2r }
+        case "atan2": return try two { fromRad(atan2($0, $1)) }
+        case "hypot": return try two { hypot($0, $1) }
+        case "pow": return try two { Foundation.pow($0, $1) }
+        case "mod": return try two { $1 == 0 ? .nan : fmod($0, $1) }
+        case "ncr": return try two { exp(lgamma($0 + 1) - lgamma($1 + 1) - lgamma($0 - $1 + 1)).rounded() }
+        case "npr": return try two { exp(lgamma($0 + 1) - lgamma($0 - $1 + 1)).rounded() }
         case "min": guard !a.isEmpty else { throw SafeMathError.domain("min expects arguments") }; return a.min()!
         case "max": guard !a.isEmpty else { throw SafeMathError.domain("max expects arguments") }; return a.max()!
+        // RF / antenna helpers (matching CardSat's calculator functions).
+        case "db": return try one { 10 * log10($0) }
+        case "undb": return try one { Foundation.pow(10, $0 / 10) }
+        case "dbm2w", "w": return try one { Foundation.pow(10, ($0 - 30) / 10) }
+        case "w2dbm", "dbm": return try one { 10 * log10($0) + 30 }
+        case "dbd": return try one { $0 - 2.15 }       // dBi → dBd
+        case "dbi": return try one { $0 + 2.15 }       // dBd → dBi
+        case "lam", "wl": return try one { $0 > 0 ? cLight / 1e6 / $0 : .nan }   // MHz → wavelength (m)
+        case "fq": return try one { $0 > 0 ? cLight / 1e6 / $0 : .nan }          // wavelength (m) → MHz
+        case "dipole": return try one { $0 > 0 ? 0.95 * (cLight / 1e6 / $0) / 2 : .nan }
+        case "fspl": return try two { 32.44 + 20 * log10(max($1, 1e-9)) + 20 * log10(max($0, 1e-9)) } // (MHz, km)
+        case "dop": return try two { -($1 * 1000 / cLight) * $0 * 1e6 }          // (MHz, km/s) → Hz
+        case "swr2rl": return try one { let g = abs(($0 - 1) / ($0 + 1)); return g > 0 ? -20 * log10(g) : .infinity }
+        case "rl2swr": return try one { let g = Foundation.pow(10, -$0 / 20); return (1 + g) / (1 - g) }
+        case "mml": return try one { let g = ($0 - 1) / ($0 + 1); return -10 * log10(max(1e-15, 1 - g * g)) }
+        case "nf2t": return try one { 290 * (Foundation.pow(10, $0 / 10) - 1) }
+        case "t2nf": return try one { 10 * log10(1 + $0 / 290) }
+        case "porb": return try one { let r = reKm + max(1, $0); return 2 * Double.pi * sqrt(r * r * r / muKm) / 60 } // alt km → min
+        case "vorb": return try one { sqrt(muKm / (reKm + max(1, $0))) }         // alt km → km/s
+        case "fpr": return try one { let r = reKm + max(1, $0); return reKm * acos(reKm / r) } // alt km → footprint km
+        case "aorb": return try one { let n = $0 * 60 / (2 * Double.pi); return Foundation.cbrt(muKm * n * n) - reKm } // period min → alt km
+        case "slant": return try two { let el = $0 * d2r, h = $1; return sqrt(reKm * reKm * sin(el) * sin(el) + 2 * reKm * h + h * h) - reKm * sin(el) }
+        case "dgain": return try two { 10 * log10(0.55) + 20 * log10(Double.pi * $0 * $1 / (cLight / 1e6)) } // (dish m, MHz) → dBi
         default: throw SafeMathError.badFunction(name)
         }
     }
@@ -229,7 +306,7 @@ struct GraphCalculatorEngine: Sendable {
         let step = (xmax - xmin) / Double(count - 1)
         return (0..<count).map { index in
             let x = xmin + Double(index) * step
-            let y = try? evaluator.evaluate(expression, variables: ["x": x])
+            let y = try? evaluator.evaluate(expression, variables: ["x": x], degrees: true)
             let valid = y.flatMap { $0.isFinite && abs($0) < 1e12 ? $0 : nil }
             return GraphPoint(id: index, x: x, y: valid)
         }

@@ -142,7 +142,10 @@ struct IlluminationView: View {
             }
         }
         .padding(.vertical, 10)
-        .task(id: "\(satellite.id)-\(dayOffset)") { await loadRaster(satellite) }
+        .task(id: satellite.id) { await loadRaster(satellite) }
+        // `.task(id:)` does not reliably re-fire when `dayOffset` (local button
+        // state) changes, so reload the raster explicitly when stepping days.
+        .onChange(of: dayOffset) { _, _ in Task { await loadRaster(satellite) } }
     }
 
     @ViewBuilder
@@ -216,7 +219,10 @@ struct IlluminationView: View {
             }
         }
         .padding(.top, 8)
-        .task(id: "\(satellite.id)-\(eclipseDays)") { await loadEclipses(satellite) }
+        .task(id: satellite.id) { await loadEclipses(satellite) }
+        // `.task(id:)` does not reliably re-fire when `eclipseDays` (local Picker
+        // state) changes, so reload eclipses explicitly on span change.
+        .onChange(of: eclipseDays) { _, _ in Task { await loadEclipses(satellite) } }
     }
 
     @MainActor
