@@ -704,12 +704,13 @@ struct WorkableView: View {
     @State private var isLoading = false
     @State private var error: String?
 
-    private var items: [String] {
+    private func items(from snapshot: WorkableSetSnapshot) -> [String] {
         switch kind { case "states": snapshot.states; case "dxcc": snapshot.dxcc; default: snapshot.grids }
     }
-    private var filtered: [String] {
+    private func filtered(from snapshot: WorkableSetSnapshot) -> [String] {
         let q = filter.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return q.isEmpty ? items : items.filter { $0.uppercased().contains(q) }
+        let all = items(from: snapshot)
+        return q.isEmpty ? all : all.filter { $0.uppercased().contains(q) }
     }
 
     var body: some View {
@@ -718,50 +719,68 @@ struct WorkableView: View {
             VStack(spacing: 12) {
                 Picker("Mode", selection: $acrossPass) { Text("Live footprint").tag(false); Text("Across next pass").tag(true) }.pickerStyle(.segmented)
                 Picker("Workable", selection: $kind) { Text("Grids").tag("grids"); Text("US states").tag("states"); Text("DXCC").tag("dxcc") }.pickerStyle(.segmented)
-                HStack {
-                    TextField(kind == "dxcc" ? "Filter prefix/entity" : "Filter", text: $filter).textInputAutocapitalization(.characters).textFieldStyle(.odField)
-                    Button("Compute") { compute() }.buttonStyle(.borderedProminent).disabled(isLoading || store.selectedSatellite == nil)
-                }
-                HStack { Text("\(items.count) workable").font(.headline); Spacer(); if !filter.isEmpty { Text("\(filtered.count) matching").foregroundStyle(ODTheme.muted) } }
-                if isLoading { ProgressView("Scanning footprint…").padding() }
-                else if let error { Text(error).foregroundStyle(.red).padding() }
-                else {
-                    ScrollView {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: kind == "dxcc" ? 190 : 76), spacing: 6)], spacing: 6) {
-                            ForEach(filtered, id: \.self) { item in
-                                Text(item).font(kind == "grids" ? .body.monospaced().bold() : .body).lineLimit(1).minimumScaleFactor(0.7).frame(maxWidth: .infinity, alignment: kind == "dxcc" ? .leading : .center).padding(.vertical, 7).padding(.horizontal, 6).background(ODTheme.panel, in: RoundedRectangle(cornerRadius: 7))
-                            }
-                        }
+                TextField(kind == "dxcc" ? "Filter prefix/entity" : "Filter", text: $filter)
+                    .textInputAutocapitalization(.characters).textFieldStyle(.odField)
+
+                if let satellite = store.selectedSatellite, !acrossPass {
+                    // Live footprint: recompute every second at the satellite's
+                    // current sub-point. workableNow is a cheap point-in-footprint
+                    // scan, so it's safe to run synchronously on the timeline tick.
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let live = (try? ParityPlanningEngine.workableNow(satellite, at: context.date))
+                            ?? WorkableSetSnapshot(grids: [], states: [], dxcc: [])
+                        resultsSection(live)
                     }
+                } else {
+                    resultsSection(snapshot)
                 }
+
                 Text("DXCC uses 340 bundled reference points. State and entity results are point-based footprint tests rather than political-boundary polygon intersections.").font(.caption).foregroundStyle(ODTheme.muted)
             }.padding()
         }
-        .task { if items.isEmpty { compute() } }
-        .onChange(of: acrossPass) { _, _ in compute() }
-        .onChange(of: store.preferences.selectedNorad) { _, _ in compute() }
-        .task(id: acrossPass) {
-            // Live-footprint mode refreshes once per second (silently, no spinner).
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                if !acrossPass { compute(silent: true) }
+        .task(id: acrossPass) { if acrossPass { compute() } }
+        .onChange(of: store.preferences.selectedNorad) { _, _ in if acrossPass { compute() } }
+    }
+
+    @ViewBuilder private func resultsSection(_ snapshot: WorkableSetSnapshot) -> some View {
+        let all = items(from: snapshot)
+        let shown = filtered(from: snapshot)
+        VStack(spacing: 12) {
+            HStack {
+                Text("\(all.count) workable").font(.headline)
+                Spacer()
+                if !filter.isEmpty { Text("\(shown.count) matching").foregroundStyle(ODTheme.muted) }
+            }
+            if acrossPass && isLoading {
+                ProgressView("Scanning next pass…").padding()
+            } else if acrossPass, let error {
+                Text(error).foregroundStyle(.red).padding()
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: kind == "dxcc" ? 190 : 76), spacing: 6)], spacing: 6) {
+                        ForEach(shown, id: \.self) { item in
+                            Text(item).font(kind == "grids" ? .body.monospaced().bold() : .body).lineLimit(1).minimumScaleFactor(0.7).frame(maxWidth: .infinity, alignment: kind == "dxcc" ? .leading : .center).padding(.vertical, 7).padding(.horizontal, 6).background(ODTheme.panel, in: RoundedRectangle(cornerRadius: 7))
+                        }
+                    }
+                }
             }
         }
     }
 
-    private func compute(silent: Bool = false) {
+    /// Computes the across-next-pass footprint union (the heavier scan). Live
+    /// footprint mode recomputes inline via the TimelineView above.
+    private func compute() {
         guard let satellite = store.selectedSatellite else { return }
-        let site = store.preferences.observer, minEl = store.preferences.minElevation, usePass = acrossPass
-        if !silent { isLoading = true }
+        let site = store.preferences.observer, minEl = store.preferences.minElevation
+        isLoading = true
         error = nil
         Task {
             do {
                 snapshot = try await Task.detached {
-                    if usePass { return try ParityPlanningEngine.workableAcrossNextPass(satellite, observer: site, minimumElevation: minEl) }
-                    return try ParityPlanningEngine.workableNow(satellite)
+                    try ParityPlanningEngine.workableAcrossNextPass(satellite, observer: site, minimumElevation: minEl)
                 }.value
-            } catch { if !silent { self.error = error.localizedDescription } }
-            if !silent { isLoading = false }
+            } catch { self.error = error.localizedDescription }
+            isLoading = false
         }
     }
 }
