@@ -101,7 +101,7 @@ struct TrackView: View {
 
     private var taskKey: String {
         let o = store.preferences.observer
-        return "\(store.selectedSatellite?.id ?? 0)-\(o.latitude)-\(o.longitude)-\(store.preferences.minElevation)"
+        return "\(store.selectedSatellite?.id ?? 0)-\(o.coarseKey)-\(store.preferences.minElevation)"
     }
 
     @MainActor

@@ -260,11 +260,13 @@ private struct DXDopplerSheet: View {
     let home: ObserverSite
     let dx: ObserverSite
     let window: MutualWindowRecord
+    let store: OrbitStore
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTransponderID: String?
     @State private var mode: DXDopplerMode = .trueRule
     @State private var anchor: DXDopplerAnchor = .myTX
     @State private var passbandPercent = 50.0
+    // Loaded from / saved to the per-satellite calibration store.
     @State private var calDlHz = 0.0
     @State private var calUlHz = 0.0
     @State private var rows: [DXDopplerRow] = []
@@ -341,7 +343,7 @@ private struct DXDopplerSheet: View {
                                 .frame(width: 110)
                             Text("Hz").foregroundStyle(ODTheme.muted)
                         }
-                        Text("Fixed per-radio corrections added to every RX/TX dial to compensate for your transceiver's frequency error.")
+                        Text("Your combined oscillator error (radio + satellite). Measure it from the downlink and/or uplink; both fold into one overall correction applied to your receive dial only — your transmit dial stays on the computed frequency, and the DX station is never calibrated. Saved per satellite.")
                             .font(.caption).foregroundStyle(ODTheme.muted)
                     }
                     SectionCard("Window") {
@@ -370,10 +372,17 @@ private struct DXDopplerSheet: View {
             .navigationTitle("DX Doppler")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .onAppear {
+                let cal = store.calibration(for: satellite.id)
+                calDlHz = cal.downlinkHz
+                calUlHz = cal.uplinkHz
+            }
             .task { await compute() }
             // `.task(id:)` doesn't reliably re-fire on local control changes here,
             // so recompute whenever any setup control (folded into computeKey) changes.
             .onChange(of: computeKey) { _, _ in Task { await compute() } }
+            .onChange(of: calDlHz) { _, _ in store.setCalibration(RadioCalibration(downlinkHz: calDlHz, uplinkHz: calUlHz), for: satellite.id) }
+            .onChange(of: calUlHz) { _, _ in store.setCalibration(RadioCalibration(downlinkHz: calDlHz, uplinkHz: calUlHz), for: satellite.id) }
         }
     }
 
@@ -595,7 +604,7 @@ struct MutualView: View {
             DXDopplerSheet(satellite: sat, home: store.preferences.observer,
                            dx: ObserverSite(name: dxLocation, latitude: parsed.latitude,
                                             longitude: parsed.longitude, altitudeMeters: 0),
-                           window: window)
+                           window: window, store: store)
         } else {
             Text("DX Doppler needs a valid DX location and a selected satellite.").padding()
         }
@@ -2634,7 +2643,7 @@ struct SpaceWeatherView: View {
                 }
             }
             Section {
-                Text("F10.7, observed monthly sunspot number and planetary Kp are fetched from NOAA SWPC public feeds. OrbitDeck also reads NOAA's Daily Geomagnetic Data and uses its reported planetary 24-hour A index when available; Kp→ap is retained as a fallback.")
+                Text("F10.7, the most recent daily observed sunspot number and planetary Kp are fetched from NOAA SWPC public feeds. OrbitDeck also reads NOAA's Daily Geomagnetic Data and uses its reported planetary 24-hour A index when available; Kp→ap is retained as a fallback.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
         }
@@ -2822,7 +2831,7 @@ struct MUFView: View {
                 }
                 if let weather = store.spaceWeather {
                     Text(weather.sunspotNumber != nil
-                         ? "Auto-seeded from NOAA's observed monthly sunspot number; recomputes automatically."
+                         ? "Auto-seeded from NOAA's most recent daily observed sunspot number; recomputes automatically."
                          : "Auto-seeded from F10.7 using SSN ≈ 1.61 × (F10.7 − 67); recomputes automatically.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 } else {
@@ -3043,7 +3052,7 @@ struct DataFeedsView: View {
         }
         .task { if activations.isEmpty { fetchActivations() } }
         .sheet(item: $activationDetail) { detail in
-            ActivationOperatingDetailView(detail: detail, home: store.preferences.observer)
+            ActivationOperatingDetailView(detail: detail, home: store.preferences.observer, store: store)
         }
     }
 
@@ -3168,6 +3177,7 @@ private struct ActivationOperatingDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let detail: ActivationDetailResult
     let home: ObserverSite
+    let store: OrbitStore
 
     @State private var windowIndex: Int
     @State private var transponderIndex: Int
@@ -3184,9 +3194,13 @@ private struct ActivationOperatingDetailView: View {
     @State private var shareLabel = ""
     @State private var exportStatus = ""
 
-    init(detail: ActivationDetailResult, home: ObserverSite) {
+    init(detail: ActivationDetailResult, home: ObserverSite, store: OrbitStore) {
         self.detail = detail
         self.home = home
+        self.store = store
+        let cal = store.calibration(for: detail.satellite.id)
+        _calDlHz = State(initialValue: cal.downlinkHz)
+        _calUlHz = State(initialValue: cal.uplinkHz)
         let match = DXDopplerEngine.matchingTransponder(detail.activation, in: detail.satellite)
         _windowIndex = State(initialValue: 0)
         _transponderIndex = State(initialValue: match?.index ?? 0)
@@ -3326,7 +3340,7 @@ private struct ActivationOperatingDetailView: View {
                                         .frame(width: 100)
                                     Text("Hz").foregroundStyle(ODTheme.muted)
                                 }
-                                Text("Fixed per-radio corrections added to every RX/TX dial to compensate for your transceiver's frequency error.")
+                                Text("Your combined oscillator error (radio + satellite). Measure it from the downlink and/or uplink; both fold into one overall correction applied to your receive dial only — your transmit dial stays on the computed frequency, and the DX station is never calibrated. Saved per satellite.")
                                     .font(.caption).foregroundStyle(ODTheme.muted)
                             }
 
@@ -3391,8 +3405,8 @@ private struct ActivationOperatingDetailView: View {
             .onChange(of: mode) { reload() }
             .onChange(of: anchor) { reload() }
             .onChange(of: offsetHz) { reload() }
-            .onChange(of: calDlHz) { reload() }
-            .onChange(of: calUlHz) { reload() }
+            .onChange(of: calDlHz) { store.setCalibration(RadioCalibration(downlinkHz: calDlHz, uplinkHz: calUlHz), for: detail.satellite.id); reload() }
+            .onChange(of: calUlHz) { store.setCalibration(RadioCalibration(downlinkHz: calDlHz, uplinkHz: calUlHz), for: detail.satellite.id); reload() }
         }
     }
 

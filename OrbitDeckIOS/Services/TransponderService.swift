@@ -24,7 +24,7 @@ struct TransponderService {
         ]
         var request = URLRequest(url: comps.url!)
         request.timeoutInterval = 30
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -41,7 +41,7 @@ struct TransponderService {
         comps.queryItems = [URLQueryItem(name: "format", value: "json")]
         var request = URLRequest(url: comps.url!)
         request.timeoutInterval = 60
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw TransponderServiceError.badResponse(http.statusCode)

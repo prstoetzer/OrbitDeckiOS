@@ -335,7 +335,11 @@ struct SpaceWeatherSnapshot: Codable, Sendable {
             else { parts.append("moderate HF conditions") }
         }
         if let kp, kp < 3 { parts.append("quiet geomagnetic field and stable paths") }
-        return parts.isEmpty ? "Indices unavailable." : parts.joined(separator: "; ").capitalized + "."
+        guard !parts.isEmpty else { return "Indices unavailable." }
+        // Sentence case only — `.capitalized` would title-case every word and turn
+        // acronyms like MUF/HF into "Muf"/"Hf".
+        let joined = parts.joined(separator: "; ")
+        return joined.prefix(1).uppercased() + joined.dropFirst() + "."
     }
 }
 
@@ -1854,7 +1858,7 @@ actor SpaceTrackHistoryService {
         }
         var login = URLRequest(url: loginURL)
         login.httpMethod = "POST"
-        login.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        login.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         login.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         let body = "identity=\(formEncode(identity))&password=\(formEncode(password))"
         login.httpBody = body.data(using: .utf8)
@@ -1869,7 +1873,7 @@ actor SpaceTrackHistoryService {
         let path = "https://www.space-track.org/basicspacedata/query/class/gp_history/NORAD_CAT_ID/\(norad)/EPOCH/%3E1957-01-01/orderby/EPOCH%20asc/format/csv/predicates/\(Self.columns)"
         guard let historyURL = URL(string: path) else { throw ServiceError.invalidResponse }
         var request = URLRequest(url: historyURL)
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode) else {
@@ -1917,7 +1921,10 @@ struct SpaceWeatherService {
         async let kpData = get(URL(string: "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json")!)
         async let cycleData = get(URL(string: "https://services.swpc.noaa.gov/json/solar-cycle/observed-solar-cycle-indices.json")!)
         async let geomagneticData = getOptional(URL(string: "https://services.swpc.noaa.gov/text/daily-geomagnetic-indices.txt")!)
-        let (fData, kData, cData, gData) = try await (fluxData, kpData, cycleData, geomagneticData)
+        // Most-recent DAILY observed (SESC) sunspot number; the solar-cycle file is
+        // only monthly, so this keeps the sunspot number as current as flux and Kp.
+        async let dailyData = getOptional(URL(string: "https://services.swpc.noaa.gov/text/daily-solar-indices.txt")!)
+        let (fData, kData, cData, gData, dData) = try await (fluxData, kpData, cycleData, geomagneticData, dailyData)
         var flux: Double?
         var flux90: Double?
         if let rows = try JSONSerialization.jsonObject(with: fData) as? [[String: Any]] {
@@ -1927,12 +1934,14 @@ struct SpaceWeatherService {
                 flux90 = numeric(newest["ninety_day_mean"])
             }
         }
-        var ssn: Double?
+        // Prefer the most-recent daily observed sunspot number; fall back to the
+        // monthly observed value (and use the monthly f10.7 for the 90-day mean if
+        // the flux feed didn't carry one).
+        var ssn: Double? = dData.flatMap { parseDailySunspot($0) }
         if let rows = try JSONSerialization.jsonObject(with: cData) as? [[String: Any]] {
             let valid = rows.filter { $0["time-tag"] != nil && numeric($0["ssn"]) != nil }
-            if let newest = valid.max(by: { String(describing: $0["time-tag"] ?? "") < String(describing: $1["time-tag"] ?? "") }),
-               let n = numeric(newest["ssn"]), n >= 0 {
-                ssn = n
+            if let newest = valid.max(by: { String(describing: $0["time-tag"] ?? "") < String(describing: $1["time-tag"] ?? "") }) {
+                if ssn == nil, let n = numeric(newest["ssn"]), n >= 0 { ssn = n }
                 if flux90 == nil { flux90 = numeric(newest["f10.7"]) }
             }
         }
@@ -2026,13 +2035,33 @@ struct SpaceWeatherService {
         return latest
     }
 
+    /// Parse NOAA SWPC's Daily Solar Data product for the newest daily observed
+    /// (SESC) sunspot number. Each data row is `YYYY MM DD  <10.7cm flux>
+    /// <sunspot number> …`; the sunspot number is the fifth whitespace field.
+    static func parseDailySunspot(_ data: Data) -> Double? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        var latest: Double?
+        for raw in text.components(separatedBy: .newlines) {
+            let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fields = line.split(whereSeparator: { $0.isWhitespace })
+            guard fields.count >= 5,
+                  fields[0].count == 4,
+                  Int(fields[0]) != nil,
+                  Int(fields[1]) != nil,
+                  Int(fields[2]) != nil,
+                  let ssn = Double(fields[4]), ssn >= 0 else { continue }
+            latest = ssn
+        }
+        return latest
+    }
+
     private static func getOptional(_ url: URL) async -> Data? {
         try? await get(url)
     }
 
     private static func get(_ url: URL) async throws -> Data {
         var request = URLRequest(url: url); request.timeoutInterval = 25
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw URLError(.badServerResponse)
@@ -2106,7 +2135,7 @@ struct NewLaunchService {
     static func discover(knownNorads: Set<UInt>) async throws -> [NewLaunchHit] {
         let url = URL(string: "https://celestrak.org/NORAD/elements/gp.php?GROUP=last-30-days&FORMAT=JSON")!
         var request = URLRequest(url: url); request.timeoutInterval = 45
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         let gpURLRequest = request
         async let gpRequest = URLSession.shared.data(for: gpURLRequest)
         async let txRequest = TransponderService.fetchAll()
@@ -2371,43 +2400,53 @@ enum DXDopplerEngine {
         calDlHz: Int64 = 0,
         calUlHz: Int64 = 0
     ) throws -> (Int64, Int64, Int64, Int64) {
+        _ = reference   // No longer needed: the CardSat model derives the operating
+                        // point live from the anchor's current Doppler, not a fixed
+                        // reference-time value.
         let nominal = OrbitPredictor.passbandFrequencies(transponder, offsetHz: offsetHz)
         let homeLook = try OrbitPredictor.look(satellite, observer: home, at: date)
         let dxLook = try OrbitPredictor.look(satellite, observer: dx, at: date)
-        if mode == .trueRule {
-            let me = OrbitPredictor.dopplerFrequencies(downlinkHz: nominal.downlink, uplinkHz: nominal.uplink, rangeRateKmS: homeLook.rangeRateKmS, downlinkCalibrationHz: Double(calDlHz), uplinkCalibrationHz: Double(calUlHz))
-            let them = OrbitPredictor.dopplerFrequencies(downlinkHz: nominal.downlink, uplinkHz: nominal.uplink, rangeRateKmS: dxLook.rangeRateKmS, downlinkCalibrationHz: Double(calDlHz), uplinkCalibrationHz: Double(calUlHz))
-            return (me.rx, me.tx, them.rx, them.tx)
-        }
-
-        let refSite = anchor.isDX ? dx : home
-        let refLook = try OrbitPredictor.look(satellite, observer: refSite, at: reference)
-        let anchorLook = anchor.isDX ? dxLook : homeLook
-        let betaRef = refLook.rangeRateKmS * 1000 / OrbitPredictor.speedOfLightMS
-        let beta = anchorLook.rangeRateKmS * 1000 / OrbitPredictor.speedOfLightMS
         let dlOp = Double(nominal.downlink), ulOp = Double(nominal.uplink)
+        let sign = transponder.invert ? -1.0 : 1.0
+        let bHome = homeLook.rangeRateKmS * 1000 / OrbitPredictor.speedOfLightMS
+        let bDX = dxLook.rangeRateKmS * 1000 / OrbitPredictor.speedOfLightMS
+
+        // Determine the satellite-frame operating point (dlSat = emitted downlink,
+        // ulSat = heard uplink) at this instant, following CardSat's "One True Rule":
+        // in a fixed mode the anchor station parks the *nominal* ground dial and the
+        // satellite-frame point is derived from that station's live Doppler; the
+        // linked leg carries the drift (sign-flipped for inverting transponders).
         let dlSat: Double, ulSat: Double
         switch mode {
         case .trueRule:
             dlSat = dlOp; ulSat = ulOp
         case .fixedDownlink:
-            let denom = abs(1 - beta) < 1e-12 ? 1e-12 : 1 - beta
-            dlSat = dlOp * (1 - betaRef) / denom
-            let delta = dlSat - dlOp
-            ulSat = ulOp == 0 ? 0 : (transponder.invert ? ulOp - delta : ulOp + delta)
+            let bAnchor = anchor.isDX ? bDX : bHome
+            let denom = abs(1 - bAnchor) < 1e-12 ? 1e-12 : 1 - bAnchor
+            dlSat = dlOp / denom                                  // parked RX = dlOp
+            ulSat = ulOp == 0 ? 0 : ulOp + sign * (dlSat - dlOp)
         case .fixedUplink:
-            let denom = abs(1 - betaRef) < 1e-12 ? 1e-12 : 1 - betaRef
-            ulSat = ulOp == 0 ? 0 : ulOp * (1 - beta) / denom
-            let delta = ulOp == 0 ? 0 : ulSat - ulOp
-            dlSat = transponder.invert ? dlOp - delta : dlOp + delta
+            let bAnchor = anchor.isDX ? bDX : bHome
+            let heard = ulOp * (1 - bAnchor)                      // parked TX = ulOp
+            ulSat = ulOp == 0 ? 0 : heard
+            dlSat = dlOp + sign * (heard - ulOp)
         }
-        func stationDials(_ look: LiveLook) -> (Int64, Int64) {
-            let b = look.rangeRateKmS * 1000 / OrbitPredictor.speedOfLightMS
-            let rx = Int64((dlSat * (1 - b) + Double(calDlHz)).rounded())
-            let tx = ulSat > 0 ? Int64((ulSat / (1 - b) + Double(calUlHz)).rounded()) : 0
+
+        // Each station tunes for its own Doppler. Calibration is the operator's OWN
+        // combined oscillator error (radio + satellite), which the operator can
+        // measure from either the downlink or the uplink leg. Both offsets fold into
+        // a single overall correction referred to the downlink and applied only to
+        // my receive dial — the uplink contribution is sign-flipped on an inverting
+        // transponder. The transmit dial is left on the computed frequency, and the
+        // DX station's dials are never calibrated.
+        let overallCal = Double(calDlHz) + sign * Double(calUlHz)
+        func stationDials(_ b: Double, mine: Bool) -> (Int64, Int64) {
+            let rx = Int64((dlSat * (1 - b) + (mine ? overallCal : 0)).rounded())
+            let tx = ulSat > 0 ? Int64((ulSat / (1 - b)).rounded()) : 0
             return (rx, tx)
         }
-        let me = stationDials(homeLook), them = stationDials(dxLook)
+        let me = stationDials(bHome, mine: true)
+        let them = stationDials(bDX, mine: false)
         return (me.0, me.1, them.0, them.1)
     }
 
@@ -2974,7 +3013,7 @@ struct ActivationService {
         comps.queryItems = [URLQueryItem(name: trimmed.allSatisfy(\.isNumber) ? "CATNR" : "NAME", value: trimmed),
                             URLQueryItem(name: "FORMAT", value: "JSON")]
         var request = URLRequest(url: comps.url!); request.timeoutInterval = 20
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode == 404 { return [] }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -3079,7 +3118,7 @@ actor QRZService {
     private func get(_ raw: String) async throws -> String {
         guard let url = URL(string: raw) else { throw URLError(.badURL) }
         var request = URLRequest(url: url); request.timeoutInterval = 15
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { throw URLError(.badServerResponse) }
         return String(decoding: data, as: UTF8.self)

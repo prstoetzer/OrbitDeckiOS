@@ -10,6 +10,11 @@ struct ObserverSite: Codable, Equatable, Sendable {
     var satelliteKitLocation: LatLonAlt {
         LatLonAlt(latitude, longitude, altitudeMeters / 1000.0)
     }
+
+    /// Location rounded to ~100 m, used in `.task(id:)` recompute keys so that
+    /// sub-meter GPS jitter (while following the device) doesn't constantly
+    /// restart heavy recomputes and make live screens flash.
+    var coarseKey: String { String(format: "%.3f,%.3f", latitude, longitude) }
 }
 
 struct TransponderRecord: Identifiable, Codable, Equatable, Sendable {
@@ -156,6 +161,17 @@ enum GPSourceKind: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// A per-radio frequency-error correction for one satellite. These are the
+/// operator's own transceiver offsets (in Hz), applied only to the operator's own
+/// tuned dials — never the DX station's — as a final correction on top of the
+/// Doppler/passband solution.
+struct RadioCalibration: Codable, Sendable, Equatable {
+    var downlinkHz: Double = 0
+    var uplinkHz: Double = 0
+
+    var isZero: Bool { downlinkHz == 0 && uplinkHz == 0 }
+}
+
 struct StorePreferences: Codable, Sendable {
     var observer = ObserverSite()
     var minElevation = 5.0
@@ -176,6 +192,9 @@ struct StorePreferences: Codable, Sendable {
     // NORAD from CelesTrak on the normal GP-update path.
     var extraSatellites: [ManualSatelliteDefinition]?
     var manualTransponders: [String: [TransponderRecord]]?
+    // Per-satellite radio calibration (operator's own transceiver offsets),
+    // keyed by NORAD id string. Optional preserves decoding of older blobs.
+    var satelliteCalibrations: [String: RadioCalibration]?
     var passAlarmLeadMinutes: Int?
     var labOrbit: LabOrbitDefinition?
     // Whether observer-relative screens use the fixed primary site or continuously

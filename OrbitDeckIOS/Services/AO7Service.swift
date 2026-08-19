@@ -101,7 +101,7 @@ enum AO7Service {
         guard let url = components.url else { throw AO7ServiceError.badResponse }
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw AO7ServiceError.badResponse

@@ -67,7 +67,7 @@ struct SkyRadarView: View {
         .task(id: scanKey) {
             while !Task.isCancelled {
                 await scan()
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
@@ -146,7 +146,7 @@ struct SkyRadarView: View {
 
     private var scanKey: String {
         let o = store.preferences.observer
-        return "\(o.latitude)-\(o.longitude)-\(store.satellites.count)"
+        return "\(o.coarseKey)-\(store.satellites.count)"
     }
 
     @MainActor

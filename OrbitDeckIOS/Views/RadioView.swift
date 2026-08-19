@@ -18,6 +18,9 @@ struct RadioView: View {
     @State private var passTimePercent = 50.0
     @State private var intervalSeconds = 60.0
     @State private var hold = "downlink"
+    // Per-satellite radio calibration, shared with the DX Doppler screens.
+    @State private var calDlHz = 0.0
+    @State private var calUlHz = 0.0
     @State private var groundTxPowerW = 5.0
     @State private var groundTxGainDb = 0.0
     @State private var groundRxGainDb = 12.0
@@ -87,10 +90,15 @@ struct RadioView: View {
                 }
                 .task(id: satellite.id) {
                     selectedTransponderID = satellite.transponders.first?.id
+                    let cal = store.calibration(for: satellite.id)
+                    calDlHz = cal.downlinkHz
+                    calUlHz = cal.uplinkHz
                     await loadAll(for: satellite)
                 }
                 .onChange(of: selectedPassID) { snapToTCA() }
                 .onChange(of: selectedTransponderID) { passbandPercent = 50; shareURL = nil }
+                .onChange(of: calDlHz) { store.setCalibration(RadioCalibration(downlinkHz: calDlHz, uplinkHz: calUlHz), for: satellite.id) }
+                .onChange(of: calUlHz) { store.setCalibration(RadioCalibration(downlinkHz: calDlHz, uplinkHz: calUlHz), for: satellite.id) }
             } else {
                 LoadingOrError(isLoading: store.isRefreshingGP, error: store.lastError,
                                emptyText: "No satellite selected")
@@ -210,6 +218,35 @@ struct RadioView: View {
     }
 
     @ViewBuilder
+    private var calibrationControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Radio calibration").font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
+            HStack {
+                Text("Downlink cal")
+                Spacer()
+                TextField("Hz", value: $calDlHz, format: .number)
+                    .keyboardType(.numbersAndPunctuation)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.odField)
+                    .frame(width: 100)
+                Text("Hz").foregroundStyle(ODTheme.muted)
+            }
+            HStack {
+                Text("Uplink cal")
+                Spacer()
+                TextField("Hz", value: $calUlHz, format: .number)
+                    .keyboardType(.numbersAndPunctuation)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.odField)
+                    .frame(width: 100)
+                Text("Hz").foregroundStyle(ODTheme.muted)
+            }
+            Text("Your combined oscillator error (radio + satellite). Measure it from the downlink and/or uplink; both fold into one overall correction applied to your receive dial only — the transmit dial stays on the computed frequency. Saved per satellite and shared with the DX Doppler screens.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    @ViewBuilder
     private func playbookView(satellite: SatelliteRecord, transponder: TransponderRecord) -> some View {
         if let pass = selectedPass {
             SectionCard("Doppler playbook") {
@@ -224,11 +261,14 @@ struct RadioView: View {
                     passbandSlider(transponder)
                 }
 
+                calibrationControls
+
                 let rows = (try? FeatureCompletionEngine.radioPlaybook(
                     satellite: satellite, observer: store.preferences.observer,
                     pass: pass, transponder: transponder,
                     intervalSeconds: intervalSeconds, hold: hold,
-                    passbandPercent: passbandPercent)) ?? []
+                    passbandPercent: passbandPercent,
+                    calDlHz: Int64(calDlHz.rounded()), calUlHz: Int64(calUlHz.rounded()))) ?? []
 
                 HStack {
                     Button("Prepare CSV") { preparePlaybook(rows, satellite, transponder, pass, pdf: false) }

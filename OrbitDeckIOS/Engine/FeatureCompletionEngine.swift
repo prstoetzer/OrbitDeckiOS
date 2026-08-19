@@ -370,12 +370,20 @@ struct FeatureCompletionEngine {
         transponder: TransponderRecord,
         intervalSeconds: TimeInterval = 60,
         hold: String = "downlink",
-        passbandPercent: Double = 50
+        passbandPercent: Double = 50,
+        calDlHz: Int64 = 0,
+        calUlHz: Int64 = 0
     ) throws -> [RadioPlaybookRow] {
         let fraction = max(0, min(1, passbandPercent / 100))
         let offset = transponder.isLinear ? Int64((Double(transponder.bandwidth) * fraction).rounded()) : 0
         let nominal = OrbitPredictor.passbandFrequencies(transponder, offsetHz: offset)
         let sign = transponder.invert ? -1.0 : 1.0
+        // Operator's own combined oscillator error (radio + satellite), measurable
+        // from either leg. Both offsets fold into one overall correction referred to
+        // the downlink (uplink contribution sign-flipped for inverting transponders)
+        // and applied only to the receive dial; the transmit dial is left on the
+        // computed frequency.
+        let overallCal = Double(calDlHz) + sign * Double(calUlHz)
         var rows: [RadioPlaybookRow] = []
         var t = pass.aos
         while t <= pass.los.addingTimeInterval(0.5) {
@@ -385,7 +393,7 @@ struct FeatureCompletionEngine {
             let tx: Int64
             let mode: String
             if !transponder.isLinear {
-                rx = Int64((Double(nominal.downlink) * (1 - beta)).rounded())
+                rx = Int64((Double(nominal.downlink) * (1 - beta) + overallCal).rounded())
                 tx = nominal.uplink > 0
                     ? Int64((Double(nominal.uplink) / (1 - beta)).rounded()) : 0
                 mode = "FM/independent"
@@ -393,8 +401,8 @@ struct FeatureCompletionEngine {
                 let uFix = Double(nominal.uplink)
                 let uHeard = uFix * (1 - beta)
                 let dlSatFrame = Double(nominal.downlink) + sign * (uHeard - Double(nominal.uplink))
-                rx = Int64((dlSatFrame * (1 - beta)).rounded())
-                tx = nominal.uplink
+                rx = Int64((dlSatFrame * (1 - beta) + overallCal).rounded())
+                tx = nominal.uplink > 0 ? nominal.uplink : 0
                 mode = "linear/hold-uplink"
             } else {
                 // Park the ground RX dial; the satellite-frame downlink under it
@@ -403,7 +411,7 @@ struct FeatureCompletionEngine {
                 // receive-leg Doppler. Mirrors the hold-uplink branch and CardSat.
                 let dlSatFrame = Double(nominal.downlink) / (1 - beta)
                 let ulSatFrame = Double(nominal.uplink) + sign * (dlSatFrame - Double(nominal.downlink))
-                rx = nominal.downlink
+                rx = Int64((Double(nominal.downlink) + overallCal).rounded())
                 tx = nominal.uplink > 0 ? Int64((ulSatFrame / (1 - beta)).rounded()) : 0
                 mode = "linear/hold-downlink"
             }

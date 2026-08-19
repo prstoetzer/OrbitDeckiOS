@@ -4,6 +4,17 @@ import FoundationNetworking
 #endif
 import SatelliteKit
 
+/// App-wide metadata read from the bundle so version strings never drift out of
+/// sync with the project's marketing version.
+enum AppInfo {
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    }
+    /// User-Agent for requests to external feeds (some reject non-browser agents,
+    /// but our own services identify with this).
+    static var userAgent: String { "OrbitDeck-iOS/\(version)" }
+}
+
 enum GPServiceError: LocalizedError {
     case invalidURL
     case badResponse(Int)
@@ -73,7 +84,7 @@ struct GPService {
         let url = try sourceURL(preferences: preferences)
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw GPServiceError.badResponse(http.statusCode)
@@ -131,7 +142,7 @@ struct GPService {
             guard let url = URL(string: "https://celestrak.org/NORAD/elements/gp.php?CATNR=\(norad)&FORMAT=json") else { continue }
             var request = URLRequest(url: url)
             request.timeoutInterval = 30
-            request.setValue("OrbitDeck-iOS/0.9.7", forHTTPHeaderField: "User-Agent")
+            request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),

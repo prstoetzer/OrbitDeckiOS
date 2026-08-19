@@ -35,9 +35,20 @@ struct GlobeView: View {
     @State private var dragBaseLat: Double?
     @State private var dragBaseLon: Double?
 
+    /// Human-readable scrub offset, e.g. "Showing now", "+45 min from now",
+    /// "−2 h 30 min from now".
+    private func offsetLabel(_ off: Double) -> String {
+        if abs(off) < 0.5 { return "Showing now" }
+        let sign = off >= 0 ? "+" : "−"
+        let total = Int(abs(off).rounded())
+        let h = total / 60, m = total % 60
+        let magnitude = h > 0 ? "\(h) h \(m) min" : "\(m) min"
+        return "\(sign)\(magnitude) from now"
+    }
+
     private func effectiveOffset(_ date: Date) -> Double {
         guard isPlaying, let start = playStartWall else { return frozenOffset }
-        return min(180, playStartOffset + date.timeIntervalSince(start) * playbackSpeed / 60.0)
+        return min(1440, playStartOffset + date.timeIntervalSince(start) * playbackSpeed / 60.0)
     }
 
     var body: some View {
@@ -89,7 +100,7 @@ struct GlobeView: View {
                 // Scrub time directly. Grabbing the slider stops playback and pins
                 // the shown moment; the thumb starts from wherever playback left off.
                 VStack(spacing: 2) {
-                    Slider(value: $frozenOffset, in: -180...180, step: 1) { editing in
+                    Slider(value: $frozenOffset, in: -1440...1440, step: 1) { editing in
                         if editing && isPlaying {
                             frozenOffset = effectiveOffset(Date())
                             isPlaying = false
@@ -98,18 +109,18 @@ struct GlobeView: View {
                     }
                     .tint(ODTheme.accent)
                     HStack {
-                        Text("−3 h").font(.caption2).foregroundStyle(ODTheme.muted)
+                        Text("−24 h").font(.caption2).foregroundStyle(ODTheme.muted)
                         Spacer()
                         Text("now").font(.caption2).foregroundStyle(ODTheme.muted)
                         Spacer()
-                        Text("+3 h").font(.caption2).foregroundStyle(ODTheme.muted)
+                        Text("+24 h").font(.caption2).foregroundStyle(ODTheme.muted)
                     }
                 }
 
                 TimelineView(isPlaying ? .periodic(from: .now, by: 0.5) : .periodic(from: .now, by: 2)) { context in
                     let off = effectiveOffset(context.date)
                     VStack(spacing: 8) {
-                        Text(abs(off) < 0.05 ? "Showing now" : String(format: "%+.0f min from now", off))
+                        Text(offsetLabel(off))
                             .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         globe(at: context.date.addingTimeInterval(off * 60))

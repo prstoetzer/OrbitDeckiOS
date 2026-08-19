@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
-    case home, track, globe, radar
+    case home, track, globe, radar, gridfinder
     case passes, skyglance, passdetail, groundtrack, tenday
     case orbit, orbithistory, illum, zones, ao7, mutual, transits, astronomy, skymap, conjunction, grids
     case radio, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, oscarsim, oscarref, learn, references, exports
@@ -16,6 +16,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .track: "Track"
         case .globe: "3D Globe"
         case .radar: "Sky Radar"
+        case .gridfinder: "Grid Finder"
         case .passes: "Next Passes"
         case .skyglance: "Sky at a Glance"
         case .passdetail: "Pass Detail"
@@ -64,6 +65,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .track: "scope"
         case .globe: "globe.americas"
         case .radar: "dot.radiowaves.left.and.right"
+        case .gridfinder: "location.north.line.fill"
         case .passes: "clock.arrow.2.circlepath"
         case .skyglance: "sparkles"
         case .passdetail: "chart.xyaxis.line"
@@ -110,7 +112,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     /// satellite switcher in their toolbar.
     var usesSelectedSatellite: Bool {
         switch self {
-        case .radar, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
+        case .radar, .gridfinder, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
              .datafeeds, .learn, .references, .newlaunch, .sites, .astronomy, .eme,
              .satellites, .settings, .about:
             return false
@@ -121,7 +123,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
 
     var implemented: Bool {
         switch self {
-        case .home, .track, .globe, .radar, .passes, .skyglance, .passdetail, .groundtrack, .tenday,
+        case .home, .track, .globe, .radar, .gridfinder, .passes, .skyglance, .passdetail, .groundtrack, .tenday,
              .orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy,
              .skymap, .conjunction, .grids,
              .radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
@@ -140,7 +142,7 @@ private struct NavGroup: Identifiable {
 }
 
 private let navGroups: [NavGroup] = [
-    NavGroup(id: "live", title: "LIVE", items: [.home, .globe, .radar]),
+    NavGroup(id: "live", title: "LIVE", items: [.home, .globe, .radar, .gridfinder]),
     NavGroup(id: "passes", title: "PASSES", items: [.passes, .skyglance, .groundtrack, .tenday]),
     NavGroup(id: "analysis", title: "ANALYSIS", items: [.orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy, .skymap, .conjunction, .grids]),
     NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports]),
@@ -155,6 +157,10 @@ struct RootView: View {
     @StateObject private var autoLocation = LocationProvider()
     @State private var selection: OrbitDestination? = .home
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    // Throttle how often a current-location fix is written into the observer, so
+    // the live screens (which recompute against the observer) update at most once
+    // per second rather than on every high-rate GPS fix.
+    @State private var lastLocationApply = Date.distantPast
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -239,6 +245,11 @@ struct RootView: View {
         .onChange(of: selection) { _, _ in updateLocationFollow() }
         .onChange(of: autoLocation.location) { _, location in
             guard store.locationMode == .currentLocation, let location else { return }
+            // Coalesce high-rate fixes to ~1 Hz so downstream live screens don't
+            // re-render faster than once per second.
+            let now = Date()
+            guard now.timeIntervalSince(lastLocationApply) >= 1 else { return }
+            lastLocationApply = now
             store.applyCurrentLocation(latitude: location.coordinate.latitude,
                                        longitude: location.coordinate.longitude,
                                        altitudeMeters: location.altitude)
@@ -270,6 +281,7 @@ struct RootView: View {
         case .track: TrackView()
         case .globe: GlobeView()
         case .radar: SkyRadarView()
+        case .gridfinder: GridFinderView()
         case .passes: PassesView()
         case .skyglance: SkyGlanceView()
         case .passdetail: PassDetailView()

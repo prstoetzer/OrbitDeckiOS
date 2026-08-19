@@ -417,6 +417,19 @@ final class OrbitStore: ObservableObject {
                                 longitude: preferences.observer.longitude)
     }
 
+    /// The operator's saved radio calibration for a satellite (zero if none).
+    func calibration(for norad: UInt) -> RadioCalibration {
+        preferences.satelliteCalibrations?[String(norad)] ?? RadioCalibration()
+    }
+
+    /// Persist (or clear, when zero) the operator's radio calibration for a
+    /// satellite. Stored per-satellite so each bird keeps its own correction.
+    func setCalibration(_ calibration: RadioCalibration, for norad: UInt) {
+        var dict = preferences.satelliteCalibrations ?? [:]
+        if calibration.isZero { dict[String(norad)] = nil } else { dict[String(norad)] = calibration }
+        preferences.satelliteCalibrations = dict.isEmpty ? nil : dict
+    }
+
     var locationMode: LocationMode { preferences.locationMode ?? .fixed }
 
     /// The name used for the observer while following the device.

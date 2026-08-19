@@ -36,55 +36,62 @@ struct GroundTrackView: View {
                 ProgressView("Computing ground track…")
                 Spacer()
             } else if !points.isEmpty {
-                Map(position: $cameraPosition) {
-                    Marker(
-                        store.preferences.observer.name,
-                        coordinate: CLLocationCoordinate2D(
-                            latitude: store.preferences.observer.latitude,
-                            longitude: store.preferences.observer.longitude
+                // Drive the live marker/footprint from a 1 Hz TimelineView so the
+                // satellite position updates every second. SwiftUI keeps the same
+                // Map view and only refreshes its content each tick, so the camera
+                // and gestures are preserved.
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let current = livePoint(at: context.date) ?? nearestToNow
+                    Map(position: $cameraPosition) {
+                        Marker(
+                            store.preferences.observer.name,
+                            coordinate: CLLocationCoordinate2D(
+                                latitude: store.preferences.observer.latitude,
+                                longitude: store.preferences.observer.longitude
+                            )
                         )
-                    )
-                    .tint(ODTheme.good)
+                        .tint(ODTheme.good)
 
-                    ForEach(Array(trackSegments.enumerated()), id: \.offset) { _, segment in
-                        MapPolyline(coordinates: segment)
-                            .stroke(ODTheme.accent, lineWidth: 2.5)
-                    }
+                        ForEach(Array(trackSegments.enumerated()), id: \.offset) { _, segment in
+                            MapPolyline(coordinates: segment)
+                                .stroke(ODTheme.accent, lineWidth: 2.5)
+                        }
 
-                    if let current = nearestToNow {
-                        MapCircle(
-                            center: current.coordinate,
-                            radius: OrbitPredictor.footprintRadius(altitudeKm: current.altitudeKm) * 1000
-                        )
-                        .foregroundStyle(ODTheme.accent.opacity(0.12))
-                        .stroke(ODTheme.accent.opacity(0.7), lineWidth: 1.5)
+                        if let current {
+                            MapCircle(
+                                center: current.coordinate,
+                                radius: OrbitPredictor.footprintRadius(altitudeKm: current.altitudeKm) * 1000
+                            )
+                            .foregroundStyle(ODTheme.accent.opacity(0.12))
+                            .stroke(ODTheme.accent.opacity(0.7), lineWidth: 1.5)
 
-                        Annotation(store.selectedSatellite?.name ?? "Satellite", coordinate: current.coordinate) {
-                            Image(systemName: "satellite.fill")
-                                .font(.title2)
-                                .foregroundStyle(ODTheme.warning)
-                                .padding(7)
-                                .background(.thinMaterial, in: Circle())
+                            Annotation(store.selectedSatellite?.name ?? "Satellite", coordinate: current.coordinate) {
+                                Image(systemName: "satellite.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(ODTheme.warning)
+                                    .padding(7)
+                                    .background(.thinMaterial, in: Circle())
+                            }
                         }
                     }
-                }
-                .mapStyle(.standard(elevation: .flat))
-                .id(store.selectedSatellite?.id ?? 0)
-                // Top-trailing keeps the readout clear of Apple Maps' bottom-leading
-                // logo and bottom-trailing legal attribution link.
-                .overlay(alignment: .topTrailing) {
-                    if let current = nearestToNow {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(ODFormat.utc.string(from: current.date))
-                            Text(String(format: "%.3f°, %.3f°  •  %.1f km",
-                                        current.coordinate.latitude,
-                                        current.coordinate.longitude,
-                                        current.altitudeKm))
+                    .mapStyle(.standard(elevation: .flat))
+                    .id(store.selectedSatellite?.id ?? 0)
+                    // Top-trailing keeps the readout clear of Apple Maps' bottom-leading
+                    // logo and bottom-trailing legal attribution link.
+                    .overlay(alignment: .topTrailing) {
+                        if let current {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(ODFormat.utc.string(from: current.date))
+                                Text(String(format: "%.3f°, %.3f°  •  %.1f km",
+                                            current.coordinate.latitude,
+                                            current.coordinate.longitude,
+                                            current.altitudeKm))
+                            }
+                            .font(.caption.monospacedDigit())
+                            .padding(10)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            .padding()
                         }
-                        .font(.caption.monospacedDigit())
-                        .padding(10)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                        .padding()
                     }
                 }
             } else {
@@ -115,6 +122,19 @@ struct GroundTrackView: View {
     private var nearestToNow: GroundTrackPoint? {
         let now = Date()
         return points.min { abs($0.date.timeIntervalSince(now)) < abs($1.date.timeIntervalSince(now)) }
+    }
+
+    /// The satellite's exact sub-point at `date` (recomputed live each tick), so
+    /// the marker/footprint sit on the true position rather than the nearest
+    /// precomputed track sample.
+    private func livePoint(at date: Date) -> GroundTrackPoint? {
+        guard let sat = store.selectedSatellite,
+              let look = try? OrbitPredictor.look(sat, observer: store.preferences.observer, at: date) else { return nil }
+        return GroundTrackPoint(
+            id: date, date: date,
+            coordinate: CLLocationCoordinate2D(latitude: look.subLatitude, longitude: look.subLongitude),
+            altitudeKm: look.altitudeKm
+        )
     }
 
     private var trackSegments: [[CLLocationCoordinate2D]] {

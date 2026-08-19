@@ -63,7 +63,11 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
     /// updates as continuously as the hardware allows while they watch for a grid
     /// line or grid corner. Changing these live is supported by CLLocationManager.
     func setPrecise(_ precise: Bool) {
-        manager.desiredAccuracy = precise ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyHundredMeters
+        // Use `Best` (not `BestForNavigation`): both give best-available GPS, but
+        // BestForNavigation is a vehicle-nav mode that also suppressed compass
+        // heading updates on the Grid Finder. `Best` keeps grid-level precision and
+        // lets heading flow normally.
+        manager.desiredAccuracy = precise ? kCLLocationAccuracyBest : kCLLocationAccuracyHundredMeters
         manager.distanceFilter = precise ? kCLDistanceFilterNone : 50
     }
 
@@ -80,6 +84,7 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.headingFilter = kCLHeadingFilterNone
         // The observer site only matters at ~100 m scale, so avoid recomputing every
         // screen on tiny GPS jitter while still following a genuinely moving operator.
         manager.distanceFilter = 50
@@ -104,6 +109,12 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
             // Resume the follow that was pending authorization; otherwise honour the
             // one-shot fill requested via requestLocation().
             if following { manager.startUpdatingLocation() } else { manager.requestLocation() }
+            // Heading updates requested before authorization don't start until now,
+            // so (re)start them once access is granted.
+            if headingActive {
+                manager.startUpdatingLocation()
+                manager.startUpdatingHeading()
+            }
         }
     }
 
