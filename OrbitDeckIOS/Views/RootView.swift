@@ -151,6 +151,7 @@ private let navGroups: [NavGroup] = [
 struct RootView: View {
     @EnvironmentObject private var store: OrbitStore
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var autoLocation = LocationProvider()
     @State private var selection: OrbitDestination? = .home
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
@@ -187,9 +188,23 @@ struct RootView: View {
             destinationView(selection ?? .home)
                 .scrollContentBackground(.hidden)
                 .background(ODTheme.background.ignoresSafeArea())
-                .navigationTitle(selection?.title ?? "OrbitDeck")
+                // Show the app name on the landing page; other screens keep their
+                // own function title.
+                .navigationTitle(selection == .home ? "OrbitDeck" : (selection?.title ?? "OrbitDeck"))
                 .navigationBarTitleDisplayMode(.inline)
+                // On iPhone the split view collapses to a stack; hide the default
+                // "‹ OrbitDeck" back chevron (which reads as "go back", not "open
+                // the menu") and offer an explicit hamburger instead.
+                .navigationBarBackButtonHidden(horizontalSizeClass == .compact)
                 .toolbar {
+                    if horizontalSizeClass == .compact {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button { selection = nil } label: {
+                                Image(systemName: "line.3.horizontal")
+                            }
+                            .accessibilityLabel("Menu")
+                        }
+                    }
                     if (selection ?? .home).usesSelectedSatellite {
                         ToolbarItem(placement: .topBarTrailing) {
                             SatelliteSwitcherButton()
@@ -207,7 +222,7 @@ struct RootView: View {
                     await store.refreshSpaceWeatherIfNeeded()
                     await store.refreshCatalogsIfNeeded()
                 }
-                if store.locationMode == .currentLocation { autoLocation.startFollowing() }
+                updateLocationFollow()
             } else {
                 // Release the GPS while backgrounded; it resumes on foreground.
                 autoLocation.stopFollowing()
@@ -216,13 +231,12 @@ struct RootView: View {
         // Follow the device when the operator has chosen "always use current
         // location": continuously track the device while the mode is on and write
         // each fix into the primary observer site, so every live screen recomputes
-        // against the operator's real position as they move.
-        .task {
-            if store.locationMode == .currentLocation { autoLocation.startFollowing() }
-        }
-        .onChange(of: store.locationMode) { _, mode in
-            if mode == .currentLocation { autoLocation.startFollowing() } else { autoLocation.stopFollowing() }
-        }
+        // against the operator's real position as they move. On the Home screen the
+        // follow runs at full navigation precision so the grid-line/corner readout
+        // updates as continuously as the hardware allows.
+        .task { updateLocationFollow() }
+        .onChange(of: store.locationMode) { _, _ in updateLocationFollow() }
+        .onChange(of: selection) { _, _ in updateLocationFollow() }
         .onChange(of: autoLocation.location) { _, location in
             guard store.locationMode == .currentLocation, let location else { return }
             store.applyCurrentLocation(latitude: location.coordinate.latitude,
@@ -237,6 +251,16 @@ struct RootView: View {
         } message: {
             Text(store.lastError ?? "")
         }
+    }
+
+    /// Keep the current-location follow in sync with the mode and the visible
+    /// screen: off when not following the device, and at full navigation precision
+    /// only while the Home grid readout is on screen (coarse elsewhere to save
+    /// battery).
+    private func updateLocationFollow() {
+        guard store.locationMode == .currentLocation else { autoLocation.stopFollowing(); return }
+        autoLocation.startFollowing()
+        autoLocation.setPrecise(selection == .home)
     }
 
     @ViewBuilder

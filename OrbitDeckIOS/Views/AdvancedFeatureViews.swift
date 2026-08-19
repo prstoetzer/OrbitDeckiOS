@@ -149,13 +149,18 @@ struct OscarLocatorView: View {
         .onChange(of: labRAAN) { saveSharedLabOrbit(); if useLabSatellite { Task { await seedAndRefresh() } } }
         .onChange(of: labArgumentOfPerigee) { saveSharedLabOrbit(); if useLabSatellite { Task { await seedAndRefresh() } } }
         .onChange(of: labMeanAnomaly) { saveSharedLabOrbit(); if useLabSatellite { Task { await seedAndRefresh() } } }
-        .overlay {
-            if drive == .live {
-                TimelineView(.periodic(from: .now, by: 2)) { context in
-                    Color.clear.task(id: context.date.timeIntervalSince1970.rounded()) { await refresh() }
-                }
-                .allowsHitTesting(false)
-            }
+        // Truly-live drive: re-propagate once per second while in live mode using
+        // the same cancellable async-loop pattern as the other live screens. This
+        // replaces a fragile TimelineView-in-overlay that could silently stop
+        // delivering ticks. The loop cancels automatically when `drive` changes.
+        .task(id: drive) { await runLiveLoop() }
+    }
+
+    @MainActor private func runLiveLoop() async {
+        guard drive == .live else { return }
+        while !Task.isCancelled {
+            await refresh()
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
 

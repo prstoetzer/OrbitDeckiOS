@@ -58,6 +58,15 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
         if !headingActive { manager.stopUpdatingLocation() }
     }
 
+    /// Switch the follow between coarse, battery-friendly tracking and full
+    /// best-for-navigation precision with no distance gate, so the operator's grid
+    /// updates as continuously as the hardware allows while they watch for a grid
+    /// line or grid corner. Changing these live is supported by CLLocationManager.
+    func setPrecise(_ precise: Bool) {
+        manager.desiredAccuracy = precise ? kCLLocationAccuracyBestForNavigation : kCLLocationAccuracyHundredMeters
+        manager.distanceFilter = precise ? kCLDistanceFilterNone : 50
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         // Prefer true heading; fall back to magnetic until a location fix arrives.
         if newHeading.trueHeading >= 0 {

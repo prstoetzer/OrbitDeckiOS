@@ -274,12 +274,21 @@ struct AboutView: View {
     private let amsatURL = URL(string: "https://www.amsat.org")!
     private let projectURL = URL(string: "https://orbitdeckios.n8hm.radio")!
 
+    // Read from the bundle so the About page tracks the project's version/build
+    // automatically instead of drifting out of sync with a hardcoded string.
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+    private var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+    }
+
     var body: some View {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("OrbitDeck").font(.title2.bold())
-                    Text("Version 0.9.7 · iOS").font(.caption).foregroundStyle(ODTheme.muted)
+                    Text("Version \(appVersion) (\(appBuild)) · iOS").font(.caption).foregroundStyle(ODTheme.muted)
                     Text("A native tracker and orbital-analysis tool for amateur radio satellites.")
                         .font(.subheadline).padding(.top, 2)
                 }
@@ -307,7 +316,7 @@ struct AboutView: View {
             }
 
             Section("This port") {
-                LabeledContent("OrbitDeck iOS", value: "0.9.7")
+                LabeledContent("OrbitDeck iOS", value: "\(appVersion) (\(appBuild))")
                 LabeledContent("UI", value: "Native SwiftUI")
                 LabeledContent("Propagation", value: "SatelliteKit SGP4/SDP4")
                 Text("Preferences and the GP cache are stored in the iOS application sandbox. Settings are saved as you change them.")
