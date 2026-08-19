@@ -2,11 +2,11 @@ import SwiftUI
 
 enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     case home, track, globe, radar, gridfinder
-    case passes, skyglance, passdetail, groundtrack, tenday
+    case passes, skyglance, schedule, passdetail, groundtrack, tenday
     case orbit, orbithistory, illum, zones, ao7, mutual, transits, astronomy, skymap, conjunction, grids
     case radio, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, oscarsim, oscarref, learn, references, exports
     case sunmoon, celestial, eme, spacewx, muf, propagation
-    case satellites, newlaunch, sites, settings, about
+    case satellites, newlaunch, sites, calibrations, settings, about
 
     var id: String { rawValue }
 
@@ -19,6 +19,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .gridfinder: "Grid Finder"
         case .passes: "Next Passes"
         case .skyglance: "Sky at a Glance"
+        case .schedule: "Daily Schedule"
         case .passdetail: "Pass Detail"
         case .groundtrack: "Ground Track"
         case .tenday: "Pass Progression"
@@ -54,6 +55,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .satellites: "Satellites"
         case .newlaunch: "New Launches"
         case .sites: "Sites"
+        case .calibrations: "Calibrations"
         case .settings: "Settings"
         case .about: "About"
         }
@@ -68,6 +70,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .gridfinder: "location.north.line.fill"
         case .passes: "clock.arrow.2.circlepath"
         case .skyglance: "sparkles"
+        case .schedule: "calendar.badge.clock"
         case .passdetail: "chart.xyaxis.line"
         case .groundtrack: "map"
         case .tenday: "chart.line.uptrend.xyaxis"
@@ -103,6 +106,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .satellites: "list.bullet"
         case .newlaunch: "airplane.departure"
         case .sites: "mappin.and.ellipse"
+        case .calibrations: "tuningfork"
         case .settings: "gearshape"
         case .about: "info.circle"
         }
@@ -112,9 +116,9 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     /// satellite switcher in their toolbar.
     var usesSelectedSatellite: Bool {
         switch self {
-        case .radar, .gridfinder, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
+        case .radar, .gridfinder, .schedule, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
              .datafeeds, .learn, .references, .newlaunch, .sites, .astronomy, .eme,
-             .satellites, .settings, .about:
+             .satellites, .calibrations, .settings, .about:
             return false
         default:
             return true
@@ -123,11 +127,11 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
 
     var implemented: Bool {
         switch self {
-        case .home, .track, .globe, .radar, .gridfinder, .passes, .skyglance, .passdetail, .groundtrack, .tenday,
+        case .home, .track, .globe, .radar, .gridfinder, .passes, .skyglance, .schedule, .passdetail, .groundtrack, .tenday,
              .orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy,
              .skymap, .conjunction, .grids,
              .radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
-             .satellites, .newlaunch, .sites, .settings, .about:
+             .satellites, .newlaunch, .sites, .calibrations, .settings, .about:
             true
         default:
             false
@@ -143,11 +147,11 @@ private struct NavGroup: Identifiable {
 
 private let navGroups: [NavGroup] = [
     NavGroup(id: "live", title: "LIVE", items: [.home, .globe, .radar, .gridfinder]),
-    NavGroup(id: "passes", title: "PASSES", items: [.passes, .skyglance, .groundtrack, .tenday]),
+    NavGroup(id: "passes", title: "PASSES", items: [.passes, .skyglance, .schedule, .groundtrack, .tenday]),
     NavGroup(id: "analysis", title: "ANALYSIS", items: [.orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy, .skymap, .conjunction, .grids]),
     NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports]),
     NavGroup(id: "sky", title: "SKY & SPACE", items: [.sunmoon, .celestial, .eme, .spacewx, .muf, .propagation]),
-    NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .settings, .about])
+    NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .calibrations, .settings, .about])
 ]
 
 struct RootView: View {
@@ -174,6 +178,11 @@ struct RootView: View {
                         }
                     }
                 }
+                Section {
+                    Text(refreshHelp).font(.caption).foregroundStyle(ODTheme.muted)
+                } header: {
+                    Text("UPDATING ELEMENTS")
+                }
             }
             .navigationTitle("OrbitDeck")
             .toolbar {
@@ -186,7 +195,7 @@ struct RootView: View {
                         } label: {
                             Image(systemName: "arrow.triangle.2.circlepath")
                         }
-                        .accessibilityLabel("Update GP")
+                        .accessibilityLabel("Update orbital elements")
                     }
                 }
             }
@@ -264,14 +273,23 @@ struct RootView: View {
         }
     }
 
-    /// Keep the current-location follow in sync with the mode and the visible
-    /// screen: off when not following the device, and at full navigation precision
-    /// only while the Home grid readout is on screen (coarse elsewhere to save
-    /// battery).
+    /// Follow the device at coarse (battery-friendly, ~50 m) precision. High-rate
+    /// precise fixes are reserved for the Grid Finder (its own provider); a coarse
+    /// shared follow keeps the observer current without re-rendering the app faster
+    /// than the ~1 Hz throttle below allows.
     private func updateLocationFollow() {
         guard store.locationMode == .currentLocation else { autoLocation.stopFollowing(); return }
+        autoLocation.setPrecise(false)
         autoLocation.startFollowing()
-        autoLocation.setPrecise(selection == .home)
+    }
+
+    /// Explains the toolbar refresh button in the menu.
+    private var refreshHelp: String {
+        let base = "The ↻ button (top of this menu) downloads the latest orbital element sets (GP/TLE) for the whole catalog from your configured source."
+        if let updated = store.lastGPRefresh {
+            return base + " Last updated \(updated.formatted(date: .abbreviated, time: .shortened))."
+        }
+        return base + " Not updated yet this session."
     }
 
     @ViewBuilder
@@ -284,6 +302,7 @@ struct RootView: View {
         case .gridfinder: GridFinderView()
         case .passes: PassesView()
         case .skyglance: SkyGlanceView()
+        case .schedule: ScheduleView()
         case .passdetail: PassDetailView()
         case .groundtrack: GroundTrackView()
         case .tenday: TenDayView()
@@ -298,6 +317,7 @@ struct RootView: View {
         case .skymap: SkyMapView()
         case .conjunction: ConjunctionView()
         case .grids: WorkableView()
+        case .calibrations: CalibrationsView()
         case .radio: RadioView()
         case .planning: PlanningView()
         case .tools: DeepToolsView()

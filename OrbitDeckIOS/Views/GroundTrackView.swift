@@ -42,6 +42,7 @@ struct GroundTrackView: View {
                 // and gestures are preserved.
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let current = livePoint(at: context.date) ?? nearestToNow
+                    let heading = travelBearing(at: context.date)
                     Map(position: $cameraPosition) {
                         Marker(
                             store.preferences.observer.name,
@@ -66,11 +67,13 @@ struct GroundTrackView: View {
                             .stroke(ODTheme.accent.opacity(0.7), lineWidth: 1.5)
 
                             Annotation(store.selectedSatellite?.name ?? "Satellite", coordinate: current.coordinate) {
-                                Image(systemName: "satellite.fill")
-                                    .font(.title2)
+                                Image(systemName: "arrowtriangle.up.fill")
+                                    .font(.callout)
                                     .foregroundStyle(ODTheme.warning)
-                                    .padding(7)
+                                    .rotationEffect(.degrees(heading))
+                                    .padding(6)
                                     .background(.thinMaterial, in: Circle())
+                                    .accessibilityLabel("Satellite heading \(Int(heading))°")
                             }
                         }
                     }
@@ -135,6 +138,20 @@ struct GroundTrackView: View {
             coordinate: CLLocationCoordinate2D(latitude: look.subLatitude, longitude: look.subLongitude),
             altitudeKm: look.altitudeKm
         )
+    }
+
+    /// Compass bearing (0° = north) of the satellite's ground-track motion, from
+    /// its sub-point now vs ~20 s ahead. Drives the heading arrow marker.
+    private func travelBearing(at date: Date) -> Double {
+        guard let a = livePoint(at: date),
+              let b = livePoint(at: date.addingTimeInterval(20)) else { return 0 }
+        let lat1 = a.coordinate.latitude * .pi / 180, lat2 = b.coordinate.latitude * .pi / 180
+        let dLon = (b.coordinate.longitude - a.coordinate.longitude) * .pi / 180
+        let y = sin(dLon) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        var bearing = atan2(y, x) * 180 / .pi
+        if bearing < 0 { bearing += 360 }
+        return bearing
     }
 
     private var trackSegments: [[CLLocationCoordinate2D]] {

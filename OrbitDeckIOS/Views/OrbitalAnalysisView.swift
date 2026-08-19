@@ -150,7 +150,9 @@ struct OrbitalAnalysisView: View {
                         }
                         .pickerStyle(.menu)
                     }
-                    let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: transponder.downlinkCenter, uplinkHz: transponder.uplinkCenter, rangeRateKmS: look.rangeRateKmS)
+                    let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
+                    let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: transponder.downlinkCenter, uplinkHz: transponder.uplinkCenter, rangeRateKmS: look.rangeRateKmS,
+                                                                      downlinkCalibrationHz: cal, uplinkCalibrationHz: 0)
                     MetricRow("Downlink", ODFormat.frequency(transponder.downlinkCenter))
                     MetricRow("RX (tune)", ODFormat.frequency(corrected.rx), valueColor: ODTheme.good)
                     MetricRow("Doppler (DN)", String(format: "%+lld Hz", corrected.rx - transponder.downlinkCenter))
@@ -158,6 +160,10 @@ struct OrbitalAnalysisView: View {
                         MetricRow("Uplink", ODFormat.frequency(transponder.uplinkCenter))
                         MetricRow("TX (tune)", ODFormat.frequency(corrected.tx), valueColor: ODTheme.warning)
                         MetricRow("Doppler (UP)", String(format: "%+lld Hz", corrected.tx - transponder.uplinkCenter))
+                    }
+                    if cal != 0 {
+                        Label("Includes your calibration for this satellite.", systemImage: "tuningfork")
+                            .font(.caption2).foregroundStyle(ODTheme.muted)
                     }
                 } else {
                     Text(satellite.transponders.isEmpty

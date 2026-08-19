@@ -188,25 +188,26 @@ struct PolarSkyPlot: View {
                 context.stroke(path, with: .color(ODTheme.accent), lineWidth: 2.5)
             }
 
-            if let first = points.first {
-                let p = plotPoint(first.azimuth, first.elevation, center, outerRadius)
-                context.fill(Path(ellipseIn: CGRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)),
-                             with: .color(ODTheme.good))
-            }
-            if let last = points.last, points.count > 1 {
-                let p = plotPoint(last.azimuth, last.elevation, center, outerRadius)
-                context.fill(Path(ellipseIn: CGRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)),
-                             with: .color(ODTheme.warning))
+            // AOS / LOS marked with small heading arrows pointing along the track,
+            // so they read as direction-of-travel and stay clear of the rim compass
+            // labels.
+            if points.count > 1 {
+                let a0 = plotPoint(points[0].azimuth, points[0].elevation, center, outerRadius)
+                let a1 = plotPoint(points[1].azimuth, points[1].elevation, center, outerRadius)
+                drawHeadingArrow(&context, at: a0, angle: atan2(a1.y - a0.y, a1.x - a0.x), color: ODTheme.good, size: 6)
+                let n = points.count
+                let l0 = plotPoint(points[n - 2].azimuth, points[n - 2].elevation, center, outerRadius)
+                let l1 = plotPoint(points[n - 1].azimuth, points[n - 1].elevation, center, outerRadius)
+                drawHeadingArrow(&context, at: l1, angle: atan2(l1.y - l0.y, l1.x - l0.x), color: ODTheme.warning, size: 6)
             }
 
-            // Only mark the live position when the satellite is actually above
-            // the horizon; below-horizon positions have no place on a sky plot.
+            // Live position: a small arrow pointing the satellite's direction of
+            // travel (only while above the horizon).
             if let currentPoint, currentPoint.elevation >= 0 {
                 let p = plotPoint(currentPoint.azimuth, currentPoint.elevation, center, outerRadius)
-                context.fill(Path(ellipseIn: CGRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12)),
-                             with: .color(ODTheme.accent))
-                context.stroke(Path(ellipseIn: CGRect(x: p.x - 9, y: p.y - 9, width: 18, height: 18)),
-                               with: .color(.white.opacity(0.85)), lineWidth: 1)
+                let angle = headingAngle(for: currentPoint, center: center, outerRadius: outerRadius) ?? -.pi / 2
+                drawHeadingArrow(&context, at: p, angle: angle, color: .white, size: 8.5)
+                drawHeadingArrow(&context, at: p, angle: angle, color: ODTheme.accent, size: 6.5)
             }
         }
         .aspectRatio(1, contentMode: .fit)
@@ -226,6 +227,36 @@ struct PolarSkyPlot: View {
             y: center.y - radius * cos(theta)
         )
     }
+
+    /// Screen-space direction of travel at `point`, from the track segment that
+    /// brackets its time (falls back to the nearest segment).
+    private func headingAngle(for point: SkyPoint, center: CGPoint, outerRadius: Double) -> Double? {
+        guard points.count > 1 else { return nil }
+        for i in 0..<(points.count - 1) where points[i].date <= point.date && point.date <= points[i + 1].date {
+            let a = plotPoint(points[i].azimuth, points[i].elevation, center, outerRadius)
+            let b = plotPoint(points[i + 1].azimuth, points[i + 1].elevation, center, outerRadius)
+            if hypot(b.x - a.x, b.y - a.y) > 0.5 { return atan2(b.y - a.y, b.x - a.x) }
+        }
+        // Fallback: overall AOS→next direction.
+        let a = plotPoint(points[0].azimuth, points[0].elevation, center, outerRadius)
+        let b = plotPoint(points[1].azimuth, points[1].elevation, center, outerRadius)
+        return hypot(b.x - a.x, b.y - a.y) > 0.5 ? atan2(b.y - a.y, b.x - a.x) : nil
+    }
+}
+
+/// Draw a small filled triangular heading arrow centered at `p`, pointing along
+/// `angle` (radians, screen space). Used for AOS/LOS and live-position markers on
+/// the sky plot and the 3D globe.
+func drawHeadingArrow(_ context: inout GraphicsContext, at p: CGPoint, angle: Double, color: Color, size: CGFloat) {
+    let dx = cos(angle), dy = sin(angle)
+    let nx = -dy, ny = dx
+    let tip = CGPoint(x: p.x + dx * size, y: p.y + dy * size)
+    let back = CGPoint(x: p.x - dx * size * 0.7, y: p.y - dy * size * 0.7)
+    let b1 = CGPoint(x: back.x + nx * size * 0.6, y: back.y + ny * size * 0.6)
+    let b2 = CGPoint(x: back.x - nx * size * 0.6, y: back.y - ny * size * 0.6)
+    var path = Path()
+    path.move(to: tip); path.addLine(to: b1); path.addLine(to: b2); path.closeSubpath()
+    context.fill(path, with: .color(color))
 }
 
 /// Compact toolbar control that shows the active satellite and opens a picker

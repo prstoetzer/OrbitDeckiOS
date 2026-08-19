@@ -741,9 +741,9 @@ struct WorkableView: View {
         .onChange(of: acrossPass) { _, _ in compute() }
         .onChange(of: store.preferences.selectedNorad) { _, _ in compute() }
         .task(id: acrossPass) {
-            // Live-footprint mode refreshes every ~3s (silently, no spinner).
+            // Live-footprint mode refreshes once per second (silently, no spinner).
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
                 if !acrossPass { compute(silent: true) }
             }
         }

@@ -19,6 +19,10 @@ struct HomeView: View {
     // Persist the sky-plot orientation choice (north-up vs compass-up) until the
     // operator changes it.
     @AppStorage("homeCompassUp") private var compassUp = false
+    // A fixed schedule anchor so frequent re-renders (e.g. compass heading updates)
+    // don't re-anchor the periodic TimelineView to "now" and fire it faster than
+    // once per second.
+    @State private var clockAnchor = Date()
     @State private var selectedTransponderID: String?
 
     var body: some View {
@@ -124,7 +128,7 @@ struct HomeView: View {
                     MetricRow("Planetary Kp", wx.kp.map { String(format: "%.1f · \(wx.kpLabel)", $0) } ?? "—")
                 }
             }
-            TimelineView(.periodic(from: .now, by: 5)) { context in
+            TimelineView(.periodic(from: clockAnchor, by: 5)) { context in
                 let overhead = overheadNow(favorites: favorites, at: context.date)
                 SectionCard("Overhead now (\(overhead.count))") {
                     if overhead.isEmpty {
@@ -283,7 +287,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private func liveTrack(_ satellite: SatelliteRecord) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.periodic(from: clockAnchor, by: 1)) { context in
             let look = try? OrbitPredictor.look(satellite, observer: store.preferences.observer, at: context.date)
             VStack(spacing: 12) {
                 ZStack(alignment: .topTrailing) {
@@ -319,7 +323,7 @@ struct HomeView: View {
                 liveCards(satellite: satellite, look: look)
 
                 if let look, let transponder = selectedTransponder(satellite) {
-                    dopplerCard(transponder: transponder, rangeRateKmS: look.rangeRateKmS)
+                    dopplerCard(satellite: satellite, transponder: transponder, rangeRateKmS: look.rangeRateKmS)
                 }
             }
         }
@@ -396,10 +400,12 @@ struct HomeView: View {
         }
     }
 
-    private func dopplerCard(transponder: TransponderRecord, rangeRateKmS: Double) -> some View {
+    private func dopplerCard(satellite: SatelliteRecord, transponder: TransponderRecord, rangeRateKmS: Double) -> some View {
         let downlink = transponder.downlinkCenter
         let uplink = transponder.uplinkCenter
-        let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink, rangeRateKmS: rangeRateKmS)
+        let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
+        let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink, rangeRateKmS: rangeRateKmS,
+                                                          downlinkCalibrationHz: cal, uplinkCalibrationHz: 0)
         let title = transponder.description.isEmpty ? "Live Doppler · \(transponder.kind)" : "Live Doppler · \(transponder.description)"
         return SectionCard(title) {
             MetricRow("Downlink", ODFormat.frequency(downlink))
@@ -410,7 +416,15 @@ struct HomeView: View {
                 MetricRow("TX (tune)", ODFormat.frequency(corrected.tx), valueColor: ODTheme.warning)
                 MetricRow("Doppler (UP)", String(format: "%+lld Hz", corrected.tx - uplink))
             }
+            if cal != 0 { calibratedNote }
         }
+    }
+
+    /// Unobtrusive note shown when a per-satellite calibration is folded into the
+    /// displayed frequencies.
+    private var calibratedNote: some View {
+        Label("Includes your calibration for this satellite.", systemImage: "tuningfork")
+            .font(.caption2).foregroundStyle(ODTheme.muted)
     }
 
     @MainActor

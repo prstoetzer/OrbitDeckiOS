@@ -168,18 +168,13 @@ struct GlobeView: View {
                 drawTrack(context:&context,satellite:sat,date:date,center:center,c:c,r:r)
                 drawFootprint(context:&context,lat:look.subLatitude,lon:look.subLongitude,alt:look.altitudeKm,center:center,c:c,r:r,color:ODTheme.good)
                 for fs in favorites where fs.id != sat.id {
-                    if let fl = try? OrbitPredictor.look(fs, observer: store.preferences.observer, at: date),
-                       let p = project(lat: fl.subLatitude, lon: fl.subLongitude, center: center, c: c, r: r) {
-                        context.fill(Path(ellipseIn: CGRect(x: p.x-3, y: p.y-3, width: 6, height: 6)), with: .color(ODTheme.accent))
-                        context.draw(Text(fs.name).font(.system(size: 8)).foregroundStyle(ODTheme.accent.opacity(0.9)),
-                                     at: CGPoint(x: p.x, y: p.y - 9))
+                    if let fl = try? OrbitPredictor.look(fs, observer: store.preferences.observer, at: date) {
+                        drawSatelliteGlyph(context: &context, satellite: fs, date: date, look: fl,
+                                           center: center, c: c, r: r, color: ODTheme.accent, size: 12)
                     }
                 }
-                if let p = project(lat: look.subLatitude, lon: look.subLongitude, center: center, c: c, r: r) {
-                    context.fill(Path(ellipseIn: CGRect(x: p.x-5, y: p.y-5, width: 10, height: 10)), with: .color(ODTheme.good))
-                    context.draw(Text(sat.name).font(.system(size: 9, weight: .bold)).foregroundStyle(ODTheme.good),
-                                 at: CGPoint(x: p.x, y: p.y - 12))
-                }
+                drawSatelliteGlyph(context: &context, satellite: sat, date: date, look: look,
+                                   center: center, c: c, r: r, color: ODTheme.good, size: 15)
             }
         } else { ContentUnavailableView("Select a satellite", systemImage:"globe.americas") }
     }
@@ -220,6 +215,46 @@ struct GlobeView: View {
             Spacer(minLength: 4)
             Text(value).font(.caption.monospacedDigit())
         }
+    }
+
+    /// Compressed altitude as a fraction of Earth radius to offset a satellite
+    /// glyph outward from its sub-point. Keeps LEO tight while lifting MEO/GEO
+    /// visibly, capped so high orbits don't fly off the disc.
+    private func altitudeFraction(_ altitudeKm: Double) -> Double {
+        0.16 * altitudeKm / (altitudeKm + 2500)
+    }
+
+    /// Draw a small heading arrow for a satellite at its sub-point, raised outward
+    /// by its (scaled) altitude, with a faint tether to the ground point and a
+    /// label. Orthographic projection means the raised position is the surface
+    /// offset vector scaled by (1 + altitude fraction). The arrow points the
+    /// satellite's direction of travel (sampled ~1 min ahead).
+    private func drawSatelliteGlyph(context: inout GraphicsContext, satellite: SatelliteRecord, date: Date, look: LiveLook,
+                                    center: (Double, Double), c: CGPoint, r: Double,
+                                    color: Color, size: CGFloat) {
+        guard let surface = project(lat: look.subLatitude, lon: look.subLongitude, center: center, c: c, r: r) else { return }
+        let scale = 1 + altitudeFraction(look.altitudeKm)
+        let glyph = CGPoint(x: c.x + (surface.x - c.x) * scale, y: c.y + (surface.y - c.y) * scale)
+        var tether = Path(); tether.move(to: surface); tether.addLine(to: glyph)
+        context.stroke(tether, with: .color(color.opacity(0.4)), lineWidth: 0.7)
+        context.fill(Path(ellipseIn: CGRect(x: surface.x - 1.5, y: surface.y - 1.5, width: 3, height: 3)),
+                     with: .color(color.opacity(0.5)))
+
+        var angle: Double?
+        if let ahead = try? OrbitPredictor.look(satellite, observer: store.preferences.observer, at: date.addingTimeInterval(60)),
+           let aheadSurface = project(lat: ahead.subLatitude, lon: ahead.subLongitude, center: center, c: c, r: r) {
+            let aheadScale = 1 + altitudeFraction(ahead.altitudeKm)
+            let ag = CGPoint(x: c.x + (aheadSurface.x - c.x) * aheadScale, y: c.y + (aheadSurface.y - c.y) * aheadScale)
+            if hypot(ag.x - glyph.x, ag.y - glyph.y) > 0.5 { angle = atan2(ag.y - glyph.y, ag.x - glyph.x) }
+        }
+        if let angle {
+            drawHeadingArrow(&context, at: glyph, angle: angle, color: color, size: size * 0.5)
+        } else {
+            let d = size * 0.32
+            context.fill(Path(ellipseIn: CGRect(x: glyph.x - d, y: glyph.y - d, width: 2 * d, height: 2 * d)), with: .color(color))
+        }
+        context.draw(Text(satellite.name).font(.system(size: 8, weight: .semibold)).foregroundStyle(color.opacity(0.9)),
+                     at: CGPoint(x: glyph.x, y: glyph.y - size * 0.9))
     }
 
     private func centerPoint(look:LiveLook)->(Double,Double) { switch mode { case .satellite:return(look.subLatitude,look.subLongitude);case .station:return(store.preferences.observer.latitude,store.preferences.observer.longitude);case .north:return(90,0);case .south:return(-90,0);case .free:return(freeLat,freeLon) } }

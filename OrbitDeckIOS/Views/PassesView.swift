@@ -1,5 +1,178 @@
 import SwiftUI
 
+// MARK: - Daily schedule
+
+private struct ScheduleEntry: Identifiable {
+    let id: String
+    let satelliteID: UInt
+    let name: String
+    let pass: PredictedPass
+}
+
+/// A day-by-day agenda of every favorite satellite's passes, ordered by AOS time.
+/// Shows the past 7 days and extends forward automatically as the operator scrolls
+/// past the last populated day. All times are UTC (ham-satellite convention).
+struct ScheduleView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @State private var entries: [ScheduleEntry] = []
+    @State private var daysForward = 7
+    @State private var loading = false
+    @State private var didScrollToToday = false
+
+    private let daysBack = 7
+    private let maxDaysForward = 60
+
+    private var utcCalendar: Calendar {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "UTC") ?? .current
+        return c
+    }
+
+    private var favorites: [SatelliteRecord] {
+        store.satellites.filter { store.preferences.favorites.contains($0.id) }
+    }
+
+    private var days: [Date] {
+        let base = utcCalendar.startOfDay(for: Date()).addingTimeInterval(-Double(daysBack) * 86400)
+        return (0...(daysBack + daysForward)).compactMap { utcCalendar.date(byAdding: .day, value: $0, to: base) }
+    }
+
+    private func entries(on day: Date) -> [ScheduleEntry] {
+        entries.filter { utcCalendar.isDate($0.pass.aos, inSameDayAs: day) }
+            .sorted { $0.pass.aos < $1.pass.aos }
+    }
+
+    private var scheduleKey: String {
+        let favs = favorites.map { String($0.id) }.sorted().joined(separator: ",")
+        return "\(favs)-\(store.preferences.observer.coarseKey)-\(store.preferences.minElevation)-\(daysForward)"
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            List {
+                if favorites.isEmpty {
+                    Section {
+                        Text("Mark satellites as favorites (★) to see their passes here.")
+                            .foregroundStyle(ODTheme.muted)
+                    }
+                } else {
+                    ForEach(days, id: \.self) { day in
+                        Section {
+                            // Day label as a normal (non-sticky) row so it always
+                            // renders cleanly below the navigation bar rather than
+                            // tucking under it like a sticky section header.
+                            Text(dayLabel(day))
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(ODTheme.accent)
+                                .id(day)
+                            let dayEntries = entries(on: day)
+                            if dayEntries.isEmpty {
+                                Text(loading ? "Computing…" : "No favorite passes.")
+                                    .font(.caption).foregroundStyle(ODTheme.muted)
+                            } else {
+                                ForEach(dayEntries) { entry in scheduleRow(entry) }
+                            }
+                        }
+                        .onAppear {
+                            if day == days.last, daysForward < maxDaysForward { daysForward += 7 }
+                        }
+                    }
+                }
+            }
+            // Open at today (the past week sits above, scrollable; the future
+            // extends below). Pin only after the first load finishes, so the
+            // freshly-populated past rows don't push today back off-screen.
+            .onChange(of: loading) { _, isLoading in
+                guard !isLoading, !didScrollToToday, !favorites.isEmpty else { return }
+                didScrollToToday = true
+                pinToToday(proxy)
+            }
+        }
+        .task(id: scheduleKey) { await load() }
+    }
+
+    /// Scroll today's section to the top. Deferred (and repeated once) so the pin
+    /// lands after the just-populated rows have laid out.
+    private func pinToToday(_ proxy: ScrollViewProxy) {
+        let today = utcCalendar.startOfDay(for: Date())
+        for delay in [0.05, 0.35] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                withAnimation(.none) { proxy.scrollTo(today, anchor: .top) }
+            }
+        }
+    }
+
+    @ViewBuilder private func scheduleRow(_ entry: ScheduleEntry) -> some View {
+        Button { store.select(entry.satelliteID) } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.name)
+                        .foregroundStyle(entry.satelliteID == store.selectedSatellite?.id ? ODTheme.accent : .primary)
+                        .lineLimit(1)
+                    Text("\(ODFormat.compass(entry.pass.aosAzimuth)) → \(ODFormat.compass(entry.pass.losAzimuth)) · \(ODFormat.duration(entry.pass.duration))")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(Self.clock.string(from: entry.pass.aos)).font(.body.monospacedDigit())
+                    Text("max \(ODFormat.angle(entry.pass.maxElevation))").font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func dayLabel(_ day: Date) -> String {
+        let now = utcCalendar.startOfDay(for: Date())
+        let dateText = Self.dayFormatter.string(from: day)
+        if utcCalendar.isDate(day, inSameDayAs: now) { return "Today · \(dateText) UTC" }
+        if let tomorrow = utcCalendar.date(byAdding: .day, value: 1, to: now), utcCalendar.isDate(day, inSameDayAs: tomorrow) { return "Tomorrow · \(dateText)" }
+        if let yesterday = utcCalendar.date(byAdding: .day, value: -1, to: now), utcCalendar.isDate(day, inSameDayAs: yesterday) { return "Yesterday · \(dateText)" }
+        return dateText
+    }
+
+    @MainActor private func load() async {
+        let sats = favorites
+        guard !sats.isEmpty else { entries = []; return }
+        loading = true
+        let observer = store.preferences.observer
+        let minEl = store.preferences.minElevation
+        let start = utcCalendar.startOfDay(for: Date()).addingTimeInterval(-Double(daysBack) * 86400)
+        let span = Double(daysBack + daysForward + 1)
+        let result = await Task.detached(priority: .userInitiated) { () -> [ScheduleEntry] in
+            var out: [ScheduleEntry] = []
+            for sat in sats {
+                let passes = (try? OrbitPredictor.predictPasses(sat, observer: observer, from: start,
+                                                                minElevation: minEl, maxCount: 500,
+                                                                horizonDays: span)) ?? []
+                for p in passes {
+                    out.append(ScheduleEntry(id: "\(sat.id)-\(p.aos.timeIntervalSince1970)",
+                                             satelliteID: sat.id, name: sat.name, pass: p))
+                }
+            }
+            return out
+        }.value
+        entries = result
+        loading = false
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE, MMM d"
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm 'UTC'"
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+}
+
 struct PassesView: View {
     @EnvironmentObject private var store: OrbitStore
     @State private var passes: [PredictedPass] = []

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject private var store: OrbitStore
@@ -327,6 +328,154 @@ struct AboutView: View {
                 Text("MIT License · Copyright © 2026 Paul Stoetzer, N8HM")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
+        }
+    }
+}
+
+// MARK: - Per-satellite radio calibrations
+
+/// Bulk editor for the operator's per-satellite radio calibration (Hz). Favorites
+/// are listed first; each row edits the downlink/uplink offsets that fold into the
+/// receive dial on every Doppler screen. Supports CSV import/export for bulk entry.
+struct CalibrationsView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @State private var search = ""
+    @State private var shareURL: URL?
+    @State private var importing = false
+    @State private var status = ""
+
+    private var satellites: [SatelliteRecord] {
+        let favorites = store.preferences.favorites
+        let q = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return store.satellites
+            .filter { q.isEmpty || $0.name.lowercased().contains(q) || String($0.id).contains(q) }
+            .sorted { a, b in
+                let fa = favorites.contains(a.id), fb = favorites.contains(b.id)
+                if fa != fb { return fa }
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Text("Per-satellite transceiver calibration. Both offsets fold into the receive dial on every Doppler screen (uplink sign-flipped for inverting transponders); nothing is added to the transmit dial.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
+            Section {
+                HStack {
+                    Button { exportCSV() } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
+                    Spacer()
+                    Button { importing = true } label: { Label("Import CSV", systemImage: "square.and.arrow.down") }
+                }
+                if let shareURL {
+                    ShareLink(item: shareURL) { Label("Share calibrations.csv", systemImage: "square.and.arrow.up") }
+                }
+                if !status.isEmpty { Text(status).font(.caption).foregroundStyle(ODTheme.muted) }
+                Text("CSV columns: norad, name, downlink_hz, uplink_hz (name optional).")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+
+            Section {
+                TextField("Filter by name or NORAD", text: $search)
+                    .textInputAutocapitalization(.characters)
+                    .textFieldStyle(.odField)
+            }
+
+            Section("Satellites (\(satellites.count))") {
+                if store.satellites.isEmpty {
+                    Text("No catalog loaded.").foregroundStyle(ODTheme.muted)
+                } else {
+                    ForEach(satellites) { sat in
+                        calibrationRow(sat)
+                    }
+                }
+            }
+        }
+        .fileImporter(isPresented: $importing,
+                      allowedContentTypes: [.commaSeparatedText, .plainText, .text],
+                      allowsMultipleSelection: false) { result in
+            importCSV(result)
+        }
+    }
+
+    @ViewBuilder private func calibrationRow(_ sat: SatelliteRecord) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                if store.preferences.favorites.contains(sat.id) {
+                    Image(systemName: "star.fill").font(.caption2).foregroundStyle(ODTheme.warning)
+                }
+                Text(sat.name).font(.subheadline.weight(.medium)).lineLimit(1)
+                Spacer(minLength: 6)
+                Text(verbatim: "#\(sat.id)").font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+            }
+            HStack(spacing: 8) {
+                Text("DL").font(.caption).foregroundStyle(ODTheme.muted)
+                TextField("Hz", value: dlBinding(sat.id), format: .number)
+                    .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing)
+                    .textFieldStyle(.odField).frame(width: 92)
+                Text("UL").font(.caption).foregroundStyle(ODTheme.muted)
+                TextField("Hz", value: ulBinding(sat.id), format: .number)
+                    .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing)
+                    .textFieldStyle(.odField).frame(width: 92)
+                Text("Hz").font(.caption).foregroundStyle(ODTheme.muted)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func dlBinding(_ norad: UInt) -> Binding<Double> {
+        Binding(get: { store.calibration(for: norad).downlinkHz },
+                set: { var c = store.calibration(for: norad); c.downlinkHz = $0; store.setCalibration(c, for: norad) })
+    }
+    private func ulBinding(_ norad: UInt) -> Binding<Double> {
+        Binding(get: { store.calibration(for: norad).uplinkHz },
+                set: { var c = store.calibration(for: norad); c.uplinkHz = $0; store.setCalibration(c, for: norad) })
+    }
+
+    private func exportCSV() {
+        var lines = ["norad,name,downlink_hz,uplink_hz"]
+        for sat in store.satellites.sorted(by: { $0.id < $1.id }) {
+            let c = store.calibration(for: sat.id)
+            guard !c.isZero else { continue }
+            let name = sat.name.replacingOccurrences(of: ",", with: " ")
+            lines.append("\(sat.id),\(name),\(Int(c.downlinkHz.rounded())),\(Int(c.uplinkHz.rounded()))")
+        }
+        guard lines.count > 1 else { status = "No non-zero calibrations to export."; return }
+        do {
+            shareURL = try OrbitExportService.temporaryTextFile(name: "calibrations.csv", text: lines.joined(separator: "\n"))
+            status = "Exported \(lines.count - 1) calibration(s)."
+        } catch { status = error.localizedDescription }
+    }
+
+    private func importCSV(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                status = "Could not read the file."; return
+            }
+            var count = 0
+            for raw in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+                let fields = raw.split(separator: ",", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                guard fields.count >= 3, let norad = UInt(fields[0]) else { continue } // skip header/blank
+                // norad,name,dl,ul  OR  norad,dl,ul
+                let dl: Double, ul: Double
+                if fields.count >= 4, Double(fields[1]) == nil {
+                    dl = Double(fields[2]) ?? 0; ul = Double(fields[3]) ?? 0
+                } else {
+                    dl = Double(fields[1]) ?? 0; ul = Double(fields[2]) ?? 0
+                }
+                store.setCalibration(RadioCalibration(downlinkHz: dl, uplinkHz: ul), for: norad)
+                count += 1
+            }
+            status = "Imported \(count) calibration(s)."
+        case .failure(let error):
+            status = error.localizedDescription
         }
     }
 }

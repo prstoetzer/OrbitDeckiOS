@@ -44,7 +44,7 @@ struct TrackView: View {
                                 }
 
                                 if let transponder = satellite.transponders.first {
-                                    dopplerCard(transponder: transponder, rangeRateKmS: look.rangeRateKmS)
+                                    dopplerCard(satellite: satellite, transponder: transponder, rangeRateKmS: look.rangeRateKmS)
                                 }
                             }
                             .padding(.bottom, 24)
@@ -82,10 +82,12 @@ struct TrackView: View {
         }
     }
 
-    private func dopplerCard(transponder: TransponderRecord, rangeRateKmS: Double) -> some View {
+    private func dopplerCard(satellite: SatelliteRecord, transponder: TransponderRecord, rangeRateKmS: Double) -> some View {
         let downlink = transponder.downlinkCenter
         let uplink = transponder.uplinkCenter
-        let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink, rangeRateKmS: rangeRateKmS)
+        let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
+        let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink, rangeRateKmS: rangeRateKmS,
+                                                          downlinkCalibrationHz: cal, uplinkCalibrationHz: 0)
         let title = transponder.description.isEmpty ? "Live Doppler · \(transponder.kind)" : "Live Doppler · \(transponder.description)"
         return SectionCard(title) {
             MetricRow("Downlink", ODFormat.frequency(downlink))
@@ -95,6 +97,10 @@ struct TrackView: View {
                 MetricRow("Uplink", ODFormat.frequency(uplink))
                 MetricRow("TX (tune)", ODFormat.frequency(corrected.tx), valueColor: ODTheme.warning)
                 MetricRow("Doppler (UP)", String(format: "%+lld Hz", corrected.tx - uplink))
+            }
+            if cal != 0 {
+                Label("Includes your calibration for this satellite.", systemImage: "tuningfork")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
     }

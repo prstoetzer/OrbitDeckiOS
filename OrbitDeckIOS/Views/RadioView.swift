@@ -135,9 +135,11 @@ struct RadioView: View {
                 rangeKm: look.rangeKm, frequencyHz: Double(nominal.uplink),
                 txPowerW: groundTxPowerW, txGainDb: groundTxGainDb,
                 rxGainDb: 0, lineLossDb: lineLossDb) : nil
+            let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
             let corrected = OrbitPredictor.dopplerFrequencies(
                 downlinkHz: nominal.downlink, uplinkHz: nominal.uplink,
-                rangeRateKmS: look.rangeRateKmS)
+                rangeRateKmS: look.rangeRateKmS,
+                downlinkCalibrationHz: cal, uplinkCalibrationHz: 0)
 
             SectionCard("Pass") {
                 MetricRow("AOS", ODFormat.utc.string(from: pass.aos))
@@ -182,6 +184,10 @@ struct RadioView: View {
                 MetricRow("Downlink margin", String(format: "%+.1f dB", downlink.receivedPowerDbm - rxSensitivityDbm),
                           valueColor: (downlink.receivedPowerDbm - rxSensitivityDbm) >= 0 ? ODTheme.good : ODTheme.warning)
                 MetricRow("Doppler-corrected RX", ODFormat.frequency(corrected.rx), valueColor: ODTheme.good)
+                if cal != 0 {
+                    Label("Includes your calibration for this satellite.", systemImage: "tuningfork")
+                        .font(.caption2).foregroundStyle(ODTheme.muted)
+                }
             }
 
             let curve = downlinkMarginCurve(altitudeKm: look.altitudeKm,

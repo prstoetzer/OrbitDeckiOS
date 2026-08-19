@@ -430,6 +430,16 @@ final class OrbitStore: ObservableObject {
         preferences.satelliteCalibrations = dict.isEmpty ? nil : dict
     }
 
+    /// The single downlink-referred calibration correction for a satellite, for any
+    /// live Doppler readout. The operator's calibration is a combined oscillator
+    /// error measurable from either leg; both offsets fold into the receive dial
+    /// (uplink sign-flipped on an inverting transponder), and nothing is added to
+    /// the transmit dial.
+    func downlinkCalibrationHz(for norad: UInt, invert: Bool) -> Double {
+        let c = calibration(for: norad)
+        return c.downlinkHz + (invert ? -1.0 : 1.0) * c.uplinkHz
+    }
+
     var locationMode: LocationMode { preferences.locationMode ?? .fixed }
 
     /// The name used for the observer while following the device.

@@ -64,10 +64,12 @@ struct SkyRadarView: View {
                 .padding(.bottom, 24)
             }
         }
-        .task(id: scanKey) {
+        // Re-scan once per second for the whole time the view is alive. Each scan
+        // reads the current observer/catalog, so no restart key is needed.
+        .task {
             while !Task.isCancelled {
                 await scan()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
@@ -142,11 +144,6 @@ struct SkyRadarView: View {
         }
         .background(ODTheme.panel, in: RoundedRectangle(cornerRadius: 12))
         .accessibilityLabel("All-sky radar")
-    }
-
-    private var scanKey: String {
-        let o = store.preferences.observer
-        return "\(o.coarseKey)-\(store.satellites.count)"
     }
 
     @MainActor
