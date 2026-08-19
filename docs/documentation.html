@@ -85,11 +85,13 @@
                 <h2 id="passes">Passes &amp; tracking</h2>
                 <ul>
                     <li><strong>Home</strong> — live look angles, the next qualifying pass, and your favorites' upcoming passes.</li>
-                    <li><strong>Track</strong> — a real-time polar sky plot; toggle north-up or compass-up.</li>
+                    <li><strong>Track</strong> — a real-time polar sky plot; toggle north-up or compass-up. AOS/LOS and the live position are shown as small direction-of-travel arrows.</li>
+                    <li><strong>Daily Schedule</strong> — every favorite's passes grouped by day and ordered by AOS. It opens on today, scrolls back seven days, and extends into the future as you scroll.</li>
                     <li><strong>Next Passes</strong> and <strong>Pass Detail</strong> — pass lists with polar plots and elevation-vs-time profiles.</li>
-                    <li><strong>Ground Track</strong> — the sub-point path and footprint on a map.</li>
+                    <li><strong>Ground Track</strong> — the sub-point path and a live footprint/heading marker on a map.</li>
                     <li><strong>Pass Progression</strong> — passes across the coming days.</li>
                     <li><strong>Sky Radar</strong> — every favorite plotted on one all-sky chart.</li>
+                    <li><strong>Grid Finder</strong> (Live) — a high-precision GPS tool that guides you onto a Maidenhead grid line or corner with a compass arrow and a proximity map, for VUCC roving.</li>
                 </ul>
                 <p>Set the <strong>minimum elevation</strong> in Settings to filter marginal passes.</p>
 
@@ -97,10 +99,11 @@
                 <p>The <strong>Radio</strong> screen provides:</p>
                 <ul>
                     <li>A four-dial DX Doppler display and a single-station RX/TX Doppler playbook.</li>
-                    <li>Per-radio tuning calibration.</li>
+                    <li>Per-satellite calibration. Your calibration is a single combined oscillator correction (radio plus satellite) that you can measure from either the downlink or the uplink; both offsets fold into the receive dial and nothing is added to the transmit dial. It is stored per satellite and applied to every live Doppler readout, with an unobtrusive note when it is in effect.</li>
                     <li>A link budget with a per-elevation margin curve.</li>
                     <li>Transponder listings from the SatNOGS database, with two-way transponders shown first.</li>
                 </ul>
+                <p>The <strong>Calibrations</strong> screen (Catalog &amp; Configuration) is a bulk editor: an editable downlink/uplink table for every satellite, favorites first and searchable, with CSV import and export for entering many calibrations at once.</p>
 
                 <h2 id="analysis">Orbital analysis</h2>
                 <p>The Analysis group includes orbital elements and derived quantities (J2 nodal and apsidal rates, beta angle, eclipse fraction, local time of the ascending node), equator crossings, Sun/Moon transits, illumination, orbital zones, conjunctions, AO-7 mode timing, mutual-visibility windows, and workable-grid discovery.</p>
