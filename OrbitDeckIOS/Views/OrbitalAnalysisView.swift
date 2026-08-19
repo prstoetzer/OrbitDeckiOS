@@ -23,7 +23,10 @@ struct OrbitalAnalysisView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 8)
 
-                TimelineView(.periodic(from: .now, by: 5)) { context in
+                // Geometry and Doppler change continuously, so refresh them every
+                // second to match the other live screens; the static Elements/Nodal
+                // pages only need the slower cadence.
+                TimelineView(.periodic(from: .now, by: (tab == .live || tab == .doppler) ? 1 : 5)) { context in
                     ScrollView {
                         VStack(spacing: 14) {
                             page(satellite: satellite, at: context.date)

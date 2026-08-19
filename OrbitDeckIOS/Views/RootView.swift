@@ -207,17 +207,21 @@ struct RootView: View {
                     await store.refreshSpaceWeatherIfNeeded()
                     await store.refreshCatalogsIfNeeded()
                 }
-                if store.locationMode == .currentLocation { autoLocation.requestLocation() }
+                if store.locationMode == .currentLocation { autoLocation.startFollowing() }
+            } else {
+                // Release the GPS while backgrounded; it resumes on foreground.
+                autoLocation.stopFollowing()
             }
         }
         // Follow the device when the operator has chosen "always use current
-        // location": request a fix at launch and whenever the mode turns on, and
-        // write each fix into the primary observer site.
+        // location": continuously track the device while the mode is on and write
+        // each fix into the primary observer site, so every live screen recomputes
+        // against the operator's real position as they move.
         .task {
-            if store.locationMode == .currentLocation { autoLocation.requestLocation() }
+            if store.locationMode == .currentLocation { autoLocation.startFollowing() }
         }
         .onChange(of: store.locationMode) { _, mode in
-            if mode == .currentLocation { autoLocation.requestLocation() }
+            if mode == .currentLocation { autoLocation.startFollowing() } else { autoLocation.stopFollowing() }
         }
         .onChange(of: autoLocation.location) { _, location in
             guard store.locationMode == .currentLocation, let location else { return }

@@ -10,6 +10,13 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
 
     private let manager = CLLocationManager()
 
+    // Continuous location updates have two independent consumers: the compass
+    // (which needs fixes to resolve TRUE heading) and the "current location"
+    // observer follow. Track each so releasing one doesn't cut updates the other
+    // still needs.
+    private var headingActive = false
+    private var following = false
+
     func startHeading() {
         guard CLLocationManager.headingAvailable() else { return }
         if manager.authorizationStatus == .notDetermined {
@@ -18,13 +25,37 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
         // Location updates are required for CoreLocation to resolve TRUE heading
         // (magnetic declination). Satellite azimuths are true-north referenced,
         // so without this the compass reads off by the local declination.
+        headingActive = true
         manager.startUpdatingLocation()
         manager.startUpdatingHeading()
     }
 
     func stopHeading() {
+        headingActive = false
         manager.stopUpdatingHeading()
-        manager.stopUpdatingLocation()
+        if !following { manager.stopUpdatingLocation() }
+    }
+
+    /// Continuously follow the device so observer-relative screens track a moving
+    /// operator, rather than freezing on the launch/foreground fix. Used by the
+    /// "current location" mode in place of one-shot `requestLocation()`.
+    func startFollowing() {
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            following = true
+            manager.startUpdatingLocation()
+        case .denied, .restricted:
+            errorMessage = "Location access is disabled. Enter a station location manually or enable access in Settings."
+        @unknown default:
+            break
+        }
+    }
+
+    func stopFollowing() {
+        following = false
+        if !headingActive { manager.stopUpdatingLocation() }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
@@ -40,6 +71,9 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        // The observer site only matters at ~100 m scale, so avoid recomputing every
+        // screen on tiny GPS jitter while still following a genuinely moving operator.
+        manager.distanceFilter = 50
     }
 
     func requestLocation() {
@@ -58,7 +92,9 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         if manager.authorizationStatus == .authorizedAlways ||
             manager.authorizationStatus == .authorizedWhenInUse {
-            manager.requestLocation()
+            // Resume the follow that was pending authorization; otherwise honour the
+            // one-shot fill requested via requestLocation().
+            if following { manager.startUpdatingLocation() } else { manager.requestLocation() }
         }
     }
 

@@ -504,7 +504,17 @@ struct OscarLocatorView: View {
                 ? (current.subLatitude < 0 ? .south : .north) : projection
             let southern = projForNodes == .south
                 || (projForNodes == .qth && store.preferences.observer.latitude < 0)
-            let nodeT = nodeTime(gt, ascending: !southern)
+            // In live mode the node is detected inside the propagation window; if
+            // the expected crossing type isn't present (the visible hemisphere can
+            // disagree with the observer), fall back to the opposite crossing so the
+            // ticks never vanish. In next-pass / manual mode the equator crossing is
+            // the operator-selected node itself, so number minutes directly from it —
+            // re-detecting it here was fragile because the window recentres on
+            // displayDate as minutesAfterNode grows and could push the crossing out
+            // of range, leaving every tick NaN and the marks blank.
+            let nodeT: Date? = drive == .live
+                ? (nodeTime(gt, ascending: !southern) ?? nodeTime(gt, ascending: southern))
+                : nodeDate
             let periodMin = max(1, sat.periodMinutes)
             func minutes(_ t: Date) -> Double {
                 guard let nodeT else { return .nan }

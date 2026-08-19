@@ -3174,6 +3174,8 @@ private struct ActivationOperatingDetailView: View {
     @State private var mode: DXDopplerMode
     @State private var anchor: DXDopplerAnchor
     @State private var offsetHz: Double
+    @State private var calDlHz = 0.0
+    @State private var calUlHz = 0.0
     @State private var rows: [DXDopplerRow] = []
     @State private var homeTrack: [SkyPoint] = []
     @State private var dxTrack: [SkyPoint] = []
@@ -3303,6 +3305,31 @@ private struct ActivationOperatingDetailView: View {
                                 Button("Seed from advertised frequency") { seedFromActivation() }
                             }
 
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("Downlink cal")
+                                    Spacer()
+                                    TextField("Hz", value: $calDlHz, format: .number)
+                                        .keyboardType(.numbersAndPunctuation)
+                                        .multilineTextAlignment(.trailing)
+                                        .textFieldStyle(.odField)
+                                        .frame(width: 100)
+                                    Text("Hz").foregroundStyle(ODTheme.muted)
+                                }
+                                HStack {
+                                    Text("Uplink cal")
+                                    Spacer()
+                                    TextField("Hz", value: $calUlHz, format: .number)
+                                        .keyboardType(.numbersAndPunctuation)
+                                        .multilineTextAlignment(.trailing)
+                                        .textFieldStyle(.odField)
+                                        .frame(width: 100)
+                                    Text("Hz").foregroundStyle(ODTheme.muted)
+                                }
+                                Text("Fixed per-radio corrections added to every RX/TX dial to compensate for your transceiver's frequency error.")
+                                    .font(.caption).foregroundStyle(ODTheme.muted)
+                            }
+
                             Text(note).font(.caption).foregroundStyle(ODTheme.muted)
 
                             ScrollView(.horizontal) {
@@ -3364,6 +3391,8 @@ private struct ActivationOperatingDetailView: View {
             .onChange(of: mode) { reload() }
             .onChange(of: anchor) { reload() }
             .onChange(of: offsetHz) { reload() }
+            .onChange(of: calDlHz) { reload() }
+            .onChange(of: calUlHz) { reload() }
         }
     }
 
@@ -3431,7 +3460,8 @@ private struct ActivationOperatingDetailView: View {
         guard let tp = selectedTransponder else { rows = []; return }
         rows = (try? DXDopplerEngine.table(
             satellite: detail.satellite, home: home, dx: detail.dxSite, transponder: tp,
-            window: window, offsetHz: Int64(offsetHz.rounded()), mode: mode, anchor: anchor
+            window: window, offsetHz: Int64(offsetHz.rounded()), mode: mode, anchor: anchor,
+            calDlHz: Int64(calDlHz.rounded()), calUlHz: Int64(calUlHz.rounded())
         )) ?? []
         if note.isEmpty {
             note = "\(rows.count) rows at 30-second steps across the selected mutual window."

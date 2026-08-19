@@ -86,6 +86,26 @@ struct GlobeView: View {
                     }
                 }
 
+                // Scrub time directly. Grabbing the slider stops playback and pins
+                // the shown moment; the thumb starts from wherever playback left off.
+                VStack(spacing: 2) {
+                    Slider(value: $frozenOffset, in: -180...180, step: 1) { editing in
+                        if editing && isPlaying {
+                            frozenOffset = effectiveOffset(Date())
+                            isPlaying = false
+                            playStartWall = nil
+                        }
+                    }
+                    .tint(ODTheme.accent)
+                    HStack {
+                        Text("−3 h").font(.caption2).foregroundStyle(ODTheme.muted)
+                        Spacer()
+                        Text("now").font(.caption2).foregroundStyle(ODTheme.muted)
+                        Spacer()
+                        Text("+3 h").font(.caption2).foregroundStyle(ODTheme.muted)
+                    }
+                }
+
                 TimelineView(isPlaying ? .periodic(from: .now, by: 0.5) : .periodic(from: .now, by: 2)) { context in
                     let off = effectiveOffset(context.date)
                     VStack(spacing: 8) {
@@ -153,19 +173,41 @@ struct GlobeView: View {
         } else { ContentUnavailableView("Select a satellite", systemImage:"globe.americas") }
     }
 
-    /// Compact one-line readout for below the globe, so two facts don't consume a
-    /// full panel of vertical space.
+    /// Detailed readout for the moment shown on the globe. Recomputed by the
+    /// enclosing TimelineView, so it stays live as time is scrubbed or animated.
     @ViewBuilder private func globeInfoRow(at date: Date) -> some View {
         if let sat = store.selectedSatellite,
            let look = try? OrbitPredictor.look(sat, observer: store.preferences.observer, at: date) {
-            HStack(spacing: 8) {
-                Text(sat.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Spacer(minLength: 8)
-                Text(String(format: "%.1f°, %.1f° · %.0f km · el %.0f°",
-                            look.subLatitude, look.subLongitude, look.altitudeKm, look.elevation))
-                    .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
-                    .lineLimit(1).minimumScaleFactor(0.7)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(sat.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Label(look.sunlit ? "Sunlit" : "Eclipse", systemImage: look.sunlit ? "sun.max.fill" : "moon.fill")
+                        .font(.caption).foregroundStyle(look.sunlit ? ODTheme.warning : ODTheme.muted)
+                }
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
+                                    GridItem(.flexible(), alignment: .leading)],
+                          alignment: .leading, spacing: 4) {
+                    globeStat("Sub-point", String(format: "%.2f°, %.2f°", look.subLatitude, look.subLongitude))
+                    globeStat("Altitude", String(format: "%.0f km", look.altitudeKm))
+                    globeStat("Azimuth", String(format: "%.0f°", look.azimuth))
+                    globeStat("Elevation", String(format: "%+.1f°", look.elevation))
+                    globeStat("Range", String(format: "%.0f km", look.rangeKm))
+                    globeStat("Range rate", String(format: "%+.2f km/s", look.rangeRateKmS))
+                    globeStat("Footprint", String(format: "%.0f km", look.footprintRadiusKm * 2))
+                    globeStat("Beta angle", String(format: "%+.1f°", look.betaAngleDeg))
+                }
             }
+            .padding(10)
+            .odPanel()
+        }
+    }
+
+    @ViewBuilder private func globeStat(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label).font(.caption2).foregroundStyle(ODTheme.muted)
+            Spacer(minLength: 4)
+            Text(value).font(.caption.monospacedDigit())
         }
     }
 
