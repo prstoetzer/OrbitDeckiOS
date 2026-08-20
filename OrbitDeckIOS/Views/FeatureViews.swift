@@ -732,17 +732,21 @@ struct WorkableView: View {
                 TextField(kind == "dxcc" ? "Filter prefix/entity" : "Filter", text: $filter)
                     .textInputAutocapitalization(.characters).textFieldStyle(.odField)
 
-                if let satellite = store.selectedSatellite, !acrossPass {
-                    // Live footprint: recompute every second at the satellite's
-                    // current sub-point. workableNow is a cheap point-in-footprint
-                    // scan, so it's safe to run synchronously on the timeline tick.
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        let live = (try? ParityPlanningEngine.workableNow(satellite, at: context.date))
-                            ?? WorkableSetSnapshot(grids: [], states: [], dxcc: [])
-                        resultsSection(live)
-                    }
-                } else {
-                    resultsSection(snapshot)
+                // A single, structurally-stable TimelineView drives both modes so
+                // toggling Live/Across doesn't swap the view tree (which briefly
+                // collapsed the NavigationSplitView detail back to Home). In Live
+                // mode it recomputes the current-sub-point footprint each second
+                // (a cheap point-in-footprint scan); in Across mode it just shows
+                // the precomputed pass snapshot (the tick is a no-op re-read).
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let display: WorkableSetSnapshot = {
+                        if !acrossPass, let satellite = store.selectedSatellite {
+                            return (try? ParityPlanningEngine.workableNow(satellite, at: context.date))
+                                ?? WorkableSetSnapshot(grids: [], states: [], dxcc: [])
+                        }
+                        return snapshot
+                    }()
+                    resultsSection(display)
                 }
 
                 Text("DXCC uses 340 bundled reference points. State and entity results are point-based footprint tests rather than political-boundary polygon intersections.").font(.caption).foregroundStyle(ODTheme.muted)
