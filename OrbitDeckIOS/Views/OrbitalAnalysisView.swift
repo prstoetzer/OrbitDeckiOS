@@ -151,15 +151,18 @@ struct OrbitalAnalysisView: View {
                         .pickerStyle(.menu)
                     }
                     let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
+                    // Calibrated dials for the tune readouts; the uncalibrated pair
+                    // gives the true Doppler shift shown on the Doppler (DN/UP) rows.
                     let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: transponder.downlinkCenter, uplinkHz: transponder.uplinkCenter, rangeRateKmS: look.rangeRateKmS,
                                                                       downlinkCalibrationHz: cal, uplinkCalibrationHz: 0)
+                    let trueShift = OrbitPredictor.dopplerFrequencies(downlinkHz: transponder.downlinkCenter, uplinkHz: transponder.uplinkCenter, rangeRateKmS: look.rangeRateKmS)
                     MetricRow("Downlink", ODFormat.frequency(transponder.downlinkCenter))
                     MetricRow("RX (tune)", ODFormat.frequency(corrected.rx), valueColor: ODTheme.good)
-                    MetricRow("Doppler (DN)", String(format: "%+lld Hz", corrected.rx - transponder.downlinkCenter))
+                    MetricRow("Doppler (DN)", String(format: "%+lld Hz", trueShift.rx - transponder.downlinkCenter))
                     if transponder.uplinkCenter > 0 {
                         MetricRow("Uplink", ODFormat.frequency(transponder.uplinkCenter))
                         MetricRow("TX (tune)", ODFormat.frequency(corrected.tx), valueColor: ODTheme.warning)
-                        MetricRow("Doppler (UP)", String(format: "%+lld Hz", corrected.tx - transponder.uplinkCenter))
+                        MetricRow("Doppler (UP)", String(format: "%+lld Hz", trueShift.tx - transponder.uplinkCenter))
                     }
                     if cal != 0 {
                         Label("Includes your calibration for this satellite.", systemImage: "tuningfork")

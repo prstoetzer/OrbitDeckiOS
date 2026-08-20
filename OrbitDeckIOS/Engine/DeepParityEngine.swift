@@ -1485,7 +1485,10 @@ extension LearnMath {
 
     static func eclipseFraction(altitudeKm: Double, betaDeg: Double) -> Double {
         let ratio = earthRadiusKm / (earthRadiusKm + max(1, altitudeKm))
-        let betaStar = acos(max(-1, min(1, ratio))) * 180 / Double.pi
+        // Critical beta angle above which the orbit is in continuous sunlight is
+        // arcsin(Re/(Re+h)) — using arccos here made β★ far too small (~20° for LEO
+        // instead of ~70°), so many still-eclipsing cases wrongly read 0%.
+        let betaStar = asin(max(-1, min(1, ratio))) * 180 / Double.pi
         if abs(betaDeg) >= betaStar { return 0 }
         let cb = cos(betaDeg * Double.pi / 180)
         guard cb > 1e-6 else { return 0 }
