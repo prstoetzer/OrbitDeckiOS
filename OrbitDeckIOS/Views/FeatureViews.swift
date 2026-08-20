@@ -784,7 +784,13 @@ struct WorkableView: View {
         let site = store.preferences.observer, minEl = store.preferences.minElevation
         isLoading = true
         error = nil
-        Task {
+        // Run the heavy footprint scan off the main actor, but publish the result
+        // (and the loading/error state) back ON the main actor. compute() is a
+        // nonisolated View method, so a plain `Task {}` here would run its body —
+        // and the `snapshot` @State write — on a background thread, which does not
+        // reliably invalidate the view. That is what left this view stuck at
+        // "0 workable" once the incidental periodic re-renders were removed.
+        Task { @MainActor in
             do {
                 snapshot = try await Task.detached {
                     try ParityPlanningEngine.workableAcrossNextPass(satellite, observer: site, minimumElevation: minEl)
