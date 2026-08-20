@@ -186,6 +186,11 @@ struct RootView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var autoLocation = LocationProvider()
     @State private var selection: OrbitDestination? = .home
+    // The last non-nil selection. NavigationSplitView can briefly hand the detail
+    // a nil selection while a heavy screen re-renders; falling back to `.home`
+    // there made the detail flash the Home screen. Falling back to the last real
+    // selection keeps the current screen on-screen through that transient.
+    @State private var lastSelection: OrbitDestination = .home
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     // When on, the device won't auto-lock while the Home screen is showing, so an
     // operator can leave it up as a live "shack clock" during a pass. iOS resets
@@ -230,18 +235,21 @@ struct RootView: View {
                 }
             }
         } detail: {
-            destinationView(selection ?? .home)
+            // Resolve a nil selection to the last real screen rather than Home, so
+            // a transient nil during a heavy re-render doesn't flash the Home view.
+            let shown = selection ?? lastSelection
+            destinationView(shown)
                 // Cap reading-oriented screens at a comfortable width and centre
                 // them so cards/text don't stretch across a wide iPad detail pane.
                 // Full-bleed visual screens (globe, radar, ground-track map) keep
                 // the whole width. On iPhone the cap never bites (screen < 700).
-                .frame(maxWidth: isFullBleed(selection ?? .home) ? .infinity : 720)
+                .frame(maxWidth: isFullBleed(shown) ? .infinity : 720)
                 .frame(maxWidth: .infinity)
                 .scrollContentBackground(.hidden)
                 .background(ODTheme.background.ignoresSafeArea())
                 // Show the app name on the landing page; other screens keep their
                 // own function title.
-                .navigationTitle(selection == .home ? "OrbitDeck" : (selection?.title ?? "OrbitDeck"))
+                .navigationTitle(shown == .home ? "OrbitDeck" : shown.title)
                 .navigationBarTitleDisplayMode(.inline)
                 // On iPhone the split view collapses to a stack; hide the default
                 // "‹ OrbitDeck" back chevron (which reads as "go back", not "open
@@ -256,7 +264,7 @@ struct RootView: View {
                             .accessibilityLabel("Menu")
                         }
                     }
-                    if (selection ?? .home).usesSelectedSatellite {
+                    if shown.usesSelectedSatellite {
                         ToolbarItem(placement: .topBarTrailing) {
                             SatelliteSwitcherButton()
                         }
@@ -288,7 +296,10 @@ struct RootView: View {
         // updates as continuously as the hardware allows.
         .task { updateLocationFollow(); applyIdleTimer(active: scenePhase == .active) }
         .onChange(of: store.locationMode) { _, _ in updateLocationFollow() }
-        .onChange(of: selection) { _, _ in updateLocationFollow(); applyIdleTimer(active: scenePhase == .active) }
+        .onChange(of: selection) { _, newValue in
+            if let newValue { lastSelection = newValue }
+            updateLocationFollow(); applyIdleTimer(active: scenePhase == .active)
+        }
         .onChange(of: keepScreenAwakeHome) { _, _ in applyIdleTimer(active: scenePhase == .active) }
         .onChange(of: notifications.openHomeRequested) { _, requested in
             if requested { selection = .home; notifications.openHomeRequested = false }
