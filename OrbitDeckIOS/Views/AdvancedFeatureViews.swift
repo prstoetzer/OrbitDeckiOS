@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import EventKit
 
 // MARK: - OSCARLOCATOR simulator
 
@@ -96,23 +97,25 @@ struct OscarLocatorView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    locator
-                        .aspectRatio(1, contentMode: .fit)
-                        .frame(maxWidth: .infinity)
-                    controls
-
-                    if let look {
-                        SectionCard("Readout") {
-                            MetricRow(label: "Time", value: ODFormat.utc.string(from: displayDate))
-                            MetricRow(label: "Sub-point", value: String(format: "%.2f°, %.2f°", look.subLatitude, look.subLongitude))
-                            MetricRow(label: "Altitude", value: ODFormat.distance(look.altitudeKm))
-                            MetricRow(label: "From QTH", value: String(format: "az %.0f° / el %+.1f°", look.azimuth, look.elevation), valueColor: look.elevation >= 0 ? ODTheme.good : ODTheme.muted)
-                            MetricRow(label: "Footprint radius", value: ODFormat.distance(look.footprintRadiusKm))
-                            if drive != .live {
-                                MetricRow(label: "EQX", value: String(format: "%@  %.1f°%@", ODFormat.utcShort.string(from: nodeDate), abs(nodeLongitude), nodeLongitude >= 0 ? "E" : "W"))
+                    if drive == .live {
+                        // Live mode recomputes every second on the TimelineView tick.
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            let d = liveData(at: context.date)
+                            VStack(alignment: .leading, spacing: 14) {
+                                locatorView(track: d.track, look: d.look, compareTrack: d.compareTrack, compareLook: d.compareLook)
+                                    .aspectRatio(1, contentMode: .fit)
+                                    .frame(maxWidth: .infinity)
+                                readoutCard(look: d.look, date: context.date)
                             }
                         }
+                    } else {
+                        locatorView(track: track, look: look, compareTrack: compareTrack, compareLook: compareLook)
+                            .aspectRatio(1, contentMode: .fit)
+                            .frame(maxWidth: .infinity)
+                        readoutCard(look: look, date: displayDate)
                     }
+                    controls
+
                     if let error {
                         Text(error).font(.caption).foregroundStyle(ODTheme.warning)
                     }
@@ -149,18 +152,20 @@ struct OscarLocatorView: View {
         .onChange(of: labRAAN) { saveSharedLabOrbit(); if useLabSatellite { Task { await seedAndRefresh() } } }
         .onChange(of: labArgumentOfPerigee) { saveSharedLabOrbit(); if useLabSatellite { Task { await seedAndRefresh() } } }
         .onChange(of: labMeanAnomaly) { saveSharedLabOrbit(); if useLabSatellite { Task { await seedAndRefresh() } } }
-        // Truly-live drive: re-propagate once per second while in live mode using
-        // the same cancellable async-loop pattern as the other live screens. This
-        // replaces a fragile TimelineView-in-overlay that could silently stop
-        // delivering ticks. The loop cancels automatically when `drive` changes.
-        .task(id: drive) { await runLiveLoop() }
     }
 
-    @MainActor private func runLiveLoop() async {
-        guard drive == .live else { return }
-        while !Task.isCancelled {
-            await refresh()
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+    @ViewBuilder private func readoutCard(look: LiveLook?, date: Date) -> some View {
+        if let look {
+            SectionCard("Readout") {
+                MetricRow(label: "Time", value: ODFormat.utc.string(from: date))
+                MetricRow(label: "Sub-point", value: String(format: "%.2f°, %.2f°", look.subLatitude, look.subLongitude))
+                MetricRow(label: "Altitude", value: ODFormat.distance(look.altitudeKm))
+                MetricRow(label: "From QTH", value: String(format: "az %.0f° / el %+.1f°", look.azimuth, look.elevation), valueColor: look.elevation >= 0 ? ODTheme.good : ODTheme.muted)
+                MetricRow(label: "Footprint radius", value: ODFormat.distance(look.footprintRadiusKm))
+                if drive != .live {
+                    MetricRow(label: "EQX", value: String(format: "%@  %.1f°%@", ODFormat.utcShort.string(from: nodeDate), abs(nodeLongitude), nodeLongitude >= 0 ? "E" : "W"))
+                }
+            }
         }
     }
 
@@ -274,12 +279,13 @@ struct OscarLocatorView: View {
         .odPanel()
     }
 
-    private var locator: some View {
+    private func locatorView(track: [OscarGeoPoint], look: LiveLook?,
+                             compareTrack: [OscarGeoPoint], compareLook: LiveLook?) -> some View {
         Canvas { context, size in
             let side = min(size.width, size.height)
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
             let radius = max(1, side / 2 - 28)
-            let mode = resolvedProjection
+            let mode = resolvedProjection(for: look)
 
             for ring in stride(from: 30.0, through: 90.0, by: 30.0) {
                 let r = radius * ring / 90.0
@@ -481,13 +487,46 @@ struct OscarLocatorView: View {
         drive == .live ? .now : nodeDate.addingTimeInterval(minutesAfterNode * 60)
     }
 
-    private var resolvedProjection: OscarProjection {
+    private var resolvedProjection: OscarProjection { resolvedProjection(for: look) }
+
+    private func resolvedProjection(for look: LiveLook?) -> OscarProjection {
         switch projection {
         case .automatic:
             if let look { return look.subLatitude < 0 ? .south : .north }
             return store.preferences.observer.latitude < 0 ? .south : .north
         default: return projection
         }
+    }
+
+    /// Synchronously compute the live locator data at `date` (live mode only),
+    /// mirroring `refresh()`'s live branch. Driven by a TimelineView so the sim
+    /// updates every second on-device.
+    private func liveData(at date: Date) -> (track: [OscarGeoPoint], look: LiveLook?, compareTrack: [OscarGeoPoint], compareLook: LiveLook?) {
+        guard let sat = activeSatellite,
+              let gt = try? OrbitPredictor.groundTrack(sat, centeredAt: date, durationMinutes: max(1, sat.periodMinutes), step: 45),
+              let current = try? OrbitPredictor.look(sat, observer: store.preferences.observer, at: date) else {
+            return ([], nil, [], nil)
+        }
+        let projForNodes: OscarProjection = projection == .automatic ? (current.subLatitude < 0 ? .south : .north) : projection
+        let southern = projForNodes == .south || (projForNodes == .qth && store.preferences.observer.latitude < 0)
+        let nodeT = nodeTime(gt, ascending: !southern) ?? nodeTime(gt, ascending: southern)
+        let periodMin = max(1, sat.periodMinutes)
+        func minutes(_ t: Date) -> Double {
+            guard let nodeT else { return .nan }
+            let raw = t.timeIntervalSince(nodeT) / 60
+            return (raw.truncatingRemainder(dividingBy: periodMin) + periodMin).truncatingRemainder(dividingBy: periodMin)
+        }
+        let liveTrack = gt.map { OscarGeoPoint(latitude: $0.1, longitude: $0.2, minutesSinceNode: minutes($0.0)) }
+        var cTrack: [OscarGeoPoint] = []
+        var cLook: LiveLook?
+        if let compareSnapshot {
+            let ghost = labSatellite(from: compareSnapshot, norad: 99001)
+            if let ghostGT = try? OrbitPredictor.groundTrack(ghost, centeredAt: date, durationMinutes: max(1, ghost.periodMinutes), step: 45) {
+                cTrack = ghostGT.map { OscarGeoPoint(latitude: $0.1, longitude: $0.2) }
+            }
+            cLook = try? OrbitPredictor.look(ghost, observer: store.preferences.observer, at: date)
+        }
+        return (liveTrack, current, cTrack, cLook)
     }
 
     @MainActor private func seedAndRefresh() async {
@@ -755,6 +794,7 @@ struct ExportsView: View {
     @State private var cardPassIndex = 0
     @State private var referenceDays = 60
     @State private var referenceFavorites = false
+    @State private var scheduleAllFavorites = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -765,6 +805,7 @@ struct ExportsView: View {
                         Picker("Window", selection: $days) {
                             Text("1 day").tag(1); Text("3 days").tag(3); Text("7 days").tag(7)
                         }.pickerStyle(.segmented)
+                        Toggle("All favorite satellites", isOn: $scheduleAllFavorites)
                         HStack {
                             Button("CSV") { prepare(.csv) }
                             Button("Excel") { prepare(.xlsx) }
@@ -773,11 +814,12 @@ struct ExportsView: View {
                             Button("PDF Report") { prepare(.pdf) }
                             if loading { ProgressView() }
                         }
-                        if let shareURL {
-                            ShareLink(item: shareURL) {
-                                Label("Share \(shareLabel)", systemImage: "square.and.arrow.up")
-                            }
-                            .buttonStyle(.borderedProminent)
+                        Button { Task { await addToCalendar() } } label: {
+                            Label("Add to Calendar", systemImage: "calendar.badge.plus")
+                        }
+                        if scheduleAllFavorites {
+                            Text("CSV, iCalendar and Add to Calendar cover all favorites; Excel/JSON/PDF export the selected satellite.")
+                                .font(.caption2).foregroundStyle(ODTheme.muted)
                         }
                         Text(status).font(.caption).foregroundStyle(ODTheme.muted)
                     }
@@ -846,9 +888,6 @@ struct ExportsView: View {
                             }
                         }
                         if loading { ProgressView() }
-                        if let shareURL {
-                            ShareLink(item: shareURL) { Label("Share \(shareLabel)", systemImage: "square.and.arrow.up") }
-                        }
                     }
 
                     SectionCard("Listings & reference orbits") {
@@ -909,6 +948,14 @@ struct ExportsView: View {
         .task { await reload() }
         .onChange(of: days) { Task { await reload() } }
         .onChange(of: store.preferences.selectedNorad) { Task { await reload() } }
+        // Present the system share sheet when a file is prepared, so every export
+        // shares from the same place regardless of which section produced it.
+        .sheet(item: Binding(
+            get: { shareURL.map { ShareURLItem(url: $0) } },
+            set: { if $0 == nil { shareURL = nil } }
+        )) { item in
+            ActivityView(url: item.url)
+        }
     }
 
     private enum ExportKind { case csv, xlsx, ics, json, pdf }
@@ -924,7 +971,68 @@ struct ExportsView: View {
         } catch { status = error.localizedDescription }
     }
 
+    private func favoriteGroups() -> [(satellite: SatelliteRecord, passes: [PredictedPass])] {
+        let favorites = store.satellites.filter { store.preferences.favorites.contains($0.id) }
+        return favorites.compactMap { sat in
+            let ps = (try? OrbitPredictor.predictPasses(sat, observer: store.preferences.observer,
+                                                        minElevation: store.preferences.minElevation,
+                                                        maxCount: 200, horizonDays: Double(days))) ?? []
+            return ps.isEmpty ? nil : (sat, ps)
+        }
+    }
+
+    @MainActor private func addToCalendar() async {
+        // Requesting access crashes without the usage-description key, so guard on it.
+        guard Bundle.main.object(forInfoDictionaryKey: "NSCalendarsWriteOnlyAccessUsageDescription") != nil else {
+            status = "Calendar isn't enabled in this build (missing calendar usage description)."
+            return
+        }
+        let lead = store.preferences.passAlarmLeadMinutes ?? 10
+        let entries: [(name: String, pass: PredictedPass)]
+        if scheduleAllFavorites {
+            entries = favoriteGroups().flatMap { g in g.passes.map { (g.satellite.name, $0) } }
+        } else if let sat = store.selectedSatellite {
+            entries = passes.map { (sat.name, $0) }
+        } else {
+            entries = []
+        }
+        guard !entries.isEmpty else { status = "No passes to add."; return }
+        let eventStore = EKEventStore()
+        do {
+            let granted = try await eventStore.requestWriteOnlyAccessToEvents()
+            guard granted else { status = "Calendar access was denied."; return }
+            guard let calendar = eventStore.defaultCalendarForNewEvents else { status = "No default calendar is available."; return }
+            for entry in entries {
+                let event = EKEvent(eventStore: eventStore)
+                event.title = "\(entry.name) pass"
+                event.startDate = entry.pass.aos
+                event.endDate = entry.pass.los
+                event.calendar = calendar
+                event.notes = "Max elevation \(String(format: "%.0f", entry.pass.maxElevation))°. Station: \(store.preferences.observer.name)."
+                if lead > 0 { event.addAlarm(EKAlarm(relativeOffset: -Double(lead * 60))) }
+                try eventStore.save(event, span: .thisEvent, commit: false)
+            }
+            try eventStore.commit()
+            status = "Added \(entries.count) event(s) to your calendar."
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
     @MainActor private func prepare(_ kind: ExportKind) {
+        if scheduleAllFavorites, kind == .csv || kind == .ics {
+            let groups = favoriteGroups()
+            guard !groups.isEmpty else { status = "Mark satellites as favorites first."; return }
+            do {
+                if kind == .csv {
+                    shareURL = try OrbitExportService.temporaryTextFile(name: "favorites_passes.csv", text: OrbitExportService.favoritesPassesCSV(groups, observer: store.preferences.observer)); shareLabel = "favorites CSV"
+                } else {
+                    shareURL = try OrbitExportService.temporaryTextFile(name: "favorites_passes.ics", text: OrbitExportService.favoritesPassesICS(groups, observer: store.preferences.observer, leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)); shareLabel = "favorites iCalendar"
+                }
+                status = "Prepared \(shareLabel) for \(groups.count) favorite(s)."
+            } catch { status = error.localizedDescription }
+            return
+        }
         guard let sat = store.selectedSatellite, !passes.isEmpty else { status = "No passes to export."; return }
         do {
             let base = sat.name.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "/", with: "-")

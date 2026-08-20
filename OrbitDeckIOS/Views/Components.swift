@@ -1,4 +1,22 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+
+/// Identifiable wrapper so a prepared file URL can drive a `.sheet(item:)`.
+struct ShareURLItem: Identifiable { let url: URL; var id: URL { url } }
+
+#if canImport(UIKit)
+/// The system share sheet, presented programmatically (so exports open the share
+/// UI directly rather than surfacing a button in an unrelated section).
+struct ActivityView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+#endif
 
 enum ODFormat {
     nonisolated(unsafe) static let utc: DateFormatter = {
@@ -241,6 +259,68 @@ struct PolarSkyPlot: View {
         let a = plotPoint(points[0].azimuth, points[0].elevation, center, outerRadius)
         let b = plotPoint(points[1].azimuth, points[1].elevation, center, outerRadius)
         return hypot(b.x - a.x, b.y - a.y) > 0.5 ? atan2(b.y - a.y, b.x - a.x) : nil
+    }
+}
+
+/// A small, unobtrusive bell toggle for scheduling (or cancelling) a local pass
+/// reminder for one pass. Filled bell = a reminder is pending. Shows an alert only
+/// on error (e.g. notifications denied, or the pass is too close). Designed to sit
+/// beside a pass listing anywhere in the app.
+struct PassAlarmButton: View {
+    let satellite: SatelliteRecord
+    let pass: PredictedPass
+    let observer: ObserverSite
+    let leadMinutes: Int
+
+    @State private var scheduled = false
+    @State private var working = false
+    @State private var errorText: String?
+
+    var body: some View {
+        Button {
+            Task { await toggle() }
+        } label: {
+            Image(systemName: scheduled ? "bell.fill" : "bell")
+                .font(.subheadline)
+                .foregroundStyle(scheduled ? ODTheme.accent : ODTheme.muted)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .disabled(working)
+        .accessibilityLabel(scheduled ? "Cancel pass reminder" : "Set pass reminder \(leadMinutes) minutes before AOS")
+        .task(id: pass.id) { scheduled = await PassAlarmService.isScheduled(pass: pass, satellite: satellite) }
+        .alert("Pass alarm", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(errorText ?? "") }
+    }
+
+    private func toggle() async {
+        working = true
+        defer { working = false }
+        if scheduled {
+            PassAlarmService.cancel(pass: pass, satellite: satellite)
+            scheduled = false
+        } else {
+            do {
+                try await PassAlarmService.schedule(pass: pass, satellite: satellite, observer: observer, leadMinutes: leadMinutes)
+                scheduled = true
+            } catch {
+                errorText = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// Shown in place of the pass-alarm bell when a pass is in progress or already
+/// past (no reminder can be set), matching the bell's size so rows stay aligned.
+struct PassAlarmUnavailable: View {
+    var body: some View {
+        Image(systemName: "bell.slash")
+            .font(.subheadline)
+            .foregroundStyle(ODTheme.muted.opacity(0.5))
+            .frame(width: 30, height: 30)
+            .accessibilityLabel("No reminder — pass in progress or past")
     }
 }
 

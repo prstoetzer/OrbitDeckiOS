@@ -61,9 +61,6 @@ struct DeepToolsView: View {
                 }
                 .tint(.primary)
 
-                Text("\(BenchTools.allTools.count) calculators across \(categories.count) categories")
-                    .font(.caption).foregroundStyle(ODTheme.muted)
-
                 Text(spec.description).foregroundStyle(ODTheme.muted)
                 if spec.id == "sciCalc" { SciCalcView() }
                 if spec.id != "sciCalc" {

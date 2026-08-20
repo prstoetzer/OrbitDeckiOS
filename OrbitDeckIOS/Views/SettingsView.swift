@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var qrzLoaded = false
     @State private var gridEntry = ""
     @State private var gridMessage: String?
+    @AppStorage("orbitdeck.keepScreenAwakeHome") private var keepScreenAwakeHome = false
     @AppStorage("orbitdeck.spacetrack.identity") private var spaceTrackIdentity = ""
     @State private var spaceTrackPassword = ""
     @State private var spaceTrackLoaded = false
@@ -171,6 +172,14 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
+            Section {
+                Toggle("Keep screen awake on Home", isOn: $keepScreenAwakeHome)
+                Text("Prevents auto-lock while the Home screen is showing, so you can leave it up as a live display during a pass. The rest of the app auto-locks normally.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            } header: {
+                Text("Display")
+            }
+
             Section("GP element source") {
                 Picker("Source", selection: Binding(
                     get: { store.preferences.sourceKind },
@@ -316,7 +325,7 @@ struct AboutView: View {
                 }
             }
 
-            Section("This port") {
+            Section("Build info") {
                 LabeledContent("OrbitDeck iOS", value: "\(appVersion) (\(appBuild))")
                 LabeledContent("UI", value: "Native SwiftUI")
                 LabeledContent("Propagation", value: "SatelliteKit SGP4/SDP4")
@@ -414,11 +423,11 @@ struct CalibrationsView: View {
                 Text("DL").font(.caption).foregroundStyle(ODTheme.muted)
                 TextField("Hz", value: dlBinding(sat.id), format: .number)
                     .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing)
-                    .textFieldStyle(.odField).frame(width: 92)
+                    .textFieldStyle(.odField).frame(width: 100)
                 Text("UL").font(.caption).foregroundStyle(ODTheme.muted)
                 TextField("Hz", value: ulBinding(sat.id), format: .number)
                     .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing)
-                    .textFieldStyle(.odField).frame(width: 92)
+                    .textFieldStyle(.odField).frame(width: 100)
                 Text("Hz").font(.caption).foregroundStyle(ODTheme.muted)
             }
         }

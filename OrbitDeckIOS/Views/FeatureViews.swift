@@ -330,7 +330,7 @@ private struct DXDopplerSheet: View {
                                 .keyboardType(.numbersAndPunctuation)
                                 .multilineTextAlignment(.trailing)
                                 .textFieldStyle(.odField)
-                                .frame(width: 110)
+                                .frame(width: 100)
                             Text("Hz").foregroundStyle(ODTheme.muted)
                         }
                         HStack {
@@ -340,7 +340,7 @@ private struct DXDopplerSheet: View {
                                 .keyboardType(.numbersAndPunctuation)
                                 .multilineTextAlignment(.trailing)
                                 .textFieldStyle(.odField)
-                                .frame(width: 110)
+                                .frame(width: 100)
                             Text("Hz").foregroundStyle(ODTheme.muted)
                         }
                         Text("Your combined oscillator error (radio + satellite). Measure it from the downlink and/or uplink; both fold into one overall correction applied to your receive dial only — your transmit dial stays on the computed frequency, and the DX station is never calibrated. Saved per satellite.")
@@ -389,30 +389,40 @@ private struct DXDopplerSheet: View {
     private var computeKey: String { "\(selectedTransponderID ?? "")-\(mode.rawValue)-\(anchor.rawValue)-\(Int(passbandPercent))-\(Int(calDlHz))-\(Int(calUlHz))" }
 
     private var dialTable: some View {
-        ScrollView(.horizontal) {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 12) {
-                    Text("UTC").frame(width: 62, alignment: .leading)
-                    Text("My RX").frame(width: 92, alignment: .trailing)
-                    Text("My TX").frame(width: 92, alignment: .trailing)
-                    Text("DX RX").frame(width: 92, alignment: .trailing)
-                    Text("DX TX").frame(width: 92, alignment: .trailing)
-                }.font(.caption.bold().monospaced())
-                Divider()
-                ForEach(rows) { row in
-                    HStack(spacing: 12) {
-                        Text(ODFormat.utcShort.string(from: row.date)).frame(width: 62, alignment: .leading)
-                        Text(mhz(row.myRX)).frame(width: 92, alignment: .trailing).foregroundStyle(ODTheme.good)
-                        Text(row.myTX > 0 ? mhz(row.myTX) : "—").frame(width: 92, alignment: .trailing).foregroundStyle(ODTheme.warning)
-                        Text(mhz(row.dxRX)).frame(width: 92, alignment: .trailing)
-                        Text(row.dxTX > 0 ? mhz(row.dxTX) : "—").frame(width: 92, alignment: .trailing)
-                    }.font(.caption.monospaced())
+        // A Grid (not fixed-width columns) so the dials fit and scale with Dynamic
+        // Type instead of clipping or needing a horizontal scroll.
+        Grid(alignment: .trailing, horizontalSpacing: 12, verticalSpacing: 5) {
+            GridRow {
+                Text("UTC").gridColumnAlignment(.leading)
+                Text("My RX"); Text("My TX"); Text("DX RX"); Text("DX TX")
+            }
+            .font(.caption.bold().monospaced())
+            .foregroundStyle(ODTheme.muted)
+            Divider().gridCellColumns(5)
+            ForEach(rows) { row in
+                GridRow {
+                    Text(Self.clock.string(from: row.date)).gridColumnAlignment(.leading)
+                    Text(mhz(row.myRX)).foregroundStyle(ODTheme.good)
+                    Text(row.myTX > 0 ? mhz(row.myTX) : "—").foregroundStyle(ODTheme.warning)
+                    Text(mhz(row.dxRX))
+                    Text(row.dxTX > 0 ? mhz(row.dxTX) : "—")
                 }
+                .font(.caption.monospaced())
             }
         }
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)
     }
 
     private func mhz(_ hz: Int64) -> String { String(format: "%.4f", Double(hz) / 1e6) }
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
 
     @MainActor
     private func compute() async {
@@ -716,7 +726,7 @@ struct WorkableView: View {
     var body: some View {
         VStack(spacing: 0) {
             SelectedSatelliteHeader()
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 Picker("Mode", selection: $acrossPass) { Text("Live footprint").tag(false); Text("Across next pass").tag(true) }.pickerStyle(.segmented)
                 Picker("Workable", selection: $kind) { Text("Grids").tag("grids"); Text("US states").tag("states"); Text("DXCC").tag("dxcc") }.pickerStyle(.segmented)
                 TextField(kind == "dxcc" ? "Filter prefix/entity" : "Filter", text: $filter)
@@ -1015,7 +1025,7 @@ struct PlanningView: View {
     }
 
     private func maskField(_ label: String, value: Binding<Double>) -> some View {
-        HStack { Text(label); Spacer(); TextField("0", value: value, format: .number.precision(.fractionLength(0...1))).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).textFieldStyle(.odField).frame(width: 96); Text("°").foregroundStyle(ODTheme.muted) }
+        HStack { Text(label); Spacer(); TextField("0", value: value, format: .number.precision(.fractionLength(0...1))).keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).textFieldStyle(.odField).frame(width: 100); Text("°").foregroundStyle(ODTheme.muted) }
     }
 
     private func resolvedTarget() -> LatLon? { ParityPlanningEngine.targetLocation(kind: targetKind, value: target) }
@@ -1541,6 +1551,13 @@ struct SkyGlanceView: View {
                                             Spacer()
                                             Text(ODFormat.duration(pass.duration)).font(.caption.monospaced())
                                             Text(String(format: "%.0f°", pass.maxElevation)).font(.caption.monospaced().bold())
+                                            if pass.aos > Date(), let satellite = store.satellites.first(where: { $0.id == row.id }) {
+                                                PassAlarmButton(satellite: satellite, pass: pass,
+                                                                observer: store.preferences.observer,
+                                                                leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)
+                                            } else {
+                                                PassAlarmUnavailable()
+                                            }
                                         }
                                     }
                                 }
@@ -1748,29 +1765,28 @@ struct EMEView: View {
                             Button("Prepare PDF") { prepareBands(bandRows, date: timeline.date, pdf: true) }
                             if let shareURL { ShareLink(item: shareURL) { Label("Share \(shareLabel)", systemImage: "square.and.arrow.up") } }
                         }
-                        ScrollView(.horizontal) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(spacing: 14) {
-                                    Text("Band").frame(width: 82, alignment: .leading)
-                                    Text("Doppler").frame(width: 90, alignment: .trailing)
-                                    Text("Faraday").frame(width: 78, alignment: .trailing)
-                                    Text("Sky K").frame(width: 72, alignment: .trailing)
-                                    Text("Spread").frame(width: 78, alignment: .trailing)
-                                    Text("Loss").frame(width: 82, alignment: .trailing)
-                                }.font(.caption.bold().monospaced())
-                                Divider()
-                                ForEach(bandRows) { row in
-                                    HStack(spacing: 14) {
-                                        Text(row.band).frame(width: 82, alignment: .leading)
-                                        Text(String(format: "%+.0f Hz", row.dopplerHz)).frame(width: 90, alignment: .trailing)
-                                        Text(String(format: "%.0f°", row.faradayDegrees)).frame(width: 78, alignment: .trailing)
-                                        Text(String(format: "%.0f", row.skyTemperatureK)).frame(width: 72, alignment: .trailing)
-                                        Text(String(format: "%.1f Hz", row.librationSpreadHz)).frame(width: 78, alignment: .trailing)
-                                        Text(String(format: "%.1f dB", row.pathLossDb)).frame(width: 82, alignment: .trailing)
-                                    }.font(.caption.monospaced())
+                        Grid(alignment: .trailing, horizontalSpacing: 14, verticalSpacing: 6) {
+                            GridRow {
+                                Text("Band").gridColumnAlignment(.leading)
+                                Text("Doppler"); Text("Faraday"); Text("Sky K"); Text("Spread"); Text("Loss")
+                            }
+                            .font(.caption.bold().monospaced())
+                            .foregroundStyle(ODTheme.muted)
+                            Divider().gridCellColumns(6)
+                            ForEach(bandRows) { row in
+                                GridRow {
+                                    Text(row.band).gridColumnAlignment(.leading)
+                                    Text(String(format: "%+.0f Hz", row.dopplerHz))
+                                    Text(String(format: "%.0f°", row.faradayDegrees))
+                                    Text(String(format: "%.0f", row.skyTemperatureK))
+                                    Text(String(format: "%.1f Hz", row.librationSpreadHz))
+                                    Text(String(format: "%.1f dB", row.pathLossDb))
                                 }
+                                .font(.caption.monospaced())
                             }
                         }
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                         Text("Faraday scales approximately as 1/f²; libration spread grows with frequency. Sky temperature includes a coarse galactic-plane excess behind the Moon.")
                             .font(.caption).foregroundStyle(ODTheme.muted)
                     }
@@ -2662,7 +2678,7 @@ struct SpaceWeatherView: View {
                 }
             }
             Section {
-                Text("F10.7, the most recent daily observed sunspot number and planetary Kp are fetched from NOAA SWPC public feeds. OrbitDeck also reads NOAA's Daily Geomagnetic Data and uses its reported planetary 24-hour A index when available; Kp→ap is retained as a fallback.")
+                Text("F10.7 and planetary Kp are fetched from NOAA SWPC public feeds; the sunspot number matches the N0NBH/hamqsl solar widget most operators reference (NOAA's SESC daily count is the fallback). OrbitDeck also reads NOAA's Daily Geomagnetic Data and uses its reported planetary 24-hour A index when available; Kp→ap is retained as a fallback.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
         }
@@ -2850,7 +2866,7 @@ struct MUFView: View {
                 }
                 if let weather = store.spaceWeather {
                     Text(weather.sunspotNumber != nil
-                         ? "Auto-seeded from NOAA's most recent daily observed sunspot number; recomputes automatically."
+                         ? "Auto-seeded from the current sunspot number (N0NBH/hamqsl, NOAA SESC fallback); recomputes automatically."
                          : "Auto-seeded from F10.7 using SSN ≈ 1.61 × (F10.7 − 67); recomputes automatically.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 } else {

@@ -53,7 +53,7 @@ struct GlobeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 Picker("View", selection: $mode) {
                     ForEach(GlobeViewMode.allCases) { Text($0.short).tag($0) }
                 }

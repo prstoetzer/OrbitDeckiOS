@@ -52,7 +52,7 @@ struct IlluminationView: View {
                                                    observer: store.preferences.observer,
                                                    at: context.date) {
                 ScrollView {
-                    VStack(spacing: 18) {
+                    VStack(spacing: 14) {
                         VStack(spacing: 12) {
                             Image(systemName: look.sunlit ? "sun.max.fill" : "moon.fill")
                                 .font(.system(size: 68))

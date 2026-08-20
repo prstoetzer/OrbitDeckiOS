@@ -59,6 +59,7 @@
 		288DA342A9387B413727BBE4 /* Views/OrbitalAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/OrbitalAnalysisView.swift; sourceTree = "<group>"; };
 		2A72471D03E195359C63155A /* Views/HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/HomeView.swift; sourceTree = "<group>"; };
 		2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		2E75B92F3037404300338037 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2E946B4030308C7600960A39 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2FDDA8C92EE5F5541001A77A /* Services/TransponderService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/TransponderService.swift; sourceTree = "<group>"; };
 		32CC53E0E4F549F7E5A4BF44 /* Services/LocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/LocationProvider.swift; sourceTree = "<group>"; };
@@ -119,6 +120,7 @@
 		8309DD304D804F9D7F6302F5 /* OrbitDeckIOS */ = {
 			isa = PBXGroup;
 			children = (
+				2E75B92F3037404300338037 /* Info.plist */,
 				5D53E08BB4B7DAA62B0595EE /* AppTheme.swift */,
 				0377C74A272ACB831917414F /* Engine/OrbitPredictor.swift */,
 				FEA7E0010000000000000001 /* Engine/FeatureEngine.swift */,
@@ -339,9 +341,11 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OrbitDeckIOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OrbitDeck;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "OrbitDeck adds satellite pass times to your calendar when you choose to.\"";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -369,9 +373,11 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = OrbitDeckIOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OrbitDeck;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = "";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "OrbitDeck adds satellite pass times to your calendar when you choose to.\"";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

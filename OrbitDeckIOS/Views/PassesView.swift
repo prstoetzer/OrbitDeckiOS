@@ -103,24 +103,35 @@ struct ScheduleView: View {
     }
 
     @ViewBuilder private func scheduleRow(_ entry: ScheduleEntry) -> some View {
-        Button { store.select(entry.satelliteID) } label: {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.name)
-                        .foregroundStyle(entry.satelliteID == store.selectedSatellite?.id ? ODTheme.accent : .primary)
-                        .lineLimit(1)
-                    Text("\(ODFormat.compass(entry.pass.aosAzimuth)) → \(ODFormat.compass(entry.pass.losAzimuth)) · \(ODFormat.duration(entry.pass.duration))")
-                        .font(.caption).foregroundStyle(ODTheme.muted)
+        HStack(spacing: 10) {
+            Button { store.select(entry.satelliteID) } label: {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.name)
+                            .foregroundStyle(entry.satelliteID == store.selectedSatellite?.id ? ODTheme.accent : .primary)
+                            .lineLimit(1)
+                        Text("\(ODFormat.compass(entry.pass.aosAzimuth)) → \(ODFormat.compass(entry.pass.losAzimuth)) · \(ODFormat.duration(entry.pass.duration))")
+                            .font(.caption).foregroundStyle(ODTheme.muted)
+                    }
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(Self.clock.string(from: entry.pass.aos)).font(.body.monospacedDigit())
+                        Text("max \(ODFormat.angle(entry.pass.maxElevation))").font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                    }
                 }
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(Self.clock.string(from: entry.pass.aos)).font(.body.monospacedDigit())
-                    Text("max \(ODFormat.angle(entry.pass.maxElevation))").font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
-                }
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.borderless)
+            .foregroundStyle(.primary)
+
+            if entry.pass.aos > Date(), let satellite = store.satellites.first(where: { $0.id == entry.satelliteID }) {
+                PassAlarmButton(satellite: satellite, pass: entry.pass,
+                                observer: store.preferences.observer,
+                                leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)
+            } else {
+                PassAlarmUnavailable()
+            }
         }
-        .buttonStyle(.plain)
     }
 
     private func dayLabel(_ day: Date) -> String {
@@ -260,51 +271,62 @@ struct PassesView: View {
 
     private func passRow(_ pass: PredictedPass, isBest: Bool) -> some View {
         let score = quality(pass)
-        return Button {
-            detailPass = pass
-        } label: {
-            HStack(spacing: 12) {
-            VStack(spacing: 1) {
-                Text(ODFormat.angle(pass.maxElevation, decimals: 0))
-                    .font(.headline.monospacedDigit())
-                Text("MAX EL")
-                    .font(.system(size: 8).weight(.semibold))
-                    .foregroundStyle(ODTheme.muted)
-            }
-            .frame(width: 56)
-            .padding(.vertical, 8)
-            .background(qualityColor(score).opacity(0.16))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(ODFormat.utcShort.string(from: pass.aos))
-                        .font(.subheadline.weight(.semibold))
-                    if isBest {
-                        Image(systemName: "star.fill")
-                            .font(.caption2)
-                            .foregroundStyle(ODTheme.warning)
-                    }
-                    Spacer()
-                    Text(relativeAOS(pass.aos))
-                        .font(.caption)
+        return HStack(spacing: 8) {
+            Button {
+                detailPass = pass
+            } label: {
+                HStack(spacing: 12) {
+                VStack(spacing: 1) {
+                    Text(ODFormat.angle(pass.maxElevation, decimals: 0))
+                        .font(.headline.monospacedDigit())
+                    Text("MAX EL")
+                        .font(.system(size: 8).weight(.semibold))
                         .foregroundStyle(ODTheme.muted)
                 }
-                HStack(spacing: 14) {
-                    Label(ODFormat.duration(pass.duration), systemImage: "clock")
-                    Label("\(ODFormat.compass(pass.aosAzimuth))→\(ODFormat.compass(pass.losAzimuth))", systemImage: "arrow.left.and.right")
-                    Spacer()
-                    Text(verbatim: "Q\(score)")
-                        .foregroundStyle(qualityColor(score))
+                .frame(width: 56)
+                .padding(.vertical, 8)
+                .background(qualityColor(score).opacity(0.16))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(ODFormat.utcShort.string(from: pass.aos))
+                            .font(.subheadline.weight(.semibold))
+                        if isBest {
+                            Image(systemName: "star.fill")
+                                .font(.caption2)
+                                .foregroundStyle(ODTheme.warning)
+                        }
+                        Spacer()
+                        Text(relativeAOS(pass.aos))
+                            .font(.caption)
+                            .foregroundStyle(ODTheme.muted)
+                    }
+                    HStack(spacing: 14) {
+                        Label(ODFormat.duration(pass.duration), systemImage: "clock")
+                        Label("\(ODFormat.compass(pass.aosAzimuth))→\(ODFormat.compass(pass.losAzimuth))", systemImage: "arrow.left.and.right")
+                        Spacer()
+                        Text(verbatim: "Q\(score)")
+                            .foregroundStyle(qualityColor(score))
+                    }
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(ODTheme.muted)
                 }
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(ODTheme.muted)
+                }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.primary)
+
+            if pass.aos > Date(), let satellite = store.selectedSatellite {
+                PassAlarmButton(satellite: satellite, pass: pass,
+                                observer: store.preferences.observer,
+                                leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)
+            } else {
+                PassAlarmUnavailable()   // keep rows aligned
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
         .swipeActions(edge: .trailing) {
             Button {
                 Task { await scheduleAlarm(pass) }

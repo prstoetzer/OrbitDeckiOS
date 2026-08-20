@@ -1913,6 +1913,22 @@ enum OrbitDecayModel {
         for _ in 0..<200000{let hp=rp-re,h=hp/1000;a=0.5*(rp+ra);let ec=(ra-rp)/(ra+rp),end=ec<=0.02 ? 120e3:90e3;if hp<end{return(days,src)};let densityNow=rho(h);if densityNow<=0{return(Double.infinity,src)};let dadt = -ballistic*densityNow*sqrt(mu*a)*kingHele(a:a,e:ec,h:h);if dadt>=0{return(Double.infinity,src)};var dt = -((hp-120e3)*0.20+500)/dadt;let cap=h<200 ? 0.15:h<350 ? 2.0:20.0;dt=min(dt,cap*86400);dt=max(dt,1);let da=dadt*dt;if ec>1e-3{ra+=2*da;if ra<rp{let mid=0.5*(ra+rp);ra=mid;rp=mid}}else{ra+=da;rp+=da};days+=dt/86400;if days>36500{return(Double.infinity,src)}}
         return(days,src)
     }
+
+    /// Orbital lifetime for a satellite that is still on the bench — driven by its
+    /// physical ballistic coefficient (Cd·A/m) rather than a fitted B*/n-dot. Uses
+    /// the same King-Hele decay integrator as `estimate` so the two agree when
+    /// 12.741621·B* equals Cd·A/m. Returns days (Double.infinity if effectively stable).
+    static func lifetimeFromArea(perigeeAltKm:Double,apogeeAltKm:Double,massKg:Double,areaM2:Double,cd:Double,solar:Int)->Double{
+        let scales=[0.35,1.0,3.0],densScale=scales[max(0,min(2,solar))]
+        guard massKg>0,areaM2>0,cd>0 else{return -1}
+        let ballistic=cd*areaM2/massKg   // Cd·A/m, m²/kg — same units as 12.741621·B*
+        var rp=re+max(perigeeAltKm,0)*1000,ra=re+max(apogeeAltKm,perigeeAltKm)*1000
+        let hp0=(rp-re)/1000;if hp0<80{return 0}
+        func rho(_ h:Double)->Double{density(h)*densScale*densCal(h)}
+        var days=0.0
+        for _ in 0..<200000{let hp=rp-re,h=hp/1000;let a=0.5*(rp+ra);let ec=(ra-rp)/(ra+rp),end=ec<=0.02 ? 120e3:90e3;if hp<end{return days};let densityNow=rho(h);if densityNow<=0{return Double.infinity};let dadt = -ballistic*densityNow*sqrt(mu*a)*kingHele(a:a,e:ec,h:h);if dadt>=0{return Double.infinity};var dt = -((hp-120e3)*0.20+500)/dadt;let cap=h<200 ? 0.15:h<350 ? 2.0:20.0;dt=min(dt,cap*86400);dt=max(dt,1);let da=dadt*dt;if ec>1e-3{ra+=2*da;if ra<rp{let mid=0.5*(ra+rp);ra=mid;rp=mid}}else{ra+=da;rp+=da};days+=dt/86400;if days>36500{return Double.infinity}}
+        return days
+    }
 }
 
 extension String {
@@ -1935,6 +1951,7 @@ extension BenchTools {
         .init(id:"terrainLOS",category:"Terrestrial VHF/UHF",name:"Terrain path (LOS)",description:"Manual worst-obstruction LOS check with Earth curvature and 60% Fresnel clearance.",fields:[.init(id:"path",label:"Path length",defaultValue:30,unit:"km"),.init(id:"obs",label:"Obstruction ht",defaultValue:200,unit:"m"),.init(id:"at",label:"Obstruction at",defaultValue:15,unit:"km"),.init(id:"txh",label:"TX ant HAAT",defaultValue:10,unit:"m"),.init(id:"rxh",label:"RX ant HAAT",defaultValue:10,unit:"m"),.init(id:"freq",label:"Frequency",defaultValue:146,unit:"MHz"),.init(id:"txg",label:"TX ground el",defaultValue:100,unit:"m"),.init(id:"rxg",label:"RX ground el",defaultValue:100,unit:"m")]),
         .init(id:"dopplerBudget",category:"Satellite & orbit",name:"Doppler budget (orbit)",description:"Peak Doppler shift and TCA rate expected from an orbit.",fields:[.init(id:"ap",label:"Apogee alt",defaultValue:550,unit:"km"),.init(id:"pe",label:"Perigee alt",defaultValue:550,unit:"km"),.init(id:"freq",label:"Frequency",defaultValue:435.5,unit:"MHz")]),
         .init(id:"orbitLifetime",category:"Satellite & orbit",name:"Orbit lifetime (decay)",description:"King-Hele decay integration anchored on observed n-dot where usable, otherwise B*.",fields:[.init(id:"mm",label:"Mean motion",defaultValue:15.50,unit:"rev/day"),.init(id:"ecc",label:"Eccentricity",defaultValue:0.0004,unit:""),.init(id:"bstar",label:"B*",defaultValue:0.00025,unit:""),.init(id:"ndot",label:"n-dot",defaultValue:0.0001,unit:"rev/day²"),.init(id:"solar",label:"Solar activity",defaultValue:1,unit:"",choices:["low","mean","high"])]),
+        .init(id:"debrisCompliance",category:"Satellite & orbit",name:"Debris mitigation compliance",description:"Post-mission orbital lifetime for a spacecraft still on the bench, from its physical ballistic coefficient (mass, cross-sectional area, drag Cd). Checks the legacy 25-year and the current FCC 5-year deorbit rules. Get the cross-sectional area from the “Cross-section area” tool.",fields:[.init(id:"pe",label:"Perigee alt",defaultValue:550,unit:"km"),.init(id:"ap",label:"Apogee alt",defaultValue:550,unit:"km"),.init(id:"mass",label:"Mass",defaultValue:4,unit:"kg"),.init(id:"area",label:"Cross-section area",defaultValue:0.03,unit:"m²"),.init(id:"cd",label:"Drag coefficient",defaultValue:2.2,unit:""),.init(id:"solar",label:"Solar activity",defaultValue:1,unit:"",choices:["low","mean","high"])]),
         .init(id:"deltaV",category:"Satellite & orbit",name:"Delta-v (Hohmann/plane)",description:"Hohmann transfer, plane-change and illustrative deorbit Δv.",fields:[.init(id:"a1",label:"Alt 1",defaultValue:400,unit:"km"),.init(id:"a2",label:"Alt 2",defaultValue:800,unit:"km"),.init(id:"plane",label:"Plane change",defaultValue:0,unit:"°")]),
         .init(id:"pointingLoss",category:"Satellite & orbit",name:"Pointing loss",description:"Main-lobe dB loss from antenna pointing error and HPBW.",fields:[.init(id:"hpbw",label:"HPBW",defaultValue:30,unit:"°"),.init(id:"err",label:"Point error",defaultValue:3,unit:"°")]),
         .init(id:"linkElevation",category:"Satellite & orbit",name:"Link margin vs elevation",description:"Range-only margin improvement from horizon to overhead.",fields:[.init(id:"alt",label:"Altitude",defaultValue:550,unit:"km"),.init(id:"freq",label:"Frequency",defaultValue:435,unit:"MHz"),.init(id:"margin",label:"Margin @0°",defaultValue:6,unit:"dB")]),
@@ -1990,6 +2007,17 @@ extension BenchTools {
         case "terrainLOS": return DeepToolMath.terrainLOS(pathKm:v("path",30),obstructionM:v("obs",200),atKm:v("at",15),txHAAT:v("txh",10),rxHAAT:v("rxh",10),freqMHz:v("freq",146),txGround:v("txg",100),rxGround:v("rxg",100))
         case "dopplerBudget": return DeepToolMath.dopplerBudget(apogeeKm:v("ap",550),perigeeKm:v("pe",550),freqMHz:v("freq",435.5))
         case "orbitLifetime": let r=OrbitDecayModel.estimate(meanMotion:v("mm",15.5),ecc:v("ecc",0.0004),bstar:v("bstar",0.00025),ndot:v("ndot",0.0001),solar:Int(v("solar",1))); let life=r.0<0 ? "no usable data" : r.0.isInfinite ? "effectively stable" : r.0<365.25 ? String(format:"%.0f days",r.0):String(format:"%.1f years",r.0/365.25); return [.init(label:"Lifetime",value:life,note:""),.init(label:"Anchor",value:r.1.label,note:r.1 == .observedNdot ? "measured":"modeled"),.init(label:"Solar activity",value:["low","mean","high"][max(0,min(2,Int(v("solar",1))))],note:""),.init(label:"25-year rule",value:(!r.0.isInfinite && r.0>=0 && r.0<=25*365.25) ? "OK":"EXCEEDS",note:""),.init(label:"5-year rule",value:(!r.0.isInfinite && r.0>=0 && r.0<=5*365.25) ? "OK":"EXCEEDS",note:"")]
+        case "debrisCompliance":
+            let pe=v("pe",550),ap=max(v("ap",550),pe),mass=v("mass",4),area=v("area",0.03),cd=v("cd",2.2),sol=Int(v("solar",1))
+            let d=OrbitDecayModel.lifetimeFromArea(perigeeAltKm:pe,apogeeAltKm:ap,massKg:mass,areaM2:area,cd:cd,solar:sol)
+            let bc = (cd>0 && area>0) ? mass/(cd*area) : 0
+            let life = d<0 ? "insufficient input" : d.isInfinite ? "> 100 years (effectively stable)" : d<365.25 ? String(format:"%.0f days",d) : String(format:"%.1f years",d/365.25)
+            let finite = d>=0 && !d.isInfinite
+            return [.init(label:"Ballistic coeff m/(Cd·A)",value:String(format:"%.1f kg/m²",bc),note:"higher decays slower"),
+                    .init(label:"Est. post-mission lifetime",value:life,note:d.isInfinite ? "no natural reentry within 100 yr":""),
+                    .init(label:"25-year rule (legacy)",value:(finite && d<=25*365.25) ? "OK":"EXCEEDS",note:""),
+                    .init(label:"5-year rule (FCC 2024)",value:(finite && d<=5*365.25) ? "OK":"EXCEEDS",note:""),
+                    .init(label:"Solar activity",value:["low","mean","high"][max(0,min(2,sol))],note:"first-order estimate")]
         case "deltaV": return DeepToolMath.deltaV(alt1:v("a1",400),alt2:v("a2",800),planeDeg:v("plane"))
         case "pointingLoss": return DeepToolMath.pointingLoss(hpbw:v("hpbw",30),error:v("err",3))
         case "linkElevation": return DeepToolMath.linkElevation(alt:v("alt",550),freq:v("freq",435),margin0:v("margin",6))

@@ -1924,7 +1924,10 @@ struct SpaceWeatherService {
         // Most-recent DAILY observed (SESC) sunspot number; the solar-cycle file is
         // only monthly, so this keeps the sunspot number as current as flux and Kp.
         async let dailyData = getOptional(URL(string: "https://services.swpc.noaa.gov/text/daily-solar-indices.txt")!)
-        let (fData, kData, cData, gData, dData) = try await (fluxData, kpData, cycleData, geomagneticData, dailyData)
+        // The community-standard sunspot number shown by the N0NBH/hamqsl solar
+        // widget most hams compare against (differs from NOAA's SESC count).
+        async let hamData = getOptionalBrowser(URL(string: "https://www.hamqsl.com/solarxml.php")!)
+        let (fData, kData, cData, gData, dData, hData) = try await (fluxData, kpData, cycleData, geomagneticData, dailyData, hamData)
         var flux: Double?
         var flux90: Double?
         if let rows = try JSONSerialization.jsonObject(with: fData) as? [[String: Any]] {
@@ -1934,10 +1937,11 @@ struct SpaceWeatherService {
                 flux90 = numeric(newest["ninety_day_mean"])
             }
         }
-        // Prefer the most-recent daily observed sunspot number; fall back to the
+        // Prefer the N0NBH/hamqsl sunspot number (matches the ham solar widget most
+        // operators reference); fall back to NOAA's daily SESC number, then the
         // monthly observed value (and use the monthly f10.7 for the 90-day mean if
         // the flux feed didn't carry one).
-        var ssn: Double? = dData.flatMap { parseDailySunspot($0) }
+        var ssn: Double? = hData.flatMap { parseHamqslSunspots($0) } ?? dData.flatMap { parseDailySunspot($0) }
         if let rows = try JSONSerialization.jsonObject(with: cData) as? [[String: Any]] {
             let valid = rows.filter { $0["time-tag"] != nil && numeric($0["ssn"]) != nil }
             if let newest = valid.max(by: { String(describing: $0["time-tag"] ?? "") < String(describing: $1["time-tag"] ?? "") }) {
@@ -2057,6 +2061,25 @@ struct SpaceWeatherService {
 
     private static func getOptional(_ url: URL) async -> Data? {
         try? await get(url)
+    }
+
+    /// Optional GET with a browser User-Agent (some community feeds reject
+    /// non-browser agents).
+    private static func getOptionalBrowser(_ url: URL) async -> Data? {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                         forHTTPHeaderField: "User-Agent")
+        return try? await URLSession.shared.data(for: request).0
+    }
+
+    /// Parse the `<sunspots>` value from the N0NBH/hamqsl solar XML.
+    static func parseHamqslSunspots(_ data: Data) -> Double? {
+        guard let text = String(data: data, encoding: .utf8),
+              let start = text.range(of: "<sunspots>"),
+              let end = text.range(of: "</sunspots>", range: start.upperBound..<text.endIndex) else { return nil }
+        let inner = text[start.upperBound..<end.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        return Double(inner)
     }
 
     private static func get(_ url: URL) async throws -> Data {

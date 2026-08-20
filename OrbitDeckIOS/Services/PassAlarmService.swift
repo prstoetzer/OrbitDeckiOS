@@ -39,6 +39,17 @@ enum PassAlarmService {
 #endif
     }
 
+    /// Whether a reminder is already pending for this exact pass.
+    static func isScheduled(pass: PredictedPass, satellite: SatelliteRecord) async -> Bool {
+#if canImport(UserNotifications)
+        let id = identifier(satellite: satellite, pass: pass)
+        let pending = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        return pending.contains { $0.identifier == id }
+#else
+        return false
+#endif
+    }
+
     static func cancel(pass: PredictedPass, satellite: SatelliteRecord) {
 #if canImport(UserNotifications)
         UNUserNotificationCenter.current().removePendingNotificationRequests(

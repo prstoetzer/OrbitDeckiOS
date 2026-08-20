@@ -11,70 +11,76 @@ private struct RadarBlip: Identifiable, Sendable {
 /// plotted on an azimuth/elevation polar chart and listed below.
 struct SkyRadarView: View {
     @EnvironmentObject private var store: OrbitStore
-    @State private var blips: [RadarBlip] = []
-    @State private var scannedAt: Date?
-    @State private var scanning = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Sky Radar").font(.headline)
-                Spacer()
-                Text(scanning ? "scanning \(store.satellites.count)…" : "\(blips.count) above horizon")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(ODTheme.muted)
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 10)
-            .background(ODTheme.panel)
-
-            ScrollView {
-                VStack(spacing: 12) {
-                    radar
-                        .aspectRatio(1, contentMode: .fit)
-                        .padding()
-
-                    if blips.isEmpty && !scanning {
-                        Text("No catalog satellites are above the horizon right now.")
-                            .font(.caption).foregroundStyle(ODTheme.muted)
-                    } else {
-                        LazyVStack(spacing: 0) {
-                            ForEach(blips) { blip in
-                                Button { store.select(blip.id) } label: {
-                                    HStack {
-                                        Circle()
-                                            .fill(blip.id == store.selectedSatellite?.id ? ODTheme.accent : ODTheme.good)
-                                            .frame(width: 8, height: 8)
-                                        Text(blip.name)
-                                            .foregroundStyle(blip.id == store.selectedSatellite?.id ? ODTheme.accent : .primary)
-                                        Spacer()
-                                        Text("el \(ODFormat.angle(blip.elevation)) · \(ODFormat.compass(blip.azimuth)) \(ODFormat.angle(blip.azimuth, decimals: 0))")
-                                            .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
-                                    }
-                                    .padding(.vertical, 6)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                Divider()
-                            }
-                        }
-                        .padding(.horizontal)
-                    }
+        // Recompute every second on the TimelineView tick (the reliable live-update
+        // path on-device); the all-satellite look-angle scan is cheap enough to run
+        // synchronously here.
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let blips = computeBlips(at: context.date)
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Sky Radar").font(.headline)
+                    Spacer()
+                    Text("\(blips.count) above horizon")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(ODTheme.muted)
                 }
-                .padding(.bottom, 24)
-            }
-        }
-        // Re-scan once per second for the whole time the view is alive. Each scan
-        // reads the current observer/catalog, so no restart key is needed.
-        .task {
-            while !Task.isCancelled {
-                await scan()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                .padding(.horizontal)
+                .padding(.vertical, 10)
+                .background(ODTheme.panel)
+
+                ScrollView {
+                    VStack(spacing: 14) {
+                        radar(blips)
+                            .aspectRatio(1, contentMode: .fit)
+                            .padding()
+
+                        if blips.isEmpty {
+                            Text("No catalog satellites are above the horizon right now.")
+                                .font(.caption).foregroundStyle(ODTheme.muted)
+                        } else {
+                            LazyVStack(spacing: 0) {
+                                ForEach(blips) { blip in
+                                    Button { store.select(blip.id) } label: {
+                                        HStack {
+                                            Circle()
+                                                .fill(blip.id == store.selectedSatellite?.id ? ODTheme.accent : ODTheme.good)
+                                                .frame(width: 8, height: 8)
+                                            Text(blip.name)
+                                                .foregroundStyle(blip.id == store.selectedSatellite?.id ? ODTheme.accent : .primary)
+                                            Spacer()
+                                            Text("el \(ODFormat.angle(blip.elevation)) · \(ODFormat.compass(blip.azimuth)) \(ODFormat.angle(blip.azimuth, decimals: 0))")
+                                                .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                                        }
+                                        .padding(.vertical, 6)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    Divider()
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+                    .padding(.bottom, 24)
+                }
             }
         }
     }
 
-    private var radar: some View {
+    private func computeBlips(at date: Date) -> [RadarBlip] {
+        let observer = store.preferences.observer
+        var output: [RadarBlip] = []
+        for satellite in store.satellites {
+            if let look = try? OrbitPredictor.look(satellite, observer: observer, at: date), look.elevation >= 0 {
+                output.append(RadarBlip(id: satellite.id, name: satellite.name, azimuth: look.azimuth, elevation: look.elevation))
+            }
+        }
+        return output.sorted { $0.elevation > $1.elevation }
+    }
+
+    private func radar(_ blips: [RadarBlip]) -> some View {
         Canvas { context, size in
             let side = min(size.width, size.height)
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -144,29 +150,5 @@ struct SkyRadarView: View {
         }
         .background(ODTheme.panel, in: RoundedRectangle(cornerRadius: 12))
         .accessibilityLabel("All-sky radar")
-    }
-
-    @MainActor
-    private func scan() async {
-        let satellites = store.satellites
-        let observer = store.preferences.observer
-        guard !satellites.isEmpty else { blips = []; return }
-        scanning = blips.isEmpty
-        let now = Date()
-        let result = await Task.detached(priority: .userInitiated) { () -> [RadarBlip] in
-            var output: [RadarBlip] = []
-            for satellite in satellites {
-                if let look = try? OrbitPredictor.look(satellite, observer: observer, at: now), look.elevation >= 0 {
-                    output.append(RadarBlip(id: satellite.id, name: satellite.name, azimuth: look.azimuth, elevation: look.elevation))
-                }
-            }
-            return output.sorted { $0.elevation > $1.elevation }
-        }.value
-        // Always publish the result. Bailing on Task.isCancelled here (the id
-        // changes while the catalog/observer load at startup) discarded the
-        // finished scan and left the view stuck on "scanning…" with no blips.
-        scanning = false
-        scannedAt = now
-        blips = result
     }
 }

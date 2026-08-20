@@ -71,6 +71,14 @@ struct HomeView: View {
                                 "AOS → LOS",
                                 "\(ODFormat.compass(pass.aosAzimuth)) \(ODFormat.angle(pass.aosAzimuth, decimals: 0)) → \(ODFormat.compass(pass.losAzimuth)) \(ODFormat.angle(pass.losAzimuth, decimals: 0))"
                             )
+                            if pass.aos > Date() {
+                                HStack {
+                                    Spacer()
+                                    PassAlarmButton(satellite: satellite, pass: pass,
+                                                    observer: store.preferences.observer,
+                                                    leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)
+                                }
+                            }
                         } else if let passError {
                             Text(passError)
                                 .foregroundStyle(ODTheme.warning)
@@ -157,25 +165,36 @@ struct HomeView: View {
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 } else {
                     ForEach(fleetPasses.prefix(12)) { fleet in
-                        Button { store.select(fleet.id) } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(fleet.name)
-                                        .foregroundStyle(fleet.id == store.selectedSatellite?.id ? ODTheme.accent : .primary)
-                                    Text("AOS \(ODFormat.utcShort.string(from: fleet.pass.aos))")
-                                        .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                        HStack(spacing: 8) {
+                            Button { store.select(fleet.id) } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(fleet.name)
+                                            .foregroundStyle(fleet.id == store.selectedSatellite?.id ? ODTheme.accent : .primary)
+                                        Text("AOS \(ODFormat.utcShort.string(from: fleet.pass.aos))")
+                                            .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text("in \(ODFormat.duration(max(0, fleet.pass.aos.timeIntervalSinceNow)))")
+                                            .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.good)
+                                        Text("max \(ODFormat.angle(fleet.pass.maxElevation))")
+                                            .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                                    }
                                 }
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    Text("in \(ODFormat.duration(max(0, fleet.pass.aos.timeIntervalSinceNow)))")
-                                        .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.good)
-                                    Text("max \(ODFormat.angle(fleet.pass.maxElevation))")
-                                        .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
-                                }
+                                .contentShape(Rectangle())
                             }
-                            .contentShape(Rectangle())
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.primary)
+
+                            if fleet.pass.aos > Date(), let satellite = store.satellites.first(where: { $0.id == fleet.id }) {
+                                PassAlarmButton(satellite: satellite, pass: fleet.pass,
+                                                observer: store.preferences.observer,
+                                                leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)
+                            } else {
+                                PassAlarmUnavailable()   // keep rows aligned
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }

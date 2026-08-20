@@ -342,6 +342,49 @@ struct OrbitExportService {
         return lines.joined(separator: "\r\n") + "\r\n"
     }
 
+    /// Combined iCalendar for several satellites' passes (all favorites), one
+    /// VEVENT per pass, ordered by AOS.
+    static func favoritesPassesICS(_ groups: [(satellite: SatelliteRecord, passes: [PredictedPass])], observer: ObserverSite, leadMinutes: Int = 10) -> String {
+        var lines = [
+            "BEGIN:VCALENDAR", "VERSION:2.0",
+            "PRODID:-//OrbitDeck iOS//Favorites Pass Schedule//EN",
+            "CALSCALE:GREGORIAN", "METHOD:PUBLISH"
+        ]
+        let all = groups.flatMap { g in g.passes.map { (g.satellite, $0) } }.sorted { $0.1.aos < $1.1.aos }
+        for (index, entry) in all.enumerated() {
+            let (satellite, pass) = entry
+            let summary = "\(satellite.name) pass (max el \(String(format: "%.0f", pass.maxElevation)) deg)"
+            let description = "Max elevation \(String(format: "%.1f", pass.maxElevation)) deg at \(iso(pass.tca)). AOS az \(String(format: "%.0f", pass.aosAzimuth)), LOS az \(String(format: "%.0f", pass.losAzimuth)). Station: \(observer.name)."
+            lines += [
+                "BEGIN:VEVENT",
+                "UID:\(satellite.id)-\(index)-\(icsDate(pass.aos))@orbitdeck-ios",
+                "DTSTAMP:\(icsDate(Date()))",
+                "DTSTART:\(icsDate(pass.aos))",
+                "DTEND:\(icsDate(pass.los))",
+                "SUMMARY:\(icsEscape(summary))",
+                "DESCRIPTION:\(icsEscape(description))"
+            ]
+            if leadMinutes > 0 {
+                lines += ["BEGIN:VALARM", "TRIGGER:-PT\(leadMinutes)M", "ACTION:DISPLAY", "DESCRIPTION:\(icsEscape(summary))", "END:VALARM"]
+            }
+            lines.append("END:VEVENT")
+        }
+        lines.append("END:VCALENDAR")
+        return lines.joined(separator: "\r\n") + "\r\n"
+    }
+
+    /// Combined CSV for several satellites' passes, with a satellite column,
+    /// ordered by AOS.
+    static func favoritesPassesCSV(_ groups: [(satellite: SatelliteRecord, passes: [PredictedPass])], observer: ObserverSite) -> String {
+        var lines = ["satellite,norad,aos_utc,tca_utc,los_utc,max_el_deg,duration_s,aos_az_deg,los_az_deg"]
+        let all = groups.flatMap { g in g.passes.map { (g.satellite, $0) } }.sorted { $0.1.aos < $1.1.aos }
+        for (satellite, pass) in all {
+            let name = satellite.name.replacingOccurrences(of: ",", with: " ")
+            lines.append("\(name),\(satellite.id),\(iso(pass.aos)),\(iso(pass.tca)),\(iso(pass.los)),\(String(format: "%.1f", pass.maxElevation)),\(Int(pass.duration)),\(String(format: "%.0f", pass.aosAzimuth)),\(String(format: "%.0f", pass.losAzimuth))")
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
     static func passReportPDF(_ passes: [PredictedPass], satellite: SatelliteRecord, observer: ObserverSite, minElevation: Double) -> Data {
 #if canImport(UIKit)
         let page = CGRect(x: 0, y: 0, width: 612, height: 792)

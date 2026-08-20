@@ -1,4 +1,29 @@
 import SwiftUI
+import UIKit
+import UserNotifications
+
+/// Routes a tapped pass-reminder notification to the Home screen. Mirrors the
+/// `@preconcurrency` delegate pattern used by LocationProvider; the notification
+/// callbacks are delivered on the main thread.
+@MainActor
+final class NotificationRouter: NSObject, ObservableObject, @preconcurrency UNUserNotificationCenterDelegate {
+    @Published var openHomeRequested = false
+
+    func activate() { UNUserNotificationCenter.current().delegate = self }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        openHomeRequested = true
+        completionHandler()
+    }
+}
 
 enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     case home, track, globe, radar, gridfinder
@@ -156,11 +181,16 @@ private let navGroups: [NavGroup] = [
 
 struct RootView: View {
     @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var notifications: NotificationRouter
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var autoLocation = LocationProvider()
     @State private var selection: OrbitDestination? = .home
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    // When on, the device won't auto-lock while the Home screen is showing, so an
+    // operator can leave it up as a live "shack clock" during a pass. iOS resets
+    // the idle timer whenever the app backgrounds, so it's re-applied on foreground.
+    @AppStorage("orbitdeck.keepScreenAwakeHome") private var keepScreenAwakeHome = false
     // Throttle how often a current-location fix is written into the observer, so
     // the live screens (which recompute against the observer) update at most once
     // per second rather than on every high-rate GPS fix.
@@ -201,6 +231,12 @@ struct RootView: View {
             }
         } detail: {
             destinationView(selection ?? .home)
+                // Cap reading-oriented screens at a comfortable width and centre
+                // them so cards/text don't stretch across a wide iPad detail pane.
+                // Full-bleed visual screens (globe, radar, ground-track map) keep
+                // the whole width. On iPhone the cap never bites (screen < 700).
+                .frame(maxWidth: isFullBleed(selection ?? .home) ? .infinity : 720)
+                .frame(maxWidth: .infinity)
                 .scrollContentBackground(.hidden)
                 .background(ODTheme.background.ignoresSafeArea())
                 // Show the app name on the landing page; other screens keep their
@@ -242,6 +278,7 @@ struct RootView: View {
                 // Release the GPS while backgrounded; it resumes on foreground.
                 autoLocation.stopFollowing()
             }
+            applyIdleTimer(active: phase == .active)
         }
         // Follow the device when the operator has chosen "always use current
         // location": continuously track the device while the mode is on and write
@@ -249,9 +286,13 @@ struct RootView: View {
         // against the operator's real position as they move. On the Home screen the
         // follow runs at full navigation precision so the grid-line/corner readout
         // updates as continuously as the hardware allows.
-        .task { updateLocationFollow() }
+        .task { updateLocationFollow(); applyIdleTimer(active: scenePhase == .active) }
         .onChange(of: store.locationMode) { _, _ in updateLocationFollow() }
-        .onChange(of: selection) { _, _ in updateLocationFollow() }
+        .onChange(of: selection) { _, _ in updateLocationFollow(); applyIdleTimer(active: scenePhase == .active) }
+        .onChange(of: keepScreenAwakeHome) { _, _ in applyIdleTimer(active: scenePhase == .active) }
+        .onChange(of: notifications.openHomeRequested) { _, requested in
+            if requested { selection = .home; notifications.openHomeRequested = false }
+        }
         .onChange(of: autoLocation.location) { _, location in
             guard store.locationMode == .currentLocation, let location else { return }
             // Coalesce high-rate fixes to ~1 Hz so downstream live screens don't
@@ -283,6 +324,14 @@ struct RootView: View {
         autoLocation.startFollowing()
     }
 
+    /// Keep the display awake only when the operator opted in, the Home screen is
+    /// the current selection, and the app is foreground-active. Any other state
+    /// releases the idle timer so the rest of the app auto-locks normally.
+    private func applyIdleTimer(active: Bool) {
+        UIApplication.shared.isIdleTimerDisabled =
+            active && keepScreenAwakeHome && (selection ?? .home) == .home
+    }
+
     /// Explains the toolbar refresh button in the menu.
     private var refreshHelp: String {
         let base = "The ↻ button (top of this menu) downloads the latest orbital element sets (GP/TLE) for the whole catalog from your configured source."
@@ -290,6 +339,15 @@ struct RootView: View {
             return base + " Last updated \(updated.formatted(date: .abbreviated, time: .shortened))."
         }
         return base + " Not updated yet this session."
+    }
+
+    /// Visual/full-bleed screens that should use the entire detail width rather
+    /// than the centred reading column.
+    private func isFullBleed(_ destination: OrbitDestination) -> Bool {
+        switch destination {
+        case .globe, .radar, .groundtrack: return true
+        default: return false
+        }
     }
 
     @ViewBuilder
