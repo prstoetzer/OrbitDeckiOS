@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tiny BASIC guide — OrbitDeck for iOS</title>
+    <meta name="description" content="Complete guide to the OrbitDeck for iOS Tiny BASIC interpreter: the workspace, program structure, variables and arrays, operators, every statement and function, live satellite host variables, graphics, sandboxed files, limits, and worked examples.">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav">
+            <a class="brand" href="index.html"><span class="dot"></span>OrbitDeck</a>
+            <a class="navlink" href="index.html">Home</a>
+            <a class="navlink" href="documentation.html">Documentation</a>
+            <a class="navlink" href="tinybasic.html" aria-current="page">Tiny BASIC</a>
+            <a class="navlink" href="privacy.html">Privacy</a>
+        </nav>
+    </header>
+
+    <section class="container">
+        <h1>Tiny BASIC guide</h1>
+        <p class="section-intro">OrbitDeck for iOS includes a self-contained Tiny BASIC interpreter (<strong>Operating Tools &rarr; Tiny BASIC</strong>). It is source-compatible with the BASIC on the OrbitDeck desktop app and CardSat, and adds live satellite, station, pass, space-weather and geomagnetic data as read-only variables, a 240&nbsp;&times;&nbsp;135 graphics display, and a sandboxed file store. This guide documents the full dialect as implemented in the app.</p>
+
+        <div class="doc">
+            <aside class="toc">
+                <h4>Contents</h4>
+                <a href="#workspace">The workspace</a>
+                <a href="#structure">Program structure</a>
+                <a href="#variables">Variables &amp; arrays</a>
+                <a href="#operators">Operators &amp; expressions</a>
+                <a href="#statements">Statements</a>
+                <a href="#functions">Functions</a>
+                <a href="#constants">Constants</a>
+                <a href="#host">Live data variables</a>
+                <a href="#satsel">Selecting satellites</a>
+                <a href="#graphics">Graphics &amp; display</a>
+                <a href="#files">Files &amp; storage</a>
+                <a href="#limits">Limits &amp; safety</a>
+                <a href="#examples">Worked examples</a>
+                <a href="#compat">Compatibility notes</a>
+            </aside>
+
+            <div class="doc-body">
+                <h2 id="workspace">The workspace</h2>
+                <p>The Tiny BASIC screen has two panes — a program editor and a graphics display — side by side on a wide iPad and stacked on iPhone.</p>
+                <ul>
+                    <li><strong>Program</strong> — a monospaced editor. Type or paste your program here.</li>
+                    <li><strong>Run</strong> — executes the program from the top. Text output appears in the Output box and drawing appears on the Display.</li>
+                    <li><strong>Clear</strong> — empties the Output box and the Display (it does not change your program).</li>
+                    <li><strong>Actions</strong> menu — <em>Open file…</em> loads a <code>.txt</code> program from the Files app, <em>Load sample</em> restores the built-in demo, and <em>Share source</em> exports your program text via the iOS share sheet.</li>
+                    <li><strong>Output</strong> — everything <code>PRINT</code> produces, selectable for copying. A status line below reports how many statements ran and how many graphics calls were made, or the error if one occurred.</li>
+                    <li><strong>Display · 240 &times; 135</strong> — the graphics surface (see <a href="#graphics">Graphics</a>).</li>
+                    <li><strong>INPUT values</strong> — if your program uses <code>INPUT</code>, a panel appears listing each prompt so you can fill in the values <em>before</em> you press Run (see <a href="#input">INPUT</a>).</li>
+                </ul>
+                <div class="note">Errors are reported in the Output box beginning with <code>?</code>, mirroring classic BASIC — for example <code>?divide by zero</code>. The status line repeats the message.</div>
+
+                <h2 id="structure">Program structure</h2>
+                <p>A program is a list of numbered lines, lowest number first:</p>
+<pre><code>10 PRINT "HELLO, ORBIT"
+20 FOR I=1 TO 3
+30 PRINT I
+40 NEXT
+50 END</code></pre>
+                <ul>
+                    <li><strong>Line numbers</strong> order the program and are the targets of <code>GOTO</code>, <code>GOSUB</code>, <code>IF…THEN&nbsp;<em>n</em></code> and <code>ON…GOTO</code>.</li>
+                    <li><strong>Several statements per line</strong> may be separated by a colon <code>:</code> — for example <code>10 A=1: B=2: PRINT A+B</code>.</li>
+                    <li><strong>Keywords are case-insensitive</strong> (<code>print</code> = <code>PRINT</code>). Variable and function names are treated as upper-case.</li>
+                    <li><strong>Comments</strong> use <code>REM</code>; everything to the end of the line is ignored. <code>DATA</code> lines are likewise skipped during normal execution and read only by <code>READ</code>.</li>
+                    <li><strong>Immediate mode</strong> — a program with no line numbers runs its statements top to bottom, but flow-control statements that need line targets (<code>GOTO</code>, <code>GOSUB</code>, <code>RETURN</code>, <code>DATA</code>, <code>READ</code>, <code>RESTORE</code>) require a numbered program and will report an error in immediate mode.</li>
+                </ul>
+                <div class="note">Because the colon splits a line into independent statements, only the statement immediately after <code>THEN</code> is guarded by an <code>IF</code>. In <code>10 IF X&gt;0 THEN PRINT "POS" : PRINT "ALWAYS"</code>, the second <code>PRINT</code> runs regardless of <code>X</code>. Put conditional work on its own line or branch with <code>THEN&nbsp;<em>lineNumber</em></code>.</div>
+
+                <h2 id="variables">Variables &amp; arrays</h2>
+                <h3>Numeric variables</h3>
+                <p>Numeric variables are a <strong>single letter</strong> <code>A</code>–<code>Z</code> and hold double-precision floating-point values. Assignment may use <code>LET</code> or omit it:</p>
+<pre><code>10 LET A=3.5
+20 B=A*2
+30 PRINT B</code></pre>
+                <h3>String variables</h3>
+                <p>String variables are a <strong>single letter followed by <code>$</code></strong> — <code>A$</code>–<code>Z$</code>. Join strings with <code>+</code>:</p>
+<pre><code>10 N$="OSCAR"
+20 PRINT N$ + "-100"</code></pre>
+                <h3>Arrays</h3>
+                <p>Arrays are declared with <code>DIM</code> and are <strong>zero-based</strong> — <code>DIM A(12)</code> creates indices <code>0</code>…<code>11</code>. Two kinds exist:</p>
+                <ul>
+                    <li><strong>Named arrays</strong> share the letter namespace with functions but are separate from the same-letter scalar: <code>DIM A(10)</code> then <code>A(3)=7</code>. A scalar <code>A</code> and the array <code>A(…)</code> are independent.</li>
+                    <li><strong>The anonymous array</strong> <code>@()</code> — a single unnamed array: <code>DIM @(6)</code> then <code>@(0)=2</code>.</li>
+                    <li>Clear a named array with <code>ERASE&nbsp;<em>name</em></code>.</li>
+                </ul>
+                <p>A named array may hold up to <strong>1024</strong> elements and the anonymous array up to <strong>256</strong>, with a combined budget of <strong>2048</strong> elements across all arrays.</p>
+<pre><code>10 DIM A(12),@(6)
+20 DATA 2,3,5,7,11,13
+30 FOR I=0 TO 5: READ @(I): NEXT
+40 A(0)=100
+50 PRINT @(2), A(0)</code></pre>
+
+                <h2 id="operators">Operators &amp; expressions</h2>
+                <p>Numeric operators, from lowest to highest precedence:</p>
+                <table>
+                    <tr><th>Level</th><th>Operators</th><th>Notes</th></tr>
+                    <tr><td>Logical OR</td><td><code>OR</code></td><td>Result is 1 (true) or 0 (false)</td></tr>
+                    <tr><td>Logical AND</td><td><code>AND</code></td><td>1 or 0</td></tr>
+                    <tr><td>Comparison</td><td><code>=</code> <code>&lt;&gt;</code> <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td><td>Return 1 or 0</td></tr>
+                    <tr><td>Add / subtract</td><td><code>+</code> <code>-</code></td><td></td></tr>
+                    <tr><td>Multiply / divide / modulo</td><td><code>*</code> <code>/</code> <code>%</code> <code>MOD</code></td><td><code>%</code> and <code>MOD</code> are the same truncating remainder</td></tr>
+                    <tr><td>Power</td><td><code>^</code></td><td>Right-associative</td></tr>
+                    <tr><td>Unary</td><td><code>-</code> <code>+</code> <code>NOT</code></td><td><code>NOT</code> yields 1 for a zero operand, else 0</td></tr>
+                </table>
+                <p>Comparison and logical operators produce <code>1</code> for true and <code>0</code> for false, so they can be used directly in arithmetic. Parentheses group as usual. Dividing or taking a remainder by zero raises <code>?divide by zero</code>.</p>
+                <p><strong>Strings</strong> concatenate with <code>+</code> and compare with the same relational operators (<code>=</code>, <code>&lt;&gt;</code>, ordering by Unicode). A relation is treated as a string comparison when either side looks like a string (a literal in quotes or a <code>$</code> variable/function).</p>
+                <div class="note">Trigonometric functions work in <strong>degrees</strong>, not radians — <code>SIN(30)</code> is 0.5. Use the <code>RAD</code> and <code>DEG</code> constants to convert if you need radians.</div>
+
+                <h2 id="statements">Statements</h2>
+                <table>
+                    <tr><th>Statement</th><th>Purpose</th></tr>
+                    <tr><td><code>LET <em>v</em>=<em>expr</em></code></td><td>Assign a value. <code>LET</code> is optional. Targets: scalars, <code>A$</code>–<code>Z$</code>, <code>A(i)</code>, <code>@(i)</code>.</td></tr>
+                    <tr><td><code>PRINT <em>items</em></code> · <code>?</code></td><td>Print text and numbers. <code>?</code> is shorthand. See below for separators.</td></tr>
+                    <tr><td><code>LPRINT <em>items</em></code></td><td>Like <code>PRINT</code> but the line is prefixed with <code>[LPRINT]</code> (a stand-in for a printer).</td></tr>
+                    <tr><td><code>INPUT <em>v</em>[,<em>v</em>…]</code></td><td>Read values supplied in the INPUT panel before the run. Numeric or <code>$</code> variables.</td></tr>
+                    <tr><td><code>IF <em>cond</em> THEN <em>…</em></code></td><td>If the condition is non-zero, run the statement after <code>THEN</code>; if <code>THEN</code> is followed by a bare line number, jump there.</td></tr>
+                    <tr><td><code>FOR <em>v</em>=<em>a</em> TO <em>b</em> [STEP <em>s</em>]</code> … <code>NEXT</code></td><td>Counted loop; default step 1. Negative steps count down.</td></tr>
+                    <tr><td><code>GOTO <em>n</em></code></td><td>Jump to line <em>n</em>.</td></tr>
+                    <tr><td><code>GOSUB <em>n</em></code> … <code>RETURN</code></td><td>Call a subroutine and return to the following statement.</td></tr>
+                    <tr><td><code>ON <em>expr</em> GOTO <em>n1</em>,<em>n2</em>,…</code></td><td>Jump to the <em>expr</em>-th line number (1-based); out-of-range falls through.</td></tr>
+                    <tr><td><code>DIM <em>name</em>(<em>n</em>)</code> · <code>DIM @(<em>n</em>)</code></td><td>Declare arrays. Multiple declarations may be comma-separated.</td></tr>
+                    <tr><td><code>ERASE <em>name</em></code></td><td>Discard a named array.</td></tr>
+                    <tr><td><code>DATA <em>v1</em>,<em>v2</em>,…</code></td><td>Inline numeric constants read by <code>READ</code>.</td></tr>
+                    <tr><td><code>READ <em>v</em>[,<em>v</em>…]</code></td><td>Read the next <code>DATA</code> value(s) into variables or array elements.</td></tr>
+                    <tr><td><code>RESTORE</code></td><td>Rewind the <code>DATA</code> pointer to the beginning.</td></tr>
+                    <tr><td><code>REM <em>text</em></code></td><td>Comment to end of line.</td></tr>
+                    <tr><td><code>END</code> · <code>STOP</code></td><td>End the program.</td></tr>
+                    <tr><td><code>CLS PSET LINE CIRCLE TEXT SHOW</code></td><td>Graphics — see <a href="#graphics">Graphics</a>.</td></tr>
+                    <tr><td><code>FOPEN FPRINT FCLOSE FILES</code></td><td>Sandboxed files — see <a href="#files">Files</a>.</td></tr>
+                    <tr><td><code>SATSEL <em>i</em></code> · <code>TXSEL <em>i</em></code></td><td>Choose a satellite / transponder for the live variables — see <a href="#satsel">below</a>.</td></tr>
+                </table>
+
+                <h3 id="print">PRINT formatting</h3>
+                <p>Separate <code>PRINT</code> items with commas or semicolons:</p>
+                <ul>
+                    <li><strong>Comma</strong> inserts two spaces between items (a light column effect).</li>
+                    <li><strong>Semicolon</strong> joins items with no space.</li>
+                    <li>A <strong>trailing</strong> comma or semicolon suppresses the line break, so the next <code>PRINT</code> continues the same line. A <code>PRINT</code> with no arguments flushes the pending line.</li>
+                    <li>Whole numbers print without a decimal point; other values use a compact general format.</li>
+                </ul>
+<pre><code>10 A=42: N$="ISS"
+20 PRINT "SAT ", N$, "CODE"; A</code></pre>
+                <p>produces <code>SAT   ISS  CODE42</code>.</p>
+
+                <h3 id="input">INPUT</h3>
+                <p>OrbitDeck collects <code>INPUT</code> values <em>before</em> the program runs rather than pausing mid-run. When your program contains <code>INPUT</code> statements, an <strong>INPUT values</strong> panel lists each prompt (its label text and the target variable); fill them in, then press Run. Values are consumed in order. A missing numeric value is 0; a missing string is empty.</p>
+<pre><code>10 INPUT "YOUR ALTITUDE KM"; A
+20 INPUT "CALLSIGN"; C$
+30 PRINT C$ + " AT " ; A ; " KM"</code></pre>
+
+                <h2 id="functions">Functions</h2>
+                <h3>Numeric functions</h3>
+                <table>
+                    <tr><th>Function</th><th>Returns</th></tr>
+                    <tr><td><code>ABS(x)</code></td><td>Absolute value</td></tr>
+                    <tr><td><code>INT(x)</code></td><td>Floor (largest integer &le; x)</td></tr>
+                    <tr><td><code>ROUND(x)</code></td><td>Nearest integer</td></tr>
+                    <tr><td><code>FRAC(x)</code></td><td>Fractional part</td></tr>
+                    <tr><td><code>SGN(x)</code></td><td>&minus;1, 0, or 1</td></tr>
+                    <tr><td><code>SQR(x)</code></td><td>Square root (of max(0, x))</td></tr>
+                    <tr><td><code>EXP(x)</code>, <code>LOG(x)</code>, <code>LOG10(x)</code></td><td>Exponential and natural / base-10 logs</td></tr>
+                    <tr><td><code>SIN(x)</code>, <code>COS(x)</code>, <code>TAN(x)</code></td><td>Trig, argument in <strong>degrees</strong></td></tr>
+                    <tr><td><code>ASN(x)</code>, <code>ACS(x)</code>, <code>ATN(x)</code></td><td>Inverse trig, result in <strong>degrees</strong></td></tr>
+                    <tr><td><code>ATN2(y,x)</code></td><td>Two-argument arctangent, degrees 0…360 range via atan2</td></tr>
+                    <tr><td><code>MIN(a,b)</code>, <code>MAX(a,b)</code>, <code>HYP(a,b)</code></td><td>Minimum, maximum, hypotenuse</td></tr>
+                    <tr><td><code>RND</code> · <code>RND(n)</code></td><td>Random 0…1; with an argument, a random integer 0…n&minus;1</td></tr>
+                </table>
+
+                <h3>String functions</h3>
+                <table>
+                    <tr><th>Function</th><th>Returns</th></tr>
+                    <tr><td><code>LEFT$(s,n)</code>, <code>RIGHT$(s,n)</code></td><td>First / last n characters</td></tr>
+                    <tr><td><code>MID$(s,start[,len])</code></td><td>Substring from 1-based <code>start</code>, optional length</td></tr>
+                    <tr><td><code>CHR$(n)</code></td><td>Character for byte value n</td></tr>
+                    <tr><td><code>STR$(x)</code></td><td>Number formatted as text</td></tr>
+                    <tr><td><code>UCASE$(s)</code>, <code>LCASE$(s)</code>, <code>TRIM$(s)</code></td><td>Upper / lower case, trim whitespace</td></tr>
+                    <tr><td><code>GRID$(lat,lon)</code></td><td>Four-character Maidenhead locator</td></tr>
+                    <tr><td><code>DXCC$(code)</code></td><td>Name of the DXCC entity for an ARRL numeric code</td></tr>
+                    <tr><td><code>TIME$</code>, <code>DATE$</code></td><td>Current UTC <code>HH:MM:SS</code> and <code>YYYY-MM-DD</code></td></tr>
+                </table>
+
+                <h3>String-to-number functions</h3>
+                <table>
+                    <tr><th>Function</th><th>Returns</th></tr>
+                    <tr><td><code>LEN(s)</code></td><td>Character count</td></tr>
+                    <tr><td><code>ASC(s)</code></td><td>Byte value of the first character</td></tr>
+                    <tr><td><code>VAL(s)</code></td><td>Number parsed from text (0 if none)</td></tr>
+                    <tr><td><code>INSTR(hay,needle)</code></td><td>1-based position of <code>needle</code> in <code>hay</code>, or 0</td></tr>
+                </table>
+
+                <h3>Geo &amp; RF helpers</h3>
+                <table>
+                    <tr><th>Function</th><th>Returns</th></tr>
+                    <tr><td><code>GCDIST(lat1,lon1,lat2,lon2)</code></td><td>Great-circle distance in km</td></tr>
+                    <tr><td><code>GCAZ(lat1,lon1,lat2,lon2)</code></td><td>Initial great-circle bearing in degrees</td></tr>
+                    <tr><td><code>FSPL(freqMHz,distKm)</code></td><td>Free-space path loss in dB</td></tr>
+                    <tr><td><code>DXCCLAT(code)</code>, <code>DXCCLON(code)</code></td><td>Reference latitude / longitude for a DXCC entity</td></tr>
+                    <tr><td><code>PASSAOS(k)</code>, <code>PASSLOS(k)</code>, <code>PASSMAX(k)</code></td><td>For the k-th upcoming pass of the selected satellite: minutes to AOS, minutes to LOS, and maximum elevation (degrees). Index 1…<code>PASSN</code>.</td></tr>
+                </table>
+
+                <h2 id="constants">Constants</h2>
+                <table>
+                    <tr><th>Name</th><th>Value</th></tr>
+                    <tr><td><code>PI</code></td><td>&pi;</td></tr>
+                    <tr><td><code>TWOPI</code></td><td>2&pi;</td></tr>
+                    <tr><td><code>DEG</code></td><td>Degrees per radian (180/&pi;)</td></tr>
+                    <tr><td><code>RAD</code></td><td>Radians per degree (&pi;/180)</td></tr>
+                    <tr><td><code>CLIGHT</code></td><td>Speed of light, 299 792 458 m/s</td></tr>
+                    <tr><td><code>KBOLT</code></td><td>Boltzmann constant, 1.380649&times;10<sup>&minus;23</sup></td></tr>
+                    <tr><td><code>REARTH</code></td><td>Earth radius, 6378.137 km</td></tr>
+                </table>
+
+                <h2 id="host">Live data variables</h2>
+                <p>The interpreter exposes OrbitDeck's live state as <strong>read-only</strong> numeric variables. They are populated from your station, the selected satellite, the current pass prediction, the Sun and Moon, space weather, and a planning-grade geomagnetic model at run time. Many "OK" flags are 1 when the corresponding data is available and 0 otherwise, so you can guard on them.</p>
+
+                <h3>Time (UTC)</h3>
+                <table>
+                    <tr><th>Variable</th><th>Meaning</th></tr>
+                    <tr><td><code>UTCH UTCM UTCS</code></td><td>Hour, minute, second</td></tr>
+                    <tr><td><code>UTCDAY UTCMON UTCYR</code></td><td>Day, month, year</td></tr>
+                    <tr><td><code>LSTHR</code></td><td>Local sidereal time, hours</td></tr>
+                    <tr><td><code>TIMEOK</code></td><td>1 when the clock is set (also gates <code>TIME$</code>/<code>DATE$</code>)</td></tr>
+                </table>
+
+                <h3>Station</h3>
+                <table>
+                    <tr><th>Variable</th><th>Meaning</th></tr>
+                    <tr><td><code>MYLAT MYLON MYALT</code></td><td>Observer latitude, longitude, altitude (m)</td></tr>
+                    <tr><td><code>MAGDECL</code></td><td>Approximate magnetic declination (degrees, east positive)</td></tr>
+                    <tr><td><code>NSAT NFAV</code></td><td>Catalog size and number of favorites</td></tr>
+                    <tr><td><code>POSOK</code></td><td>1 when the station position is known</td></tr>
+                </table>
+
+                <h3>Selected satellite</h3>
+                <table>
+                    <tr><th>Variable</th><th>Meaning</th></tr>
+                    <tr><td><code>SATAZ SATEL</code></td><td>Azimuth and elevation (degrees)</td></tr>
+                    <tr><td><code>SATRNG SATRR</code></td><td>Slant range (km) and range rate (km/s)</td></tr>
+                    <tr><td><code>SATLAT SATLON SATALT</code></td><td>Sub-point latitude, longitude, altitude (km)</td></tr>
+                    <tr><td><code>SATSUN</code></td><td>1 if the satellite is sunlit</td></tr>
+                    <tr><td><code>SATINC SATECC SATRAAN SATMM</code></td><td>Inclination, eccentricity, RAAN, mean motion</td></tr>
+                    <tr><td><code>SATNOR</code></td><td>NORAD catalog number</td></tr>
+                    <tr><td><code>GPAGE</code></td><td>Element-set age in days</td></tr>
+                    <tr><td><code>DECAYD DECAYSRC</code></td><td>Estimated decay lifetime (days) and its source (1 n-dot, 2 B*)</td></tr>
+                    <tr><td><code>SATOK</code></td><td>1 when satellite look angles are valid</td></tr>
+                </table>
+
+                <h3>Next pass</h3>
+                <table>
+                    <tr><th>Variable</th><th>Meaning</th></tr>
+                    <tr><td><code>AOSIN LOSIN</code></td><td>Minutes to AOS / LOS of the next pass</td></tr>
+                    <tr><td><code>PASSEL</code></td><td>Maximum elevation of the next pass (degrees)</td></tr>
+                    <tr><td><code>PASSVIS</code></td><td>1 if the next pass is optically visible (satellite sunlit, Sun below &minus;6&deg;)</td></tr>
+                    <tr><td><code>PASSN</code></td><td>Number of upcoming passes found (up to 8)</td></tr>
+                    <tr><td><code>PASSOK</code></td><td>1 when a pass was found</td></tr>
+                </table>
+                <p>Use <code>PASSAOS(k)</code>, <code>PASSLOS(k)</code> and <code>PASSMAX(k)</code> to read individual passes 1…<code>PASSN</code>.</p>
+
+                <h3>Sun &amp; Moon</h3>
+                <table>
+                    <tr><th>Variable</th><th>Meaning</th></tr>
+                    <tr><td><code>SUNAZ SUNEL</code></td><td>Sun azimuth and elevation (degrees)</td></tr>
+                    <tr><td><code>MOONAZ MOONEL</code></td><td>Moon azimuth and elevation (degrees)</td></tr>
+                </table>
+
+                <h3>Space weather</h3>
+                <table>
+                    <tr><th>Variable</th><th>Meaning</th></tr>
+                    <tr><td><code>SFI</code></td><td>10.7 cm solar flux</td></tr>
+                    <tr><td><code>SSN</code></td><td>Sunspot number</td></tr>
+                    <tr><td><code>KP AINDEX</code></td><td>Planetary Kp and A index</td></tr>
+                    <tr><td><code>MUF</code></td><td>Modeled daytime MUF</td></tr>
+                    <tr><td><code>SPWXOK</code></td><td>1 when space-weather values are available</td></tr>
+                </table>
+
+                <h3>Transponder (after <code>TXSEL</code>)</h3>
+                <table>
+                    <tr><th>Variable</th><th>Meaning</th></tr>
+                    <tr><td><code>NTX</code></td><td>Number of transponders on the satellite</td></tr>
+                    <tr><td><code>TXDL TXUL TXBW</code></td><td>Downlink center, uplink center, bandwidth (Hz)</td></tr>
+                    <tr><td><code>TXINV TXLIN</code></td><td>1 if inverting / linear</td></tr>
+                    <tr><td><code>DOPPRX DOPPTX</code></td><td>Doppler-corrected downlink / uplink dial frequencies (Hz)</td></tr>
+                    <tr><td><code>TXOK</code></td><td>1 when a transponder is selected</td></tr>
+                </table>
+
+                <h3>Geomagnetic (planning-grade dipole)</h3>
+                <table>
+                    <tr><th>Variable</th><th>Meaning</th></tr>
+                    <tr><td><code>LSHELL</code></td><td>McIlwain L-shell at the sub-point</td></tr>
+                    <tr><td><code>BFIELD BRATIO</code></td><td>Field magnitude (nT) and B/B<sub>0</sub> ratio</td></tr>
+                    <tr><td><code>INBELT INSAA</code></td><td>1 inside a radiation belt / South Atlantic Anomaly</td></tr>
+                </table>
+                <div class="note">Several host variables are defined for source-compatibility with CardSat firmware (for example GPS, battery, heap and additional space-weather fields such as <code>FLARE</code>, <code>BZ</code>, <code>SWSPEED</code>). On iOS these read 0 unless OrbitDeck has a value for them; guard on the matching "OK" flag where one exists. The geomagnetic figures use the same centered-dipole model as Orbital Zones, not a full IGRF model.</div>
+
+                <h2 id="satsel">Selecting satellites &amp; transponders</h2>
+                <p>By default the live variables describe OrbitDeck's currently selected satellite. Inside a program you can switch context:</p>
+                <ul>
+                    <li><code>SATSEL <em>i</em></code> — select catalog index <em>i</em> (0-based) and refresh all <code>SAT…</code>, pass and geomagnetic variables, plus the <code>PASSAOS/PASSLOS/PASSMAX</code> tables. It clears any transponder selection.</li>
+                    <li><code>TXSEL <em>i</em></code> — select transponder index <em>i</em> (0-based) on the current satellite and populate <code>TX…</code> and <code>DOPPRX/DOPPTX</code>.</li>
+                </ul>
+<pre><code>10 REM Report the next pass of catalog entry 0
+20 SATSEL 0
+30 IF PASSOK=0 THEN 60
+40 PRINT "SAT ", SATNOR, " NEXT AOS ", ROUND(AOSIN), " MIN, MAX EL ", ROUND(PASSEL)
+50 END
+60 PRINT "NO PASS FOUND"</code></pre>
+
+                <h2 id="graphics">Graphics &amp; display</h2>
+                <p>The display is <strong>240 &times; 135</strong> pixels; <code>(0,0)</code> is the top-left corner. Colors are an index 0…9 into the palette:</p>
+                <table>
+                    <tr><th>Index</th><th>Color</th><th>Index</th><th>Color</th></tr>
+                    <tr><td>0</td><td><span class="swatch" style="background:#000000"></span>Black</td><td>5</td><td><span class="swatch" style="background:#ffdc00"></span>Yellow</td></tr>
+                    <tr><td>1</td><td><span class="swatch" style="background:#ffffff"></span>White</td><td>6</td><td><span class="swatch" style="background:#39cccc"></span>Teal</td></tr>
+                    <tr><td>2</td><td><span class="swatch" style="background:#ff4136"></span>Red</td><td>7</td><td><span class="swatch" style="background:#ff851b"></span>Orange</td></tr>
+                    <tr><td>3</td><td><span class="swatch" style="background:#2ecc40"></span>Green</td><td>8</td><td><span class="swatch" style="background:#aaaaaa"></span>Gray</td></tr>
+                    <tr><td>4</td><td><span class="swatch" style="background:#4a90d9"></span>Blue</td><td>9</td><td><span class="swatch" style="background:#0b6623"></span>Dark green</td></tr>
+                </table>
+                <table>
+                    <tr><th>Statement</th><th>Effect</th></tr>
+                    <tr><td><code>CLS</code></td><td>Clear the display to black</td></tr>
+                    <tr><td><code>PSET x,y[,c]</code></td><td>Plot a point (color defaults to 1)</td></tr>
+                    <tr><td><code>LINE x1,y1,x2,y2[,c]</code></td><td>Draw a line</td></tr>
+                    <tr><td><code>CIRCLE x,y,r[,c]</code></td><td>Draw a circle outline</td></tr>
+                    <tr><td><code>TEXT x,y,<em>value</em></code></td><td>Draw text (a string or a number) at x,y</td></tr>
+                    <tr><td><code>SHOW</code></td><td>Marker to present the frame (drawing is shown after the run regardless)</td></tr>
+                </table>
+
+                <h2 id="files">Files &amp; storage</h2>
+                <p>Programs can write small text files, confined to OrbitDeck's private <code>Application Support/OrbitDeck/Basic</code> directory. Programs cannot supply paths or escape that sandbox.</p>
+                <table>
+                    <tr><th>Statement</th><th>Effect</th></tr>
+                    <tr><td><code>FOPEN "name"</code></td><td>Open (creating if needed) a file for appending</td></tr>
+                    <tr><td><code>FPRINT <em>items</em></code></td><td>Append a line to the open file (same item rules as <code>PRINT</code>)</td></tr>
+                    <tr><td><code>FCLOSE</code></td><td>Close the open file</td></tr>
+                    <tr><td><code>FILES</code></td><td>Print the list of files in the sandbox</td></tr>
+                </table>
+                <p>File names may be up to 40 characters of letters, digits and <code>_ . -</code>; they may not start with a dot or contain a slash.</p>
+
+                <h2 id="limits">Limits &amp; safety</h2>
+                <p>Execution is bounded so a runaway program cannot hang the app:</p>
+                <table>
+                    <tr><th>Limit</th><th>Value</th></tr>
+                    <tr><td>Statements per run</td><td>2,000,000 (then <em>too many statements</em>)</td></tr>
+                    <tr><td>Wall-clock time</td><td>~10 seconds (then <em>program ran too long</em>)</td></tr>
+                    <tr><td>Nested <code>FOR</code> loops</td><td>8</td></tr>
+                    <tr><td><code>GOSUB</code> depth</td><td>16</td></tr>
+                    <tr><td>Total array elements</td><td>2048 (named &le; 1024, anonymous &le; 256)</td></tr>
+                </table>
+                <p>Division or modulo by zero, out-of-range array indices, <code>RETURN</code> without <code>GOSUB</code>, <code>NEXT</code> without <code>FOR</code>, and unknown names all raise a descriptive <code>?</code> error.</p>
+
+                <h2 id="examples">Worked examples</h2>
+                <h3>The built-in sample</h3>
+                <p>The <em>Load sample</em> action loads this program, which exercises arrays, <code>DATA</code>/<code>READ</code>, graphics and live variables:</p>
+<pre><code>10 REM OrbitDeck Tiny BASIC
+20 DIM A(12),@(6)
+30 DATA 2,3,5,7,11,13
+40 FOR I=0 TO 5: READ @(I): NEXT
+50 CLS
+60 FOR I=0 TO 11
+70 A(I)=50+20*SIN(I*30)
+80 LINE 120,67,120+95*COS(I*30),67+A(I)*SIN(I*30),3
+90 NEXT
+100 CIRCLE 120,67,30,5
+110 TEXT 70,4,"ORBITDECK BASIC"
+120 PRINT "MY GRID DATA: LAT=",MYLAT," LON=",MYLON
+130 IF SATOK=0 THEN 160
+140 PRINT "SAT ",SATNOR," AZ=",ROUND(SATAZ)," EL=",ROUND(SATEL)
+150 PRINT "NEXT AOS IN ",ROUND(AOSIN)," MIN"
+160 SHOW
+170 END</code></pre>
+
+                <h3>A pass table for the selected satellite</h3>
+<pre><code>10 IF PASSOK=0 THEN 70
+20 PRINT "PASS  AOS(MIN)  LOS(MIN)  MAXEL"
+30 FOR K=1 TO PASSN
+40 PRINT K, ROUND(PASSAOS(K)), ROUND(PASSLOS(K)), ROUND(PASSMAX(K))
+50 NEXT
+60 END
+70 PRINT "NO PASSES IN THE WINDOW"</code></pre>
+
+                <h3>Great-circle distance to a DXCC entity</h3>
+<pre><code>10 REM 291 = United States reference point
+20 D=GCDIST(MYLAT,MYLON,DXCCLAT(291),DXCCLON(291))
+30 B=GCAZ(MYLAT,MYLON,DXCCLAT(291),DXCCLON(291))
+40 PRINT DXCC$(291)
+50 PRINT "RANGE ", ROUND(D), " KM  BEARING ", ROUND(B), " DEG"</code></pre>
+
+                <h3>Logging to a file</h3>
+<pre><code>10 FOPEN "log.txt"
+20 FPRINT DATE$, " ", TIME$, " SFI=", SFI, " KP=", KP
+30 FCLOSE
+40 FILES</code></pre>
+
+                <h2 id="compat">Compatibility notes</h2>
+                <p>This interpreter is designed to run the same programs as the OrbitDeck desktop app and CardSat. A few platform notes:</p>
+                <ul>
+                    <li><code>INPUT</code> is collected up front through the INPUT panel rather than pausing execution.</li>
+                    <li><code>PASSAOS/PASSLOS/PASSMAX</code> accept indices 1…<code>PASSN</code>; index 0 is accepted as an alias for the first pass for compatibility with early program versions.</li>
+                    <li>Host variables that OrbitDeck cannot supply on iOS (some CardSat hardware telemetry) read 0; check the relevant "OK" flag.</li>
+                    <li>The geomagnetic variables use OrbitDeck's centered-dipole planning model, not CardSat's IGRF precision.</li>
+                </ul>
+                <p>Share your programs with <em>Actions &rarr; Share source</em>, and reopen saved <code>.txt</code> programs with <em>Actions &rarr; Open file…</em>.</p>
+            </div>
+        </div>
+    </section>
+
+    <footer class="site-footer">
+        <div class="container">
+            <span>&copy; 2026 Paul Stoetzer, N8HM</span>
+            <span>
+                <a href="index.html">Home</a> &nbsp;&middot;&nbsp;
+                <a href="documentation.html">Documentation</a> &nbsp;&middot;&nbsp;
+                <a href="privacy.html">Privacy</a> &nbsp;&middot;&nbsp;
+                <a href="https://www.amsat.org" rel="noopener">Support AMSAT</a>
+            </span>
+        </div>
+    </footer>
+</body>
+</html>
