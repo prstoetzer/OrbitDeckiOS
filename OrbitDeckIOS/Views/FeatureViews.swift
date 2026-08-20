@@ -713,6 +713,10 @@ struct WorkableView: View {
     @State private var snapshot = WorkableSetSnapshot(grids: [], states: [], dxcc: [])
     @State private var isLoading = false
     @State private var error: String?
+    // A fixed anchor for the live TimelineView. Anchoring to `.now` inline would
+    // re-anchor the schedule on every body render (e.g. when the mode toggles),
+    // recreating the timeline and contributing to a detail re-layout flash.
+    @State private var clockAnchor = Date()
 
     private func items(from snapshot: WorkableSetSnapshot) -> [String] {
         switch kind { case "states": snapshot.states; case "dxcc": snapshot.dxcc; default: snapshot.grids }
@@ -733,12 +737,11 @@ struct WorkableView: View {
                     .textInputAutocapitalization(.characters).textFieldStyle(.odField)
 
                 // A single, structurally-stable TimelineView drives both modes so
-                // toggling Live/Across doesn't swap the view tree (which briefly
-                // collapsed the NavigationSplitView detail back to Home). In Live
-                // mode it recomputes the current-sub-point footprint each second
-                // (a cheap point-in-footprint scan); in Across mode it just shows
-                // the precomputed pass snapshot (the tick is a no-op re-read).
-                TimelineView(.periodic(from: .now, by: 1)) { context in
+                // toggling Live/Across doesn't swap the view tree. In Live mode it
+                // recomputes the current-sub-point footprint each second (a cheap
+                // point-in-footprint scan); in Across mode it just shows the
+                // precomputed pass snapshot (the tick is a no-op re-read).
+                TimelineView(.periodic(from: clockAnchor, by: 1)) { context in
                     let display: WorkableSetSnapshot = {
                         if !acrossPass, let satellite = store.selectedSatellite {
                             return (try? ParityPlanningEngine.workableNow(satellite, at: context.date))
@@ -748,10 +751,12 @@ struct WorkableView: View {
                     }()
                     resultsSection(display)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 Text("DXCC uses 340 bundled reference points. State and entity results are point-based footprint tests rather than political-boundary polygon intersections.").font(.caption).foregroundStyle(ODTheme.muted)
             }.padding()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: acrossPass) { _, isAcross in if isAcross { compute() } }
         .onChange(of: store.preferences.selectedNorad) { _, _ in if acrossPass { compute() } }
     }
@@ -759,26 +764,31 @@ struct WorkableView: View {
     @ViewBuilder private func resultsSection(_ snapshot: WorkableSetSnapshot) -> some View {
         let all = items(from: snapshot)
         let shown = filtered(from: snapshot)
+        // Keep a single, fixed subtree (header + ScrollView) regardless of mode or
+        // loading/error state. Swapping the ScrollView out for a ProgressView, or
+        // letting the height collapse between an empty set and ~1900 cells, made the
+        // collapsed NavigationSplitView detail re-layout and flash another column.
         VStack(spacing: 12) {
-            HStack {
+            HStack(spacing: 8) {
                 Text("\(all.count) workable").font(.headline)
+                if acrossPass && isLoading { ProgressView().controlSize(.small) }
                 Spacer()
-                if !filter.isEmpty { Text("\(shown.count) matching").foregroundStyle(ODTheme.muted) }
+                if acrossPass, let error {
+                    Text(error).font(.caption).foregroundStyle(.red).lineLimit(1)
+                } else if !filter.isEmpty {
+                    Text("\(shown.count) matching").foregroundStyle(ODTheme.muted)
+                }
             }
-            if acrossPass && isLoading {
-                ProgressView("Scanning next pass…").padding()
-            } else if acrossPass, let error {
-                Text(error).foregroundStyle(.red).padding()
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: kind == "dxcc" ? 190 : 76), spacing: 6)], spacing: 6) {
-                        ForEach(shown, id: \.self) { item in
-                            Text(item).font(kind == "grids" ? .body.monospaced().bold() : .body).lineLimit(1).minimumScaleFactor(0.7).frame(maxWidth: .infinity, alignment: kind == "dxcc" ? .leading : .center).padding(.vertical, 7).padding(.horizontal, 6).background(ODTheme.panel, in: RoundedRectangle(cornerRadius: 7))
-                        }
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: kind == "dxcc" ? 190 : 76), spacing: 6)], spacing: 6) {
+                    ForEach(shown, id: \.self) { item in
+                        Text(item).font(kind == "grids" ? .body.monospaced().bold() : .body).lineLimit(1).minimumScaleFactor(0.7).frame(maxWidth: .infinity, alignment: kind == "dxcc" ? .leading : .center).padding(.vertical, 7).padding(.horizontal, 6).background(ODTheme.panel, in: RoundedRectangle(cornerRadius: 7))
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     /// Computes the across-next-pass footprint union (the heavier scan). Live
