@@ -748,7 +748,7 @@ struct WorkableView: View {
                 Text("DXCC uses 340 bundled reference points. State and entity results are point-based footprint tests rather than political-boundary polygon intersections.").font(.caption).foregroundStyle(ODTheme.muted)
             }.padding()
         }
-        .task(id: acrossPass) { if acrossPass { compute() } }
+        .onChange(of: acrossPass) { _, isAcross in if isAcross { compute() } }
         .onChange(of: store.preferences.selectedNorad) { _, _ in if acrossPass { compute() } }
     }
 
