@@ -415,16 +415,15 @@ enum GeoEntityLookup {
         let iso = placemark.isoCountryCode?.uppercased()
         let dxcc = dxccEntity(iso: iso, administrativeArea: placemark.administrativeArea)
         let primary = adifPrimary(iso: iso, administrativeArea: placemark.administrativeArea)
-        var secondary = adifSecondary(iso: iso, subAdministrativeArea: placemark.subAdministrativeArea)
-        // Connecticut abolished county governments and, since 2024, Core Location
-        // returns the census "planning regions" as the county-equivalent. LoTW/TQSL
-        // still require one of the 8 legacy counties, so resolve it from the town
-        // (each CT town belongs to exactly one legacy county).
-        if iso == "US", primary == "CT" {
-            if let county = ctLegacyCounty(town: placemark.locality)
-                ?? ctLegacyCounty(town: placemark.subLocality) {
-                secondary = county
-            }
+        let secondary: String?
+        if iso == "US" {
+            secondary = usSecondary(state: primary,
+                                    subAdmin: placemark.subAdministrativeArea,
+                                    locality: placemark.locality,
+                                    subLocality: placemark.subLocality,
+                                    name: placemark.name)
+        } else {
+            secondary = placemark.subAdministrativeArea
         }
         let entity = GeoLocationEntity(
             dxccName: dxcc?.name ?? placemark.country,
@@ -444,6 +443,79 @@ enum GeoEntityLookup {
         guard let raw = town?.lowercased().trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
         return ctTownToCounty[raw]
     }
+
+    /// Resolve the LoTW/TQSL secondary administrative subdivision for a US position.
+    /// Ordering matters: a county designator ("… County/Parish/Borough") is treated
+    /// as the county (so a same-named independent city can't hijack it); only when no
+    /// county designator is present do we resolve an independent city. Handles the
+    /// four US locales whose secondary subdivision isn't a plain county — Connecticut
+    /// (planning regions → legacy county) and the independent cities of Virginia,
+    /// Maryland (Baltimore), Missouri (St. Louis) and Nevada (Carson City).
+    static func usSecondary(state: String?, subAdmin: String?, locality: String?, subLocality: String?, name: String?) -> String? {
+        // Connecticut: Core Location returns a planning region; map the town to its
+        // legacy county.
+        if state == "CT" {
+            if let county = ctLegacyCounty(town: locality) ?? ctLegacyCounty(town: subLocality) { return county }
+        }
+        // County / parish / borough context → the normalized bare LoTW name.
+        if let sub = subAdmin, hasCountyDesignator(sub) {
+            return adifSecondary(iso: "US", subAdministrativeArea: sub)
+        }
+        // No county designator: this is independent-city territory (or Core Location
+        // simply didn't supply a county). Match the city against the state's
+        // independent-city roster, checking the most specific fields first.
+        if let state {
+            for place in [locality, subAdmin, name].compactMap({ $0 }) {
+                if let lotw = independentCityName(state: state, place: place) { return lotw }
+            }
+        }
+        // Fallback: normalize whatever subdivision we have (e.g. strip "Planning
+        // Region" for an unrecognized CT place).
+        return subAdmin.map { adifSecondary(iso: "US", subAdministrativeArea: $0) } ?? nil
+    }
+
+    /// True when Core Location's subdivision string carries a county-equivalent
+    /// government designator, i.e. it denotes a county rather than an independent city.
+    static func hasCountyDesignator(_ s: String) -> Bool {
+        let l = s.lowercased()
+        return [" county", " parish", " borough", " census area", " municipality", " city and borough"]
+            .contains { l.hasSuffix($0) }
+    }
+
+    /// The LoTW/TQSL name for an independent city in a given state, or nil if the
+    /// place isn't one. Colliding names carry a "City" suffix to distinguish them
+    /// from the same-named county (e.g. "Richmond City" vs the county "Richmond").
+    static func independentCityName(state: String, place: String) -> String? {
+        guard let table = independentCities[state] else { return nil }
+        let p = place.lowercased().trimmingCharacters(in: .whitespaces)
+        let stripped = p.hasSuffix(" city") ? String(p.dropLast(5)).trimmingCharacters(in: .whitespaces) : p
+        return table[p] ?? table[stripped]
+    }
+
+    private static let independentCities: [String: [String: String]] = [
+        "VA": vaIndependentCities,
+        "MD": ["baltimore": "Baltimore City"],
+        "MO": ["st. louis": "St. Louis City", "saint louis": "St. Louis City"],
+        "NV": ["carson city": "Carson City"]
+    ]
+
+    /// Virginia's 38 independent cities keyed by their bare (lowercased) name. Four
+    /// share a name with a Virginia county and take the "City" suffix in LoTW/TQSL.
+    private static let vaIndependentCities: [String: String] = {
+        let bare = ["Alexandria", "Bristol", "Buena Vista", "Charlottesville", "Chesapeake",
+                    "Colonial Heights", "Covington", "Danville", "Emporia", "Falls Church",
+                    "Fredericksburg", "Galax", "Hampton", "Harrisonburg", "Hopewell", "Lexington",
+                    "Lynchburg", "Manassas", "Manassas Park", "Martinsville", "Newport News",
+                    "Norfolk", "Norton", "Petersburg", "Poquoson", "Portsmouth", "Radford",
+                    "Salem", "Staunton", "Suffolk", "Virginia Beach", "Waynesboro", "Williamsburg",
+                    "Winchester"]
+        let collide = ["Fairfax": "Fairfax City", "Franklin": "Franklin City",
+                       "Richmond": "Richmond City", "Roanoke": "Roanoke City"]
+        var out: [String: String] = [:]
+        for c in bare { out[c.lowercased()] = c }
+        for (k, v) in collide { out[k.lowercased()] = v }
+        return out
+    }()
 
     /// Normalize Core Location's `administrativeArea` to the ADIF Primary
     /// Administrative Subdivision. For the US that is the two-letter STATE code
