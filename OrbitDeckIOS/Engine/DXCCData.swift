@@ -414,15 +414,35 @@ enum GeoEntityLookup {
         guard let placemark = placemarks.first else { return nil }
         let iso = placemark.isoCountryCode?.uppercased()
         let dxcc = dxccEntity(iso: iso, administrativeArea: placemark.administrativeArea)
+        let primary = adifPrimary(iso: iso, administrativeArea: placemark.administrativeArea)
+        var secondary = adifSecondary(iso: iso, subAdministrativeArea: placemark.subAdministrativeArea)
+        // Connecticut abolished county governments and, since 2024, Core Location
+        // returns the census "planning regions" as the county-equivalent. LoTW/TQSL
+        // still require one of the 8 legacy counties, so resolve it from the town
+        // (each CT town belongs to exactly one legacy county).
+        if iso == "US", primary == "CT" {
+            if let county = ctLegacyCounty(town: placemark.locality)
+                ?? ctLegacyCounty(town: placemark.subLocality) {
+                secondary = county
+            }
+        }
         let entity = GeoLocationEntity(
             dxccName: dxcc?.name ?? placemark.country,
             dxccPrefix: dxcc?.prefix,
             country: placemark.country,
             isoCountryCode: iso,
-            primarySubdivision: adifPrimary(iso: iso, administrativeArea: placemark.administrativeArea),
-            secondarySubdivision: adifSecondary(iso: iso, subAdministrativeArea: placemark.subAdministrativeArea)
+            primarySubdivision: primary,
+            secondarySubdivision: secondary
         )
         return entity.hasAnything ? entity : nil
+    }
+
+    /// The legacy (pre-2024) Connecticut county for a town or village name, which is
+    /// the secondary subdivision LoTW/TQSL still expects. Returns nil for an unknown
+    /// place so the caller can fall back to the normalized planning-region name.
+    static func ctLegacyCounty(town: String?) -> String? {
+        guard let raw = town?.lowercased().trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
+        return ctTownToCounty[raw]
     }
 
     /// Normalize Core Location's `administrativeArea` to the ADIF Primary
@@ -475,6 +495,57 @@ enum GeoEntityLookup {
         "washington": "WA", "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY"
     ]
     private static let usStateCodes: Set<String> = Set(usStateNameToCode.values)
+
+    /// Every Connecticut town (and common village/CDP name Core Location may return
+    /// as the locality) mapped to its legacy county — the value LoTW/TQSL expects.
+    private static let ctTownToCounty: [String: String] = {
+        let byCounty: [String: [String]] = [
+            "Fairfield": ["bethel", "bridgeport", "brookfield", "danbury", "darien", "easton",
+                          "fairfield", "greenwich", "monroe", "new canaan", "new fairfield",
+                          "newtown", "norwalk", "redding", "ridgefield", "shelton", "sherman",
+                          "stamford", "stratford", "trumbull", "weston", "westport", "wilton",
+                          // common villages/CDPs
+                          "cos cob", "riverside", "old greenwich", "glenville", "georgetown", "nichols"],
+            "Hartford": ["avon", "berlin", "bloomfield", "bristol", "burlington", "canton",
+                         "east granby", "east hartford", "east windsor", "enfield", "farmington",
+                         "glastonbury", "granby", "hartford", "hartland", "manchester", "marlborough",
+                         "new britain", "newington", "plainville", "rocky hill", "simsbury",
+                         "southington", "south windsor", "suffield", "west hartford", "wethersfield",
+                         "windsor", "windsor locks",
+                         "collinsville", "tariffville", "weatogue", "unionville", "kensington", "broad brook"],
+            "Litchfield": ["barkhamsted", "bethlehem", "bridgewater", "canaan", "colebrook", "cornwall",
+                           "goshen", "harwinton", "kent", "litchfield", "morris", "new hartford",
+                           "new milford", "norfolk", "north canaan", "plymouth", "roxbury", "salisbury",
+                           "sharon", "thomaston", "torrington", "warren", "washington", "watertown",
+                           "winchester", "woodbury",
+                           "oakville", "terryville", "winsted"],
+            "Middlesex": ["chester", "clinton", "cromwell", "deep river", "durham", "east haddam",
+                          "east hampton", "essex", "haddam", "killingworth", "middlefield", "middletown",
+                          "old saybrook", "portland", "westbrook", "moodus", "ivoryton"],
+            "New Haven": ["ansonia", "beacon falls", "bethany", "branford", "cheshire", "derby",
+                          "east haven", "guilford", "hamden", "madison", "meriden", "middlebury",
+                          "milford", "naugatuck", "new haven", "north branford", "north haven",
+                          "orange", "oxford", "prospect", "seymour", "southbury", "wallingford",
+                          "waterbury", "west haven", "wolcott", "woodbridge",
+                          "stony creek", "yalesville"],
+            "New London": ["bozrah", "colchester", "east lyme", "franklin", "griswold", "groton",
+                           "lebanon", "ledyard", "lisbon", "lyme", "montville", "new london",
+                           "north stonington", "norwich", "old lyme", "preston", "salem", "sprague",
+                           "stonington", "voluntown", "waterford",
+                           "mystic", "pawcatuck", "poquonock bridge", "jewett city", "gales ferry",
+                           "quaker hill", "baltic", "niantic", "uncasville", "noank", "groton long point"],
+            "Tolland": ["andover", "bolton", "columbia", "coventry", "ellington", "hebron", "mansfield",
+                        "somers", "stafford", "tolland", "union", "vernon", "willington",
+                        "storrs", "storrs mansfield", "rockville", "stafford springs"],
+            "Windham": ["ashford", "brooklyn", "canterbury", "chaplin", "eastford", "hampton",
+                        "killingly", "plainfield", "pomfret", "putnam", "scotland", "sterling",
+                        "thompson", "windham", "woodstock",
+                        "moosup", "central village", "wauregan", "danielson", "willimantic"]
+        ]
+        var out: [String: String] = [:]
+        for (county, towns) in byCounty { for town in towns { out[town] = county } }
+        return out
+    }()
 
     /// Map an ISO 3166-1 alpha-2 country/territory code to the ARRL DXCC entity.
     /// A handful of DXCC entities share one ISO code (the US mainland vs Alaska and
