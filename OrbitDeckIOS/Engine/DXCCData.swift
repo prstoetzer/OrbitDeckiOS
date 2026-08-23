@@ -419,11 +419,62 @@ enum GeoEntityLookup {
             dxccPrefix: dxcc?.prefix,
             country: placemark.country,
             isoCountryCode: iso,
-            primarySubdivision: placemark.administrativeArea,
-            secondarySubdivision: placemark.subAdministrativeArea
+            primarySubdivision: adifPrimary(iso: iso, administrativeArea: placemark.administrativeArea),
+            secondarySubdivision: adifSecondary(iso: iso, subAdministrativeArea: placemark.subAdministrativeArea)
         )
         return entity.hasAnything ? entity : nil
     }
+
+    /// Normalize Core Location's `administrativeArea` to the ADIF Primary
+    /// Administrative Subdivision. For the US that is the two-letter STATE code
+    /// (Core Location sometimes yields the full name); other countries pass through.
+    static func adifPrimary(iso: String?, administrativeArea: String?) -> String? {
+        guard let raw = administrativeArea?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
+        guard iso == "US" else { return raw }
+        // Already a valid 2-letter code?
+        let upper = raw.uppercased()
+        if upper.count == 2, usStateCodes.contains(upper) { return upper }
+        // Full state name → code.
+        if let code = usStateNameToCode[raw.lowercased()] { return code }
+        return raw
+    }
+
+    /// Normalize Core Location's `subAdministrativeArea` to the ADIF Secondary
+    /// Administrative Subdivision name. For the US this strips the government
+    /// designators Core Location appends (County, Parish, Borough, Census Area,
+    /// Municipality) and the Connecticut "Planning Region" suffix — which maps a
+    /// planning region onto its ADIF secondary-subdivision-alt name (e.g. "Capitol
+    /// Planning Region" → "Capitol") and boroughs/census areas onto the ADIF Alaska
+    /// names (e.g. "Fairbanks North Star Borough" → "Fairbanks North Star").
+    static func adifSecondary(iso: String?, subAdministrativeArea: String?) -> String? {
+        guard var s = subAdministrativeArea?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return nil }
+        guard iso == "US" else { return s }
+        // Alaska's Anchorage/Juneau come through with a leading designator.
+        for prefix in ["Municipality of ", "City and Borough of "] where s.hasPrefix(prefix) {
+            s = String(s.dropFirst(prefix.count))
+        }
+        for suffix in [" Planning Region", " City and Borough", " Census Area",
+                       " Borough", " Parish", " Municipality", " County"] where s.hasSuffix(suffix) {
+            s = String(s.dropLast(suffix.count))
+            break
+        }
+        return s.trimmingCharacters(in: .whitespaces)
+    }
+
+    private static let usStateNameToCode: [String: String] = [
+        "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+        "colorado": "CO", "connecticut": "CT", "delaware": "DE", "district of columbia": "DC",
+        "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID", "illinois": "IL",
+        "indiana": "IN", "iowa": "IA", "kansas": "KS", "kentucky": "KY", "louisiana": "LA",
+        "maine": "ME", "maryland": "MD", "massachusetts": "MA", "michigan": "MI", "minnesota": "MN",
+        "mississippi": "MS", "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+        "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+        "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR",
+        "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC", "south dakota": "SD",
+        "tennessee": "TN", "texas": "TX", "utah": "UT", "vermont": "VT", "virginia": "VA",
+        "washington": "WA", "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY"
+    ]
+    private static let usStateCodes: Set<String> = Set(usStateNameToCode.values)
 
     /// Map an ISO 3166-1 alpha-2 country/territory code to the ARRL DXCC entity.
     /// A handful of DXCC entities share one ISO code (the US mainland vs Alaska and
@@ -434,8 +485,11 @@ enum GeoEntityLookup {
         let admin = (administrativeArea ?? "").lowercased()
 
         if iso == "US" {
-            if admin.contains("alaska") { return ("KL", "Alaska") }
-            if admin.contains("hawaii") { return ("KH6", "Hawaii") }
+            // Core Location usually yields the 2-letter state code ("AK"/"HI"), but
+            // may yield the full name; accept both so Alaska/Hawaii resolve to their
+            // own DXCC entities rather than the contiguous US.
+            if admin == "ak" || admin.contains("alaska") { return ("KL", "Alaska") }
+            if admin == "hi" || admin.contains("hawaii") { return ("KH6", "Hawaii") }
             return ("K", "United States of America")
         }
         if iso == "GB" {
