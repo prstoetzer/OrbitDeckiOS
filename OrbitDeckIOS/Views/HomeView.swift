@@ -7,14 +7,28 @@ private struct FleetPass: Identifiable, Sendable {
     let pass: PredictedPass
 }
 
+/// A reference-type memo for the Home sky-track arc, held in `@State` so it
+/// persists across renders. Mutating its fields does not invalidate the view
+/// (that's intentional — the live TimelineView already re-renders each second),
+/// so it's a safe render-time cache that avoids recomputing the arc every tick.
+private final class TrackArcCache {
+    var key = ""
+    var arc: [SkyPoint] = []
+    var pass: PredictedPass?
+}
+
 struct HomeView: View {
     @EnvironmentObject private var store: OrbitStore
     @State private var nextPass: PredictedPass?
     @State private var passError: String?
     @State private var fleetPasses: [FleetPass] = []
     @State private var fleetLoading = false
-    @State private var trackArc: [SkyPoint] = []
-    @State private var currentPass: PredictedPass?
+    // The sky-track arc and its pass are memoized inline by the live TimelineView
+    // (see resolveTrack) rather than loaded via a `.task`. On this device a `.task`
+    // can be cancelled by the split-view navigation transition, which left the arc
+    // empty (the satellite dot still drew, from the inline look, but the polar path
+    // did not). Computing it in the reliably-firing TimelineView fixes that.
+    @State private var arcCache = TrackArcCache()
     @StateObject private var location = LocationProvider()
     // Persist the sky-plot orientation choice (north-up vs compass-up) until the
     // operator changes it.
@@ -120,11 +134,6 @@ struct HomeView: View {
         .task { await store.refreshSpaceWeatherIfNeeded() }
         .task(id: passTaskKey) {
             await loadNextPass()
-        }
-        .task(id: passTaskKey) {
-            trackArc = []
-            currentPass = nil
-            await loadTrack()
         }
         .task(id: fleetKey) {
             await loadFleet()
@@ -315,11 +324,13 @@ struct HomeView: View {
     @ViewBuilder
     private func liveTrack(_ satellite: SatelliteRecord) -> some View {
         TimelineView(.periodic(from: clockAnchor, by: 1)) { context in
-            let look = try? OrbitPredictor.look(satellite, observer: store.preferences.observer, at: context.date)
+            let observer = store.preferences.observer
+            let look = try? OrbitPredictor.look(satellite, observer: observer, at: context.date)
+            let track = resolveTrack(satellite: satellite, observer: observer, now: context.date)
             VStack(spacing: 12) {
                 ZStack(alignment: .topTrailing) {
                     PolarSkyPlot(
-                        points: trackArc,
+                        points: track.arc,
                         currentPoint: look.map {
                             SkyPoint(id: context.date, date: context.date, azimuth: $0.azimuth, elevation: $0.elevation)
                         },
@@ -345,7 +356,7 @@ struct HomeView: View {
                 .frame(maxHeight: 380)
                 .padding(.horizontal)
 
-                nextEventBanner(now: context.date)
+                nextEventBanner(now: context.date, pass: track.pass)
 
                 liveCards(satellite: satellite, look: look)
 
@@ -413,8 +424,8 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private func nextEventBanner(now: Date) -> some View {
-        if let pass = currentPass {
+    private func nextEventBanner(now: Date, pass: PredictedPass?) -> some View {
+        if let pass {
             if now < pass.aos {
                 Label("AOS in \(ODFormat.duration(pass.aos.timeIntervalSince(now))) · max \(ODFormat.angle(pass.maxElevation))", systemImage: "arrow.up.right")
                     .font(.subheadline.monospacedDigit())
@@ -457,20 +468,23 @@ struct HomeView: View {
             .font(.caption2).foregroundStyle(ODTheme.muted)
     }
 
-    @MainActor
-    private func loadTrack() async {
-        guard let satellite = store.selectedSatellite else { trackArc = []; currentPass = nil; return }
-        let observer = store.preferences.observer
-        let computed = await Task.detached(priority: .userInitiated) { () -> (path: [SkyPoint], pass: PredictedPass?) in
+    /// Resolve (and cache) the sky-track arc and its pass for the current
+    /// satellite/observer. Recomputes only when the satellite, observer or minimum
+    /// elevation changes, or when the cached pass has ended (rollover to the next
+    /// pass). Runs synchronously inside the live TimelineView — SGP4 is fast and
+    /// this only does real work occasionally — so the arc is always drawn without
+    /// depending on a `.task` that navigation transitions can cancel.
+    private func resolveTrack(satellite: SatelliteRecord, observer: ObserverSite, now: Date) -> (arc: [SkyPoint], pass: PredictedPass?) {
+        let key = "\(satellite.id)-\(observer.coarseKey)-\(store.preferences.minElevation)"
+        let stale = arcCache.pass.map { now > $0.los } ?? false
+        if arcCache.key != key || stale {
             let pass = (try? OrbitPredictor.currentOrNextPass(satellite, observer: observer))
                 ?? (try? OrbitPredictor.predictPasses(satellite, observer: observer, minElevation: 0, maxCount: 1))?.first
-            guard let pass else { return ([], nil) }
-            let path = (try? OrbitPredictor.skyPath(satellite, observer: observer, pass: pass)) ?? []
-            return (path, pass)
-        }.value
-        if Task.isCancelled { return }
-        trackArc = computed.path
-        currentPass = computed.pass
+            arcCache.key = key
+            arcCache.pass = pass
+            arcCache.arc = pass.flatMap { try? OrbitPredictor.skyPath(satellite, observer: observer, pass: $0) } ?? []
+        }
+        return (arcCache.arc, arcCache.pass)
     }
 
     private var passTaskKey: String {
