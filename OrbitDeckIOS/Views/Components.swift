@@ -13,36 +13,15 @@ struct ShareURLItem: Identifiable { let url: URL; var id: URL { url } }
 /// lookup resolves. Re-geocodes only when the coarse position changes.
 struct CurrentLocationEntityInfo<Content: View>: View {
     @EnvironmentObject private var store: OrbitStore
-    @State private var info: GeoLocationEntity?
     @ViewBuilder let content: (GeoLocationEntity) -> Content
 
-    private var following: Bool { store.locationMode == .currentLocation }
-    // Key the lookup on a ~1 km-rounded position (2 decimals). While following the
-    // device, the shared location follow runs at coarse precision, so the raw fix
-    // jitters by hundreds of metres each second; a finer key would flip every
-    // update and keep cancelling the in-flight reverse-geocode before it finishes.
-    // DXCC and administrative subdivisions never change over ~1 km, so this is
-    // both stable and precise enough.
-    private var geocodeKey: String {
-        guard following else { return "fixed" }
-        let o = store.preferences.observer
-        return String(format: "%.2f,%.2f", o.latitude, o.longitude)
-    }
-
     var body: some View {
-        Group {
-            if following, let info, info.hasAnything {
-                content(info)
-            }
-        }
-        .task(id: geocodeKey) {
-            guard following else { info = nil; return }
-            let o = store.preferences.observer
-            // Keep the last good result if a lookup is cancelled or fails (e.g.
-            // transient network/geocoder throttling) so the rows don't disappear.
-            if let result = await GeoEntityLookup.lookup(latitude: o.latitude, longitude: o.longitude) {
-                info = result
-            }
+        // Purely reactive: the store reverse-geocodes on the location-update path
+        // and publishes `currentLocationEntity`, so this renders reliably without
+        // depending on a conditionally-rendered view's `.task` lifecycle.
+        if store.locationMode == .currentLocation,
+           let info = store.currentLocationEntity, info.hasAnything {
+            content(info)
         }
     }
 }

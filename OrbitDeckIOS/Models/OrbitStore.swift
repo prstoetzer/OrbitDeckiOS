@@ -17,6 +17,13 @@ final class OrbitStore: ObservableObject {
     @Published var lastError: String?
     @Published var lastGPRefresh: Date?
     @Published var spaceWeather: SpaceWeatherSnapshot?
+    /// Reverse-geocoded DXCC entity and administrative subdivisions for the current
+    /// position, populated only while following the device location. Driven from the
+    /// location-update path (not a view `.task`) so it renders reliably.
+    @Published var currentLocationEntity: GeoLocationEntity?
+    /// The ~1 km-rounded position last submitted for reverse geocoding, so we only
+    /// re-geocode when the operator actually moves to a new locale.
+    private var lastGeocodeKey: String?
 
     /// Full SatNOGS transmitter database keyed by NORAD id (as String), cached to
     /// disk so every catalog satellite shows its transmitters offline.
@@ -456,10 +463,13 @@ final class OrbitStore: ObservableObject {
             preferences.savedFixedSite = preferences.observer
             preferences.observer.name = Self.currentLocationName
             preferences.locationMode = .currentLocation
+            refreshLocationEntity()
         case .fixed:
             if let fixed = preferences.savedFixedSite { preferences.observer = fixed }
             preferences.savedFixedSite = nil
             preferences.locationMode = .fixed
+            currentLocationEntity = nil
+            lastGeocodeKey = nil
         }
     }
 
@@ -473,6 +483,32 @@ final class OrbitStore: ObservableObject {
         if lon < -180 { lon += 360 }
         preferences.observer.longitude = lon
         if altitudeMeters.isFinite { preferences.observer.altitudeMeters = altitudeMeters }
+        refreshLocationEntity()
+    }
+
+    /// Reverse-geocode the current observer position into `currentLocationEntity`,
+    /// but only in current-location mode and only when the ~1 km-rounded position
+    /// changes (so we don't spam the geocoder on coarse-fix jitter). Runs off the
+    /// view layer so the result survives view re-renders and never depends on a
+    /// conditionally-rendered view's lifecycle.
+    func refreshLocationEntity() {
+        guard locationMode == .currentLocation else {
+            currentLocationEntity = nil
+            lastGeocodeKey = nil
+            return
+        }
+        let o = preferences.observer
+        let key = String(format: "%.2f,%.2f", o.latitude, o.longitude)
+        guard key != lastGeocodeKey else { return }
+        lastGeocodeKey = key
+        let lat = o.latitude, lon = o.longitude
+        Task { [weak self] in
+            let result = await GeoEntityLookup.lookup(latitude: lat, longitude: lon)
+            guard let self else { return }
+            // Ignore a stale result if the operator has since left current mode.
+            guard self.locationMode == .currentLocation else { return }
+            if let result { self.currentLocationEntity = result }
+        }
     }
 
     func clearError() {
