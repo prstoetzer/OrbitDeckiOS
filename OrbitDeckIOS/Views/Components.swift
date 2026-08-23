@@ -6,6 +6,35 @@ import UIKit
 /// Identifiable wrapper so a prepared file URL can drive a `.sheet(item:)`.
 struct ShareURLItem: Identifiable { let url: URL; var id: URL { url } }
 
+/// Reverse-geocodes the observer position while following the current location and
+/// hands the resolved DXCC entity / administrative subdivisions to a content
+/// builder, so different screens (Home card, Settings form) can render the same
+/// data in their own row style. Renders nothing in fixed-site mode or before the
+/// lookup resolves. Re-geocodes only when the coarse position changes.
+struct CurrentLocationEntityInfo<Content: View>: View {
+    @EnvironmentObject private var store: OrbitStore
+    @State private var info: GeoLocationEntity?
+    @ViewBuilder let content: (GeoLocationEntity) -> Content
+
+    private var following: Bool { store.locationMode == .currentLocation }
+    private var geocodeKey: String {
+        following ? store.preferences.observer.coarseKey : "fixed"
+    }
+
+    var body: some View {
+        Group {
+            if following, let info, info.hasAnything {
+                content(info)
+            }
+        }
+        .task(id: geocodeKey) {
+            guard following else { info = nil; return }
+            let o = store.preferences.observer
+            info = await GeoEntityLookup.lookup(latitude: o.latitude, longitude: o.longitude)
+        }
+    }
+}
+
 #if canImport(UIKit)
 /// The system share sheet, presented programmatically (so exports open the share
 /// UI directly rather than surfacing a button in an unrelated section).

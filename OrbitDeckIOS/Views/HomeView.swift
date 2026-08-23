@@ -57,6 +57,17 @@ struct HomeView: View {
                                 valueColor: ODTheme.good
                             )
                         }
+                        // In current-location mode, annotate with the reverse-geocoded
+                        // DXCC entity and administrative subdivisions.
+                        CurrentLocationEntityInfo { info in
+                            MetricRow("DXCC", info.dxccLabel ?? "—", valueColor: ODTheme.good)
+                            if let primary = info.primarySubdivision {
+                                MetricRow("Primary subdivision", primary)
+                            }
+                            if let secondary = info.secondarySubdivision {
+                                MetricRow("Secondary subdivision", secondary)
+                            }
+                        }
                         MetricRow("Altitude", String(format: "%.0f m", store.preferences.observer.altitudeMeters))
                         MetricRow("Minimum elevation", ODFormat.angle(store.preferences.minElevation))
                     }
@@ -113,10 +124,7 @@ struct HomeView: View {
         .task(id: passTaskKey) {
             trackArc = []
             currentPass = nil
-            while !Task.isCancelled {
-                await loadTrack()
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
-            }
+            await loadTrack()
         }
         .task(id: fleetKey) {
             await loadFleet()

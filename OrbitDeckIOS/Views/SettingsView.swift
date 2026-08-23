@@ -87,6 +87,17 @@ struct SettingsView: View {
                     Label("Following device location. Coordinates update automatically.",
                           systemImage: "location.fill")
                         .font(.caption).foregroundStyle(ODTheme.accent)
+                    // Reverse-geocoded DXCC entity and administrative subdivisions
+                    // for the current position.
+                    CurrentLocationEntityInfo { info in
+                        LabeledContent("DXCC", value: info.dxccLabel ?? "—")
+                        if let primary = info.primarySubdivision {
+                            LabeledContent("Primary subdivision", value: primary)
+                        }
+                        if let secondary = info.secondarySubdivision {
+                            LabeledContent("Secondary subdivision", value: secondary)
+                        }
+                    }
                 } else {
                     Button {
                         locationProvider.requestLocation()

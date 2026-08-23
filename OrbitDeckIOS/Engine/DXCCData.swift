@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 
 struct DXCCEntity: Identifiable, Hashable, Sendable {
     let prefix: String
@@ -373,4 +374,156 @@ enum DXCCData {
         guard radius > 0 else { return [] }
         return entities.filter { FeatureEngine.angularSeparationDegrees(subLatitude, subLongitude, $0.latitude, $0.longitude) <= radius }
     }
+}
+
+
+/// Reverse-geocoded political context for a position: the DXCC entity plus the
+/// primary and secondary administrative subdivisions (e.g. state and county).
+/// Used to annotate the operator's station when following the current location.
+struct GeoLocationEntity: Sendable, Equatable {
+    var dxccName: String?
+    var dxccPrefix: String?
+    var country: String?
+    var isoCountryCode: String?
+    var primarySubdivision: String?    // CLPlacemark.administrativeArea
+    var secondarySubdivision: String?  // CLPlacemark.subAdministrativeArea
+
+    /// "K · United States of America" (prefix + name) or just the name.
+    var dxccLabel: String? {
+        guard let dxccName else { return nil }
+        if let dxccPrefix, !dxccPrefix.isEmpty { return "\(dxccPrefix) · \(dxccName)" }
+        return dxccName
+    }
+
+    var hasAnything: Bool {
+        dxccName != nil || primarySubdivision != nil || secondarySubdivision != nil
+    }
+}
+
+enum GeoEntityLookup {
+    /// Reverse-geocode a coordinate into a DXCC entity and administrative
+    /// subdivisions. Returns nil on failure (no network, throttled, or no match).
+    static func lookup(latitude: Double, longitude: Double) async -> GeoLocationEntity? {
+        let geocoder = CLGeocoder()
+        let location = CLLocation(latitude: latitude, longitude: longitude)
+        let placemarks: [CLPlacemark] = await withCheckedContinuation { continuation in
+            geocoder.reverseGeocodeLocation(location) { placemarks, _ in
+                continuation.resume(returning: placemarks ?? [])
+            }
+        }
+        guard let placemark = placemarks.first else { return nil }
+        let iso = placemark.isoCountryCode?.uppercased()
+        let dxcc = dxccEntity(iso: iso, administrativeArea: placemark.administrativeArea)
+        let entity = GeoLocationEntity(
+            dxccName: dxcc?.name ?? placemark.country,
+            dxccPrefix: dxcc?.prefix,
+            country: placemark.country,
+            isoCountryCode: iso,
+            primarySubdivision: placemark.administrativeArea,
+            secondarySubdivision: placemark.subAdministrativeArea
+        )
+        return entity.hasAnything ? entity : nil
+    }
+
+    /// Map an ISO 3166-1 alpha-2 country/territory code to the ARRL DXCC entity.
+    /// A handful of DXCC entities share one ISO code (the US mainland vs Alaska and
+    /// Hawaii; the UK's four home nations), so those are split on the primary
+    /// administrative area. Unmapped codes fall back to the geocoded country name.
+    static func dxccEntity(iso: String?, administrativeArea: String?) -> (prefix: String, name: String)? {
+        guard let iso else { return nil }
+        let admin = (administrativeArea ?? "").lowercased()
+
+        if iso == "US" {
+            if admin.contains("alaska") { return ("KL", "Alaska") }
+            if admin.contains("hawaii") { return ("KH6", "Hawaii") }
+            return ("K", "United States of America")
+        }
+        if iso == "GB" {
+            if admin.contains("scotland") { return ("GM", "Scotland") }
+            if admin.contains("wales") { return ("GW", "Wales") }
+            if admin.contains("northern ireland") { return ("GI", "Northern Ireland") }
+            return ("G", "England")
+        }
+        return isoToDXCC[iso]
+    }
+
+    /// ISO 3166-1 alpha-2 → (DXCC prefix, ARRL entity name). US/GB are handled
+    /// above; territories with their own ISO code appear here directly.
+    private static let isoToDXCC: [String: (prefix: String, name: String)] = [
+        "AF": ("YA", "Afghanistan"), "AX": ("OH0", "Aland Is."), "AL": ("ZA", "Albania"),
+        "DZ": ("7X", "Algeria"), "AS": ("KH8", "American Samoa"), "AD": ("C3", "Andorra"),
+        "AO": ("D2", "Angola"), "AI": ("VP2E", "Anguilla"), "AQ": ("CE9", "Antarctica"),
+        "AG": ("V2", "Antigua & Barbuda"), "AR": ("LU", "Argentina"), "AM": ("EK", "Armenia"),
+        "AW": ("P4", "Aruba"), "AU": ("VK", "Australia"), "AT": ("OE", "Austria"),
+        "AZ": ("4J", "Azerbaijan"), "BS": ("C6", "Bahamas"), "BH": ("A9", "Bahrain"),
+        "BD": ("S2", "Bangladesh"), "BB": ("8P", "Barbados"), "BY": ("EU", "Belarus"),
+        "BE": ("ON", "Belgium"), "BZ": ("V3", "Belize"), "BJ": ("TY", "Benin"),
+        "BM": ("VP9", "Bermuda"), "BT": ("A5", "Bhutan"), "BO": ("CP", "Bolivia"),
+        "BA": ("E7", "Bosnia-Herzegovina"), "BW": ("A2", "Botswana"), "BR": ("PY", "Brazil"),
+        "BN": ("V8", "Brunei Darussalam"), "BG": ("LZ", "Bulgaria"), "BF": ("XT", "Burkina Faso"),
+        "BI": ("9U", "Burundi"), "KH": ("XU", "Cambodia"), "CM": ("TJ", "Cameroon"),
+        "CA": ("VE", "Canada"), "CV": ("D4", "Cape Verde"), "KY": ("ZF", "Cayman Is."),
+        "CF": ("TL", "Central Africa"), "TD": ("TT", "Chad"), "CL": ("CE", "Chile"),
+        "CN": ("BY", "China"), "CO": ("HK", "Colombia"), "KM": ("D6", "Comoros"),
+        "CG": ("TN", "Congo (Republic of the)"), "CD": ("9Q", "Dem. Rep. of the Congo"),
+        "CK": ("E5", "South Cook Is."), "CR": ("TI", "Costa Rica"), "CI": ("TU", "Cote d'Ivoire"),
+        "HR": ("9A", "Croatia"), "CU": ("CO", "Cuba"), "CW": ("PJ2", "Curacao"),
+        "CY": ("5B", "Cyprus"), "CZ": ("OK", "Czech Republic"), "DK": ("OZ", "Denmark"),
+        "DJ": ("J2", "Djibouti"), "DM": ("J7", "Dominica"), "DO": ("HI", "Dominican Republic"),
+        "EC": ("HC", "Ecuador"), "EG": ("SU", "Egypt"), "SV": ("YS", "El Salvador"),
+        "GQ": ("3C", "Equatorial Guinea"), "ER": ("E3", "Eritrea"), "EE": ("ES", "Estonia"),
+        "SZ": ("3DA", "Kingdom of Eswatini"), "ET": ("ET", "Ethiopia"), "FK": ("VP8", "Falkland Is."),
+        "FO": ("OY", "Faroe Is."), "FJ": ("3D2", "Fiji"), "FI": ("OH", "Finland"),
+        "FR": ("F", "France"), "GF": ("FY", "French Guiana"), "PF": ("FO", "French Polynesia"),
+        "GA": ("TR", "Gabon"), "GM": ("C5", "The Gambia"), "GE": ("4L", "Georgia"),
+        "DE": ("DL", "Germany (Federal Rep of)"), "GH": ("9G", "Ghana"), "GI": ("ZB", "Gibraltar"),
+        "GR": ("SV", "Greece"), "GL": ("OX", "Greenland"), "GD": ("J3", "Grenada"),
+        "GP": ("FG", "Guadeloupe"), "GU": ("KH2", "Guam"), "GT": ("TG", "Guatemala"),
+        "GG": ("GU", "Guernsey"), "GN": ("3X", "Guinea"), "GW": ("J5", "Guinea-Bissau"),
+        "GY": ("8R", "Guyana"), "HT": ("HH", "Haiti"), "HN": ("HR", "Honduras"),
+        "HK": ("VR", "Hong Kong"), "HU": ("HA", "Hungary"), "IS": ("TF", "Iceland"),
+        "IN": ("VU", "India"), "ID": ("YB", "Indonesia"), "IR": ("EP", "Iran"),
+        "IQ": ("YI", "Iraq"), "IE": ("EI", "Ireland"), "IM": ("GD", "Isle of Man"),
+        "IL": ("4X", "Israel"), "IT": ("I", "Italy"), "JM": ("6Y", "Jamaica"),
+        "JP": ("JA", "Japan"), "JE": ("GJ", "Jersey"), "JO": ("JY", "Jordan"),
+        "KZ": ("UN", "Kazakhstan"), "KE": ("5Z", "Kenya"), "KI": ("T30", "Western Kiribati"),
+        "KP": ("P5", "Dem. People's Rep. of Korea"), "KR": ("HL", "Republic of Korea"),
+        "KW": ("9K", "Kuwait"), "KG": ("EX", "Kyrgyzstan"), "LA": ("XW", "Laos"),
+        "LV": ("YL", "Latvia"), "LB": ("OD", "Lebanon"), "LS": ("7P", "Lesotho"),
+        "LR": ("EL", "Liberia"), "LY": ("5A", "Libya"), "LI": ("HB0", "Liechtenstein"),
+        "LT": ("LY", "Lithuania"), "LU": ("LX", "Luxembourg"), "MO": ("XX9", "Macao"),
+        "MK": ("Z3", "North Macedonia"), "MG": ("5R", "Madagascar"), "MW": ("7Q", "Malawi"),
+        "MY": ("9M", "West Malaysia"), "MV": ("8Q", "Maldives"), "ML": ("TZ", "Mali"),
+        "MT": ("9H", "Malta"), "MH": ("V7", "Marshall Is."), "MQ": ("FM", "Martinique"),
+        "MR": ("5T", "Mauritania"), "MU": ("3B8", "Mauritius"), "MX": ("XE", "Mexico"),
+        "FM": ("V6", "Micronesia"), "MD": ("ER", "Moldova"), "MC": ("3A", "Monaco"),
+        "MN": ("JT", "Mongolia"), "ME": ("4O", "Montenegro"), "MS": ("VP2M", "Montserrat"),
+        "MA": ("CN", "Morocco"), "MZ": ("C9", "Mozambique"), "MM": ("XZ", "Myanmar"),
+        "NA": ("V5", "Namibia"), "NR": ("C2", "Nauru"), "NP": ("9N", "Nepal"),
+        "NL": ("PA", "Netherlands"), "NC": ("FK", "New Caledonia"), "NZ": ("ZL", "New Zealand"),
+        "NI": ("YN", "Nicaragua"), "NE": ("5U", "Niger"), "NG": ("5N", "Nigeria"),
+        "NU": ("E6", "Niue"), "NO": ("LA", "Norway"), "OM": ("A4", "Oman"),
+        "PK": ("AP", "Pakistan"), "PW": ("T8", "Palau"), "PS": ("E4", "Palestine"),
+        "PA": ("HP", "Panama"), "PG": ("P2", "Papua New Guinea"), "PY": ("ZP", "Paraguay"),
+        "PE": ("OA", "Peru"), "PH": ("DU", "Philippines"), "PL": ("SP", "Poland"),
+        "PT": ("CT", "Portugal"), "PR": ("KP4", "Puerto Rico"), "QA": ("A7", "Qatar"),
+        "RE": ("FR", "Reunion I."), "RO": ("YO", "Romania"), "RU": ("UA", "European Russia"),
+        "RW": ("9X", "Rwanda"), "WS": ("5W", "Samoa"), "SM": ("T7", "San Marino"),
+        "ST": ("S9", "Sao Tome & Principe"), "SA": ("HZ", "Saudi Arabia"), "SN": ("6W", "Senegal"),
+        "RS": ("YT", "Serbia"), "SC": ("S7", "Seychelles"), "SL": ("9L", "Sierra Leone"),
+        "SG": ("9V", "Singapore"), "SX": ("PJ7", "Sint Maarten"), "SK": ("OM", "Slovak Republic"),
+        "SI": ("S5", "Slovenia"), "SB": ("H4", "Solomon Is."), "SO": ("T5", "Somalia"),
+        "ZA": ("ZS", "South Africa"), "SS": ("Z8", "South Sudan (Republic of)"), "ES": ("EA", "Spain"),
+        "LK": ("4S", "Sri Lanka"), "SD": ("ST", "Sudan"), "SR": ("PZ", "Suriname"),
+        "SE": ("SM", "Sweden"), "CH": ("HB", "Switzerland"), "SY": ("YK", "Syria"),
+        "TW": ("BV", "Taiwan"), "TJ": ("EY", "Tajikistan"), "TZ": ("5H", "Tanzania"),
+        "TH": ("HS", "Thailand"), "TL": ("4W", "Timor-Leste"), "TG": ("5V", "Togo"),
+        "TO": ("A3", "Tonga"), "TT": ("9Y", "Trinidad & Tobago"), "TN": ("3V", "Tunisia"),
+        "TR": ("TA", "Turkey"), "TM": ("EZ", "Turkmenistan"), "TC": ("VP5", "Turks & Caicos Is."),
+        "TV": ("T2", "Tuvalu"), "UG": ("5X", "Uganda"), "UA": ("UR", "Ukraine"),
+        "AE": ("A6", "United Arab Emirates"), "UY": ("CX", "Uruguay"), "UZ": ("UK", "Uzbekistan"),
+        "VU": ("YJ", "Vanuatu"), "VA": ("HV", "Vatican City"), "VE": ("YV", "Venezuela"),
+        "VN": ("3W", "Vietnam"), "VG": ("VP2V", "British Virgin Is."), "VI": ("KP2", "US Virgin Is."),
+        "YE": ("7O", "Yemen"), "ZM": ("9J", "Zambia"), "ZW": ("Z2", "Zimbabwe")
+    ]
 }
