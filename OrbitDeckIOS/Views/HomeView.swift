@@ -515,6 +515,14 @@ struct HomeView: View {
 /// VUCC-quality fix of the boundary while being guided.
 struct GridFinderView: View {
     @StateObject private var location = LocationProvider()
+    @State private var entity: GeoLocationEntity?
+
+    // A ~1 km-rounded key for the current fix, so the reverse geocode re-runs only
+    // when the operator moves to a new locale rather than on every high-rate fix.
+    private var geoKey: String {
+        guard let fix = location.location else { return "none" }
+        return String(format: "%.2f,%.2f", fix.coordinate.latitude, fix.coordinate.longitude)
+    }
 
     var body: some View {
         ScrollView {
@@ -544,6 +552,16 @@ struct GridFinderView: View {
             location.setPrecise(true)
             location.startHeading()
         }
+        // Reverse-geocode the current fix into a DXCC entity and administrative
+        // subdivisions, re-running only when the ~1 km-rounded position changes.
+        // Keeps the last good result across transient geocoder failures.
+        .task(id: geoKey) {
+            guard let fix = location.location else { return }
+            if let result = await GeoEntityLookup.lookup(latitude: fix.coordinate.latitude,
+                                                         longitude: fix.coordinate.longitude) {
+                entity = result
+            }
+        }
     }
 
     @ViewBuilder private func content(_ fix: CLLocation) -> some View {
@@ -560,6 +578,15 @@ struct GridFinderView: View {
             MetricRow("Latitude", String(format: "%+.6f°", lat))
             MetricRow("Longitude", String(format: "%+.6f°", lon))
             MetricRow("Altitude", fix.verticalAccuracy >= 0 ? String(format: "%.0f m", fix.altitude) : "—")
+            if let entity, entity.hasAnything {
+                MetricRow("DXCC", entity.dxccLabel ?? "—", valueColor: ODTheme.good)
+                if let primary = entity.primarySubdivision {
+                    MetricRow("Primary subdivision", primary)
+                }
+                if let secondary = entity.secondarySubdivision {
+                    MetricRow("Secondary subdivision", secondary)
+                }
+            }
         }
 
         SectionCard("Guide to nearest grid corner") {
