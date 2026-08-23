@@ -515,14 +515,6 @@ struct HomeView: View {
 /// VUCC-quality fix of the boundary while being guided.
 struct GridFinderView: View {
     @StateObject private var location = LocationProvider()
-    @State private var entity: GeoLocationEntity?
-
-    // A ~1 km-rounded key for the current fix, so the reverse geocode re-runs only
-    // when the operator moves to a new locale rather than on every high-rate fix.
-    private var geoKey: String {
-        guard let fix = location.location else { return "none" }
-        return String(format: "%.2f,%.2f", fix.coordinate.latitude, fix.coordinate.longitude)
-    }
 
     var body: some View {
         ScrollView {
@@ -550,17 +542,8 @@ struct GridFinderView: View {
         // actually dismissed and the provider is released.
         .task {
             location.setPrecise(true)
+            location.geocodeEnabled = true
             location.startHeading()
-        }
-        // Reverse-geocode the current fix into a DXCC entity and administrative
-        // subdivisions, re-running only when the ~1 km-rounded position changes.
-        // Keeps the last good result across transient geocoder failures.
-        .task(id: geoKey) {
-            guard let fix = location.location else { return }
-            if let result = await GeoEntityLookup.lookup(latitude: fix.coordinate.latitude,
-                                                         longitude: fix.coordinate.longitude) {
-                entity = result
-            }
         }
     }
 
@@ -578,7 +561,7 @@ struct GridFinderView: View {
             MetricRow("Latitude", String(format: "%+.6f°", lat))
             MetricRow("Longitude", String(format: "%+.6f°", lon))
             MetricRow("Altitude", fix.verticalAccuracy >= 0 ? String(format: "%.0f m", fix.altitude) : "—")
-            if let entity, entity.hasAnything {
+            if let entity = location.entity, entity.hasAnything {
                 MetricRow("DXCC", entity.dxccLabel ?? "—", valueColor: ODTheme.good)
                 if let primary = entity.primarySubdivision {
                     MetricRow("Primary subdivision", primary)

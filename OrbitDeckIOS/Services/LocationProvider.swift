@@ -7,6 +7,16 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
      @Published var location: CLLocation?
      @Published var errorMessage: String?
      @Published var heading: Double?
+     /// Reverse-geocoded DXCC entity and administrative subdivisions for the latest
+     /// fix. Populated only when `geocodeEnabled` is set (e.g. by the Grid Finder),
+     /// and driven from the location delegate callback so it updates reliably.
+     @Published var entity: GeoLocationEntity?
+
+    /// Opt-in: when true, each new fix (at ~1 km granularity) is reverse-geocoded
+    /// into `entity`. Off by default so the compass/observer-follow consumers don't
+    /// geocode needlessly.
+    var geocodeEnabled = false
+    private var lastGeocodeKey: String?
 
     private let manager = CLLocationManager()
 
@@ -122,6 +132,21 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
         guard let value = locations.last else { return }
         location = value
         errorMessage = nil
+        if geocodeEnabled { refreshEntity(value) }
+    }
+
+    /// Reverse-geocode the fix into `entity`, re-running only when the ~1 km-rounded
+    /// position changes. Keeps the last good result across transient failures.
+    private func refreshEntity(_ fix: CLLocation) {
+        let key = String(format: "%.2f,%.2f", fix.coordinate.latitude, fix.coordinate.longitude)
+        guard key != lastGeocodeKey else { return }
+        lastGeocodeKey = key
+        let lat = fix.coordinate.latitude, lon = fix.coordinate.longitude
+        Task { [weak self] in
+            let result = await GeoEntityLookup.lookup(latitude: lat, longitude: lon)
+            guard let self, let result else { return }
+            self.entity = result
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
