@@ -347,7 +347,7 @@ struct RadioView: View {
                 Text(String(format: "%.0f%% · DL %.4f MHz", passbandPercent, Double(pair.downlink)/1e6))
                     .font(.caption.monospaced()).foregroundStyle(ODTheme.muted)
             }
-            Slider(value: $passbandPercent, in: 0...100, step: 1)
+            Slider(value: $passbandPercent.snapping(to: 50, within: 3), in: 0...100, step: 1)
         }
     }
 

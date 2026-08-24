@@ -318,7 +318,7 @@ private struct DXDopplerSheet: View {
                                                 Double(pair.downlink) / 1e6, Double(pair.uplink) / 1e6))
                                         .font(.caption.monospaced()).foregroundStyle(ODTheme.muted)
                                 }
-                                Slider(value: $passbandPercent, in: 0...100, step: 1)
+                                Slider(value: $passbandPercent.snapping(to: 50, within: 3), in: 0...100, step: 1)
                             }
                         }
                     }
@@ -3367,7 +3367,7 @@ private struct ActivationOperatingDetailView: View {
                                 VStack(alignment: .leading) {
                                     Text(verbatim: "Passband offset \(Int(offsetHz.rounded())) Hz")
                                         .font(.caption.monospacedDigit())
-                                    Slider(value: $offsetHz, in: 0...Double(tp.bandwidth), step: 100)
+                                    Slider(value: $offsetHz.snapping(to: Double(tp.bandwidth) / 2, within: 300), in: 0...Double(tp.bandwidth), step: 100)
                                 }
                             }
                             if DXDopplerEngine.matchingTransponder(detail.activation, in: detail.satellite) != nil {

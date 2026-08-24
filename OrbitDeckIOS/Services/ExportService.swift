@@ -1127,7 +1127,7 @@ struct OrbitExportService {
             drawFrame(cg, rings: true, spokes: false)
             strokeGeo(canonical, color: .systemBlue, width: 2.6)
             // Minute marks after the ascending node: a small perpendicular tick each
-            // whole minute, a labelled dot every `labelStep` minutes. The label step
+            // whole minute, a labeled dot every `labelStep` minutes. The label step
             // scales with the period (≤14 labels), matching desktop OSCARLOCATOR.
             var labelStep = 10
             for cand in [10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300] where satellite.periodMinutes / Double(cand) <= 14 { labelStep = cand; break }
@@ -1163,7 +1163,7 @@ struct OrbitExportService {
                 }
             }
             // EQX (minute 0) alignment marker: a red arrowed radial line from the
-            // centre out through the node to the rim, matching desktop OSCARLOCATOR.
+            // center out through the node to the rim, matching desktop OSCARLOCATOR.
             let eqSign: CGFloat = south ? -1 : 1
             let eqTip = CGPoint(x: center.x, y: center.y + eqSign * radius)   // node at sheet-lon 0
             cg.setStrokeColor(UIColor.systemRed.cgColor); cg.setLineWidth(2.4)
@@ -1203,7 +1203,7 @@ struct OrbitExportService {
                 head.close(); UIColor.systemRed.setFill(); head.fill()
             }
             if !cleanTransparencies {
-                drawFooter(String(format: "PATH ARC — Print on transparency at 100%%. Lay over the base map with centres aligned and the EQX arrow at the node longitude from Reference Orbits, then rotate the sheet %.1f° %@ about the centre for each successive pass. Ticks count minutes after the EQX; labelled marks every %d min.", abs(shift), sense, labelStep))
+                drawFooter(String(format: "PATH ARC — Print on transparency at 100%%. Lay over the base map with centers aligned and the EQX arrow at the node longitude from Reference Orbits, then rotate the sheet %.1f° %@ about the center for each successive pass. Ticks count minutes after the EQX; labeled marks every %d min.", abs(shift), sense, labelStep))
             }
         }
 
@@ -1295,27 +1295,27 @@ struct OrbitExportService {
         func drawQTHBaseMap(_ context: UIGraphicsPDFRendererContext) {
             context.beginPage(); let cg = context.cgContext
             drawTitle("\(satellite.name) — OSCARLOCATOR Base Map",
-                      subtitle: String(format: "Azimuthal-equidistant map centred on %@ (%.3f°, %.3f°) — rings are elevation at %.0f km", observer.name, observer.latitude, observer.longitude, meanAlt))
+                      subtitle: String(format: "Azimuthal-equidistant map centered on %@ (%.3f°, %.3f°) — rings are elevation at %.0f km", observer.name, observer.latitude, observer.longitude, meanAlt))
             drawQTHFrame(cg, altKm: meanAlt, elevationRings: true, kmRings: false)
             for coast in WorldMapData.coastlines {
                 qStrokeGeo(coast.map { ($0.1, $0.0) }, qlat: observer.latitude, qlon: observer.longitude, color: .black, width: 0.6)
             }
             centerCross(cg, color: .systemOrange)
             ("QTH" as NSString).draw(at: CGPoint(x:center.x+8,y:center.y+4), withAttributes:[.font:UIFont.boldSystemFont(ofSize:7),.foregroundColor:UIColor.systemOrange])
-            drawFooter("QTH BASE MAP — Print on paper/card at 100%. Centre is your station; rings are the satellite's elevation angle (0° ring is its range-circle edge), spokes are azimuth (N up). Register overlays on the centre cross and rim ticks.")
+            drawFooter("QTH BASE MAP — Print on paper/card at 100%. Center is your station; rings are the satellite's elevation angle (0° ring is its range-circle edge), spokes are azimuth (N up). Register overlays on the center cross and rim ticks.")
         }
         func drawQTHRange(_ context: UIGraphicsPDFRendererContext) {
             context.beginPage(); let cg = context.cgContext
             let footDeg = FeatureEngine.footprintRadiusDegrees(altitudeKm: meanAlt)
             drawTitle("\(satellite.name) — OSCARLOCATOR Range Circle Overlay",
-                      subtitle: String(format: "Range-circle radius %.1f° (~%.0f km) at %.0f km — concentric on the QTH-centred sheet", footDeg, footDeg*kmPerDeg, meanAlt))
+                      subtitle: String(format: "Range-circle radius %.1f° (~%.0f km) at %.0f km — concentric on the QTH-centered sheet", footDeg, footDeg*kmPerDeg, meanAlt))
             drawQTHFrame(cg, altKm: meanAlt, elevationRings: false, kmRings: true)
             let fr = radius*CGFloat(min(footDeg, qthReach)/qthReach)
             cg.setStrokeColor(UIColor.systemRed.cgColor); cg.setLineWidth(3.0)
             cg.strokeEllipse(in: CGRect(x:center.x-fr,y:center.y-fr,width:2*fr,height:2*fr))
             centerCross(cg, color: .black)
             if !cleanTransparencies {
-                drawFooter("QTH RANGE CIRCLE — Print on transparency at 100%. Pin the centre cross over the QTH at the base-map centre. The satellite is in range while the path-arc lies inside the red circle; inner rings are ground distance, spokes are azimuth.")
+                drawFooter("QTH RANGE CIRCLE — Print on transparency at 100%. Pin the center cross over the QTH at the base-map center. The satellite is in range while the path-arc lies inside the red circle; inner rings are ground distance, spokes are azimuth.")
             }
         }
         func drawQTHPathArc(_ context: UIGraphicsPDFRendererContext) {
@@ -1377,7 +1377,7 @@ struct OrbitExportService {
             if !cleanTransparencies {
                 let west = shift < 0
                 let sense = west ? "counter-clockwise" : "clockwise"
-                drawFooter(String(format: "QTH PATH ARC — Print on transparency at 100%%. Pin the centre cross over the QTH, align the EQX to the node longitude from Reference Orbits, then rotate the arc %.1f° %@ about the centre for each successive pass. Ticks are minutes after the EQX; labels every %d min.", abs(shift), sense, labelStep))
+                drawFooter(String(format: "QTH PATH ARC — Print on transparency at 100%%. Pin the center cross over the QTH, align the EQX to the node longitude from Reference Orbits, then rotate the arc %.1f° %@ about the center for each successive pass. Ticks are minutes after the EQX; labels every %d min.", abs(shift), sense, labelStep))
             }
         }
 
@@ -1395,7 +1395,7 @@ struct OrbitExportService {
             cg.strokeEllipse(in: CGRect(x:center.x-fr,y:center.y-fr,width:2*fr,height:2*fr))
             centerCross(cg, color: .systemOrange)
             ("QTH" as NSString).draw(at: CGPoint(x:center.x+8,y:center.y+4), withAttributes:[.font:UIFont.boldSystemFont(ofSize:7),.foregroundColor:UIColor.systemOrange])
-            drawFooter("QTH MAP + RANGE — Print on paper/card at 100%. The red circle is the satellite's range circle centred on your station; rings are elevation, spokes are azimuth. Use the path-arc overlay to see when the satellite enters this circle.")
+            drawFooter("QTH MAP + RANGE — Print on paper/card at 100%. The red circle is the satellite's range circle centered on your station; rings are elevation, spokes are azimuth. Use the path-arc overlay to see when the satellite enters this circle.")
         }
 
         return renderer.pdfData { context in

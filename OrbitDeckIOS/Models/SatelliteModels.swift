@@ -18,7 +18,7 @@ struct ObserverSite: Codable, Equatable, Sendable {
 
     /// Location rounded to ~1 km, for the heaviest recomputes (pass lists, daily
     /// schedule). While following the device at coarse GPS precision the fix can
-    /// jitter by hundreds of metres each second — enough to flip `coarseKey` and
+    /// jitter by hundreds of meters each second — enough to flip `coarseKey` and
     /// keep cancelling multi-second loads before they finish. Passes don't change
     /// meaningfully over ~1 km, so this key stays stable while stationary.
     var stableKey: String { String(format: "%.2f,%.2f", latitude, longitude) }

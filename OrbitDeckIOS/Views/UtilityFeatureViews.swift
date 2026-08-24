@@ -100,7 +100,7 @@ struct GlobeView: View {
                 // Scrub time directly. Grabbing the slider stops playback and pins
                 // the shown moment; the thumb starts from wherever playback left off.
                 VStack(spacing: 2) {
-                    Slider(value: $frozenOffset, in: -1440...1440, step: 1) { editing in
+                    Slider(value: $frozenOffset.snapping(to: 0, within: 10), in: -1440...1440, step: 1) { editing in
                         if editing && isPlaying {
                             frozenOffset = effectiveOffset(Date())
                             isPlaying = false

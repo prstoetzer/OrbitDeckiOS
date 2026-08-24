@@ -239,7 +239,7 @@ struct RootView: View {
             // a transient nil during a heavy re-render doesn't flash the Home view.
             let shown = selection ?? lastSelection
             destinationView(shown)
-                // Cap reading-oriented screens at a comfortable width and centre
+                // Cap reading-oriented screens at a comfortable width and center
                 // them so cards/text don't stretch across a wide iPad detail pane.
                 // Full-bleed visual screens (globe, radar, ground-track map) keep
                 // the whole width. On iPhone the cap never bites (screen < 700).
@@ -353,7 +353,7 @@ struct RootView: View {
     }
 
     /// Visual/full-bleed screens that should use the entire detail width rather
-    /// than the centred reading column.
+    /// than the centered reading column.
     private func isFullBleed(_ destination: OrbitDestination) -> Bool {
         switch destination {
         case .globe, .radar, .groundtrack: return true

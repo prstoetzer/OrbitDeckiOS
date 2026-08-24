@@ -6,6 +6,17 @@ import UIKit
 /// Identifiable wrapper so a prepared file URL can drive a `.sheet(item:)`.
 struct ShareURLItem: Identifiable { let url: URL; var id: URL { url } }
 
+extension Binding where Value == Double {
+    /// A gentle center detent: snaps to `center` whenever a set value lands within
+    /// `threshold`, so a slider whose neutral default is the center "sticks" there.
+    func snapping(to center: Double, within threshold: Double) -> Binding<Double> {
+        Binding(
+            get: { wrappedValue },
+            set: { wrappedValue = abs($0 - center) <= threshold ? center : $0 }
+        )
+    }
+}
+
 /// Reverse-geocodes the observer position while following the current location and
 /// hands the resolved DXCC entity / administrative subdivisions to a content
 /// builder, so different screens (Home card, Settings form) can render the same

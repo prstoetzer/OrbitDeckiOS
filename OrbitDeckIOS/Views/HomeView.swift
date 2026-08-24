@@ -39,7 +39,7 @@ struct HomeView: View {
     @State private var clockAnchor = Date()
     @State private var selectedTransponderID: String?
     // Offset (Hz) from the transponder center for the passband tuning slider on a
-    // linear bird; 0 = centre (the default). Reset whenever the satellite or
+    // linear bird; 0 = center (the default). Reset whenever the satellite or
     // transponder changes.
     @State private var passbandOffsetHz: Double = 0
     // Whether the unobtrusive per-satellite calibration sliders are expanded.
@@ -453,7 +453,7 @@ struct HomeView: View {
     }
 
     private func dopplerCard(satellite: SatelliteRecord, transponder: TransponderRecord, rangeRateKmS: Double) -> some View {
-        // Passband tuning: move the operating frequency off the transponder centre on
+        // Passband tuning: move the operating frequency off the transponder center on
         // a linear bird. An inverting transponder walks the uplink the opposite way.
         let offset = transponder.isLinear ? Int64(passbandOffsetHz.rounded()) : 0
         let downlink = transponder.downlinkCenter + offset
@@ -487,7 +487,7 @@ struct HomeView: View {
     }
 
     /// Passband tuning slider for a linear transponder — walks the operating point
-    /// ±half-bandwidth around centre (0 = centre, the default).
+    /// ±half-bandwidth around center (0 = center, the default).
     @ViewBuilder private func passbandSlider(bandwidth: Int64) -> some View {
         let half = Double(bandwidth) / 2
         Divider().padding(.vertical, 2)
@@ -495,12 +495,12 @@ struct HomeView: View {
             HStack {
                 Text("Passband").font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
                 Spacer()
-                Text(passbandOffsetHz == 0 ? "centre" : String(format: "%+.1f kHz", passbandOffsetHz / 1000))
+                Text(passbandOffsetHz == 0 ? "center" : String(format: "%+.1f kHz", passbandOffsetHz / 1000))
                     .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
                 if passbandOffsetHz != 0 {
                     Button { passbandOffsetHz = 0 } label: { Image(systemName: "arrow.counterclockwise") }
                         .font(.caption).buttonStyle(.borderless)
-                        .accessibilityLabel("Recentre passband")
+                        .accessibilityLabel("Recenter passband")
                 }
             }
             // Clamp the bound value into range: switching to a narrower transponder
@@ -510,7 +510,7 @@ struct HomeView: View {
                 get: { min(half, max(-half, passbandOffsetHz)) },
                 set: { passbandOffsetHz = $0 }
             )
-            Slider(value: clamped, in: -half...half, step: 100)
+            Slider(value: clamped.snapping(to: 0, within: 200), in: -half...half, step: 100)
         }
     }
 
@@ -555,7 +555,7 @@ struct HomeView: View {
                 Text(String(format: "%+.0f Hz", value.wrappedValue))
                     .font(.caption.monospacedDigit())
             }
-            Slider(value: clamped, in: -limit...limit, step: 10)
+            Slider(value: clamped.snapping(to: 0, within: 30), in: -limit...limit, step: 10)
         }
     }
 
@@ -725,7 +725,7 @@ struct GridFinderView: View {
             polarMap(g: g)
                 .frame(height: 300)
                 .frame(maxWidth: .infinity)
-            Text("North-up. The centre is you; dashed lines are the nearest grid boundaries, the green dot is the corner and the blue ring is the nearest point on the closest line. The amber needle is your heading.")
+            Text("North-up. The center is you; dashed lines are the nearest grid boundaries, the green dot is the corner and the blue ring is the nearest point on the closest line. The amber needle is your heading.")
                 .font(.caption).foregroundStyle(ODTheme.muted)
         }
 
@@ -825,7 +825,7 @@ struct GridFinderView: View {
                 ctx.stroke(needle, with: .color(ODTheme.warning), lineWidth: 2)
             }
 
-            // Operator at centre and the N marker.
+            // Operator at center and the N marker.
             ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)), with: .color(.white))
             ctx.draw(Text("N").font(.system(size: 10, weight: .bold)).foregroundStyle(ODTheme.muted),
                      at: CGPoint(x: c.x, y: c.y - R + 8))

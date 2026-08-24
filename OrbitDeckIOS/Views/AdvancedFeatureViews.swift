@@ -240,7 +240,7 @@ struct OscarLocatorView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(String(format: "EQX longitude: %.1f°%@", abs(nodeLongitude), nodeLongitude >= 0 ? "E" : "W"))
                         .font(.caption.monospacedDigit())
-                    Slider(value: $nodeLongitude, in: -180...180, step: 1)
+                    Slider(value: $nodeLongitude.snapping(to: 0, within: 4), in: -180...180, step: 1)
                     Text("Minutes after equator crossing: \(Int(minutesAfterNode.rounded()))")
                         .font(.caption.monospacedDigit())
                     Slider(value: $minutesAfterNode, in: 0...max(1, activeSatellite?.periodMinutes ?? 95), step: 1)
@@ -432,7 +432,7 @@ struct OscarLocatorView: View {
     @MainActor private func prepareLocatorPDF() {
         guard let sat = activeSatellite else { return }
         // Match the printable hemisphere to the selected on-screen projection;
-        // QTH-centred and auto fall back to the observer's own hemisphere.
+        // QTH-centered and auto fall back to the observer's own hemisphere.
         let south: Bool?
         switch resolvedProjection {
         case .north: south = false
@@ -553,7 +553,7 @@ struct OscarLocatorView: View {
             // disagree with the observer), fall back to the opposite crossing so the
             // ticks never vanish. In next-pass / manual mode the equator crossing is
             // the operator-selected node itself, so number minutes directly from it —
-            // re-detecting it here was fragile because the window recentres on
+            // re-detecting it here was fragile because the window recenters on
             // displayDate as minutesAfterNode grows and could push the crossing out
             // of range, leaving every tick NaN and the marks blank.
             let nodeT: Date? = drive == .live

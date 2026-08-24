@@ -14,13 +14,20 @@ private struct ScheduleEntry: Identifiable {
 /// past the last populated day. All times are UTC (ham-satellite convention).
 struct ScheduleView: View {
     @EnvironmentObject private var store: OrbitStore
-    @State private var entries: [ScheduleEntry] = []
-    @State private var daysForward = 7
+    // Passes grouped by UTC start-of-day for O(1) per-day lookup (recomputed once
+    // per load instead of filtering the whole list on every render), plus the id of
+    // the first pass at/after now for the open-position scroll.
+    @State private var entriesByDay: [Date: [ScheduleEntry]] = [:]
+    @State private var upcomingTargetID: String?
     @State private var loading = false
     @State private var didInitialScroll = false
 
     private let daysBack = 7
-    private let maxDaysForward = 60
+    // A fixed window loaded in one pass. Incrementally growing this via row
+    // onAppear cascaded to the max while the list was still empty (every
+    // "Computing…" row fit on screen), which thrashed the reload and left the
+    // schedule stuck. SGP4 is fast, so computing the whole window once is fine.
+    private let daysForward = 60
 
     private var utcCalendar: Calendar {
         var c = Calendar(identifier: .gregorian)
@@ -38,16 +45,13 @@ struct ScheduleView: View {
     }
 
     private func entries(on day: Date) -> [ScheduleEntry] {
-        entries.filter { utcCalendar.isDate($0.pass.aos, inSameDayAs: day) }
-            .sorted { $0.pass.aos < $1.pass.aos }
+        entriesByDay[utcCalendar.startOfDay(for: day)] ?? []
     }
 
     private var scheduleKey: String {
         let favs = favorites.map { String($0.id) }.sorted().joined(separator: ",")
-        // Use the ~1 km stable key: while following the device, the 3-decimal
-        // coarseKey jitters and kept restarting this multi-second load before it
-        // finished, so later days never populated ("stops partway").
-        return "\(favs)-\(store.preferences.observer.stableKey)-\(store.preferences.minElevation)-\(daysForward)"
+        // Use the ~1 km stable key so following the device doesn't churn the reload.
+        return "\(favs)-\(store.preferences.observer.stableKey)-\(store.preferences.minElevation)"
     }
 
     var body: some View {
@@ -76,9 +80,6 @@ struct ScheduleView: View {
                                 ForEach(dayEntries) { entry in scheduleRow(entry) }
                             }
                         }
-                        .onAppear {
-                            if day == days.last, daysForward < maxDaysForward { daysForward += 7 }
-                        }
                     }
                 }
             }
@@ -97,11 +98,8 @@ struct ScheduleView: View {
     /// The first pass at or after the current instant — the row the schedule opens
     /// to. Falls back to the start of today if every loaded pass is in the past.
     private var firstUpcomingTarget: AnyHashable {
-        let now = Date()
-        if let next = entries.filter({ $0.pass.aos >= now }).min(by: { $0.pass.aos < $1.pass.aos }) {
-            return AnyHashable(next.id)
-        }
-        return AnyHashable(utcCalendar.startOfDay(for: now))
+        if let upcomingTargetID { return AnyHashable(upcomingTargetID) }
+        return AnyHashable(utcCalendar.startOfDay(for: Date()))
     }
 
     /// Scroll the next upcoming pass to the top. Deferred (and repeated once) so the
@@ -162,30 +160,35 @@ struct ScheduleView: View {
 
     @MainActor private func load() async {
         let sats = favorites
-        guard !sats.isEmpty else { entries = []; return }
+        guard !sats.isEmpty else { entriesByDay = [:]; upcomingTargetID = nil; return }
         loading = true
         let observer = store.preferences.observer
         let minEl = store.preferences.minElevation
-        let start = utcCalendar.startOfDay(for: Date()).addingTimeInterval(-Double(daysBack) * 86400)
+        let cal = utcCalendar
+        let start = cal.startOfDay(for: Date()).addingTimeInterval(-Double(daysBack) * 86400)
         let span = Double(daysBack + daysForward + 1)
-        let result = await Task.detached(priority: .userInitiated) { () -> [ScheduleEntry] in
-            var out: [ScheduleEntry] = []
-            // Allow enough passes to fill the whole span for even a frequently-seen
-            // satellite (~20/day is generous); the old fixed 500 truncated the later
-            // days once the window grew past a few weeks.
+        let now = Date()
+        let (grouped, targetID) = await Task.detached(priority: .userInitiated) { () -> ([Date: [ScheduleEntry]], String?) in
+            var all: [ScheduleEntry] = []
+            // ~20 passes/day is generous headroom so the whole window fills.
             let cap = max(500, Int(span) * 20)
             for sat in sats {
                 let passes = (try? OrbitPredictor.predictPasses(sat, observer: observer, from: start,
                                                                 minElevation: minEl, maxCount: cap,
                                                                 horizonDays: span)) ?? []
                 for p in passes {
-                    out.append(ScheduleEntry(id: "\(sat.id)-\(p.aos.timeIntervalSince1970)",
+                    all.append(ScheduleEntry(id: "\(sat.id)-\(p.aos.timeIntervalSince1970)",
                                              satelliteID: sat.id, name: sat.name, pass: p))
                 }
             }
-            return out
+            var byDay: [Date: [ScheduleEntry]] = [:]
+            for e in all { byDay[cal.startOfDay(for: e.pass.aos), default: []].append(e) }
+            for key in byDay.keys { byDay[key]?.sort { $0.pass.aos < $1.pass.aos } }
+            let target = all.filter { $0.pass.aos >= now }.min { $0.pass.aos < $1.pass.aos }?.id
+            return (byDay, target)
         }.value
-        entries = result
+        entriesByDay = grouped
+        upcomingTargetID = targetID
         loading = false
     }
 
