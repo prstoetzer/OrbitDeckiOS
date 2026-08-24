@@ -44,24 +44,39 @@ enum ODFormat {
     /// Tiny BASIC deliberately ignores this and always uses UTC.
     nonisolated(unsafe) static var useLocalTime = false
 
-    private static func formatter(_ format: String, utc: Bool) -> DateFormatter {
+    // UTC is always 24-hour with a literal 'UTC' (the ham convention; `zzz` in the
+    // GMT zone renders "GMT"). POSIX locale pins 24-hour regardless of the device.
+    private static func fixedUTC(_ format: String) -> DateFormatter {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = utc ? TimeZone(secondsFromGMT: 0) : TimeZone.current
+        f.timeZone = TimeZone(secondsFromGMT: 0)
         f.dateFormat = format
         return f
     }
-    // Two cached variants per style: a fixed-UTC one (literal 'UTC' — `zzz` renders
-    // "GMT" in the UTC zone, but hams say UTC) and a local one that renders the live
-    // zone abbreviation with `zzz` (e.g. EDT, and DST-correct per date).
-    private nonisolated(unsafe) static let utcFull = formatter("yyyy-MM-dd HH:mm:ss 'UTC'", utc: true)
-    private nonisolated(unsafe) static let localFull = formatter("yyyy-MM-dd HH:mm:ss zzz", utc: false)
-    private nonisolated(unsafe) static let utcShortFixed = formatter("MMM d HH:mm:ss 'UTC'", utc: true)
-    private nonisolated(unsafe) static let localShort = formatter("MMM d HH:mm:ss zzz", utc: false)
-    private nonisolated(unsafe) static let utcDayFixed = formatter("yyyy-MM-dd", utc: true)
-    private nonisolated(unsafe) static let localDay = formatter("yyyy-MM-dd", utc: false)
-    private nonisolated(unsafe) static let utcClock = formatter("HH:mm 'UTC'", utc: true)
-    private nonisolated(unsafe) static let localClock = formatter("HH:mm zzz", utc: false)
+    // Whether the device is set to 24-hour time. `j` resolves to the locale's
+    // preferred hour field; a 12-hour locale includes the AM/PM ('a') symbol.
+    private static let deviceUses24Hour: Bool = {
+        let t = DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "H"
+        return !t.contains("a")
+    }()
+    // Local formatters honor the device's 12/24-hour preference and current locale
+    // (AM/PM symbols), with the live zone abbreviation via `zzz`.
+    private static func local(_ format24: String, _ format12: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = .current
+        f.timeZone = .current
+        f.dateFormat = deviceUses24Hour ? format24 : format12
+        return f
+    }
+
+    private static let utcFull = fixedUTC("yyyy-MM-dd HH:mm:ss 'UTC'")
+    private static let localFull = local("yyyy-MM-dd HH:mm:ss zzz", "yyyy-MM-dd h:mm:ss a zzz")
+    private static let utcShortFixed = fixedUTC("MMM d HH:mm:ss 'UTC'")
+    private static let localShort = local("MMM d HH:mm:ss zzz", "MMM d h:mm:ss a zzz")
+    private static let utcDayFixed = fixedUTC("yyyy-MM-dd")
+    private static let localDay = local("yyyy-MM-dd", "yyyy-MM-dd")
+    private static let utcClock = fixedUTC("HH:mm 'UTC'")
+    private static let localClock = local("HH:mm zzz", "h:mm a zzz")
 
     static var utc: DateFormatter { useLocalTime ? localFull : utcFull }
     static var utcShort: DateFormatter { useLocalTime ? localShort : utcShortFixed }

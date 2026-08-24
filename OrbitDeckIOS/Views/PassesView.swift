@@ -44,7 +44,10 @@ struct ScheduleView: View {
 
     private var scheduleKey: String {
         let favs = favorites.map { String($0.id) }.sorted().joined(separator: ",")
-        return "\(favs)-\(store.preferences.observer.coarseKey)-\(store.preferences.minElevation)-\(daysForward)"
+        // Use the ~1 km stable key: while following the device, the 3-decimal
+        // coarseKey jitters and kept restarting this multi-second load before it
+        // finished, so later days never populated ("stops partway").
+        return "\(favs)-\(store.preferences.observer.stableKey)-\(store.preferences.minElevation)-\(daysForward)"
     }
 
     var body: some View {
@@ -126,8 +129,10 @@ struct ScheduleView: View {
                     Spacer(minLength: 8)
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(ODFormat.primaryClock(entry.pass.aos)).font(.body.monospacedDigit())
+                            .lineLimit(1).minimumScaleFactor(0.7)
                         Text("\(ODFormat.secondaryClock(entry.pass.aos)) · max \(ODFormat.angle(entry.pass.maxElevation))")
                             .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                            .lineLimit(1).minimumScaleFactor(0.7)
                     }
                 }
                 .contentShape(Rectangle())
@@ -300,9 +305,11 @@ struct PassesView: View {
                     HStack(spacing: 6) {
                         Text(ODFormat.utcShort.string(from: pass.aos))
                             .font(.subheadline.weight(.semibold))
+                            .lineLimit(1).minimumScaleFactor(0.7)
                         Text(ODFormat.secondaryClock(pass.aos))
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(ODTheme.muted)
+                            .lineLimit(1).minimumScaleFactor(0.7)
                         if isBest {
                             Image(systemName: "star.fill")
                                 .font(.caption2)

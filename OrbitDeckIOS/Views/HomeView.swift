@@ -200,6 +200,7 @@ struct HomeView: View {
                                             .foregroundStyle(fleet.id == store.selectedSatellite?.id ? ODTheme.accent : .primary)
                                         Text("AOS \(ODFormat.utcShort.string(from: fleet.pass.aos)) · \(ODFormat.secondaryClock(fleet.pass.aos))")
                                             .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                                            .lineLimit(1).minimumScaleFactor(0.7)
                                     }
                                     Spacer()
                                     VStack(alignment: .trailing, spacing: 2) {
@@ -240,8 +241,7 @@ struct HomeView: View {
     private var fleetKey: String {
         let favorites = store.satellites.filter { store.preferences.favorites.contains($0.id) }
             .map { String($0.id) }.sorted().joined(separator: ",")
-        let o = store.preferences.observer
-        return "\(favorites)-\(o.coarseKey)-\(store.preferences.minElevation)"
+        return "\(favorites)-\(store.preferences.observer.stableKey)-\(store.preferences.minElevation)"
     }
 
     @MainActor
@@ -260,7 +260,11 @@ struct HomeView: View {
             }
             return output.sorted { $0.pass.aos < $1.pass.aos }
         }.value
-        if Task.isCancelled { return }
+        // Always publish the result. The detached computation runs to completion
+        // regardless of parent-task cancellation, so bailing on `Task.isCancelled`
+        // here (as before) could leave the list stuck on "Computing…" when a coarse
+        // location update restarted the task. The stable observer key above means
+        // restarts are now rare, so a last-writer-wins update is safe.
         fleetLoading = false
         fleetPasses = result
     }
@@ -499,7 +503,14 @@ struct HomeView: View {
                         .accessibilityLabel("Recentre passband")
                 }
             }
-            Slider(value: $passbandOffsetHz, in: -half...half, step: 100)
+            // Clamp the bound value into range: switching to a narrower transponder
+            // can momentarily leave a wider offset in place before the reset fires,
+            // and a Slider whose value is out of range logs a runtime error.
+            let clamped = Binding(
+                get: { min(half, max(-half, passbandOffsetHz)) },
+                set: { passbandOffsetHz = $0 }
+            )
+            Slider(value: clamped, in: -half...half, step: 100)
         }
     }
 
@@ -527,7 +538,16 @@ struct HomeView: View {
         }
     }
 
+    private static let calibrationLimitHz = 10_000.0
+
     @ViewBuilder private func calibrationSlider(title: String, value: Binding<Double>) -> some View {
+        let limit = Self.calibrationLimitHz
+        // Clamp so a calibration entered elsewhere beyond ±limit doesn't drive the
+        // Slider out of range (which logs a runtime error).
+        let clamped = Binding(
+            get: { min(limit, max(-limit, value.wrappedValue)) },
+            set: { value.wrappedValue = $0 }
+        )
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(title).font(.caption).foregroundStyle(ODTheme.muted)
@@ -535,7 +555,7 @@ struct HomeView: View {
                 Text(String(format: "%+.0f Hz", value.wrappedValue))
                     .font(.caption.monospacedDigit())
             }
-            Slider(value: value, in: -5000...5000, step: 10)
+            Slider(value: clamped, in: -limit...limit, step: 10)
         }
     }
 
@@ -577,8 +597,7 @@ struct HomeView: View {
     }
 
     private var passTaskKey: String {
-        let o = store.preferences.observer
-        return "\(store.selectedSatellite?.id ?? 0)-\(o.coarseKey)-\(store.preferences.minElevation)"
+        "\(store.selectedSatellite?.id ?? 0)-\(store.preferences.observer.stableKey)-\(store.preferences.minElevation)"
     }
 
     @MainActor

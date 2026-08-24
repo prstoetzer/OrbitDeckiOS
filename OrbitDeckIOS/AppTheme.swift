@@ -60,6 +60,8 @@ struct MetricRow: View {
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(valueColor)
                 .multilineTextAlignment(.trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
         }
     }
 }
