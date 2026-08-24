@@ -39,29 +39,43 @@ struct ActivityView: UIViewControllerRepresentable {
 #endif
 
 enum ODFormat {
-    nonisolated(unsafe) static let utc: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(secondsFromGMT: 0)
-        f.dateFormat = "yyyy-MM-dd HH:mm:ss 'UTC'"
-        return f
-    }()
+    /// Operator preference: when true, all displayed times use the device's local
+    /// zone instead of UTC. Driven from the store (see OrbitStore.loadPreferences).
+    /// Tiny BASIC deliberately ignores this and always uses UTC.
+    nonisolated(unsafe) static var useLocalTime = false
 
-    nonisolated(unsafe) static let utcShort: DateFormatter = {
+    private static func formatter(_ format: String, utc: Bool) -> DateFormatter {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(secondsFromGMT: 0)
-        f.dateFormat = "MMM d HH:mm:ss 'UTC'"
+        f.timeZone = utc ? TimeZone(secondsFromGMT: 0) : TimeZone.current
+        f.dateFormat = format
         return f
-    }()
+    }
+    // Two cached variants per style: a fixed-UTC one (literal 'UTC' — `zzz` renders
+    // "GMT" in the UTC zone, but hams say UTC) and a local one that renders the live
+    // zone abbreviation with `zzz` (e.g. EDT, and DST-correct per date).
+    private nonisolated(unsafe) static let utcFull = formatter("yyyy-MM-dd HH:mm:ss 'UTC'", utc: true)
+    private nonisolated(unsafe) static let localFull = formatter("yyyy-MM-dd HH:mm:ss zzz", utc: false)
+    private nonisolated(unsafe) static let utcShortFixed = formatter("MMM d HH:mm:ss 'UTC'", utc: true)
+    private nonisolated(unsafe) static let localShort = formatter("MMM d HH:mm:ss zzz", utc: false)
+    private nonisolated(unsafe) static let utcDayFixed = formatter("yyyy-MM-dd", utc: true)
+    private nonisolated(unsafe) static let localDay = formatter("yyyy-MM-dd", utc: false)
+    private nonisolated(unsafe) static let utcClock = formatter("HH:mm 'UTC'", utc: true)
+    private nonisolated(unsafe) static let localClock = formatter("HH:mm zzz", utc: false)
 
-    nonisolated(unsafe) static let utcDay: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(secondsFromGMT: 0)
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
+    static var utc: DateFormatter { useLocalTime ? localFull : utcFull }
+    static var utcShort: DateFormatter { useLocalTime ? localShort : utcShortFixed }
+    static var utcDay: DateFormatter { useLocalTime ? localDay : utcDayFixed }
+
+    /// Short "HH:mm ZZZ" clock in the operator's chosen zone (for pass lists).
+    static func primaryClock(_ date: Date) -> String {
+        (useLocalTime ? localClock : utcClock).string(from: date)
+    }
+    /// The same clock in the *other* zone, for an unobtrusive secondary readout
+    /// (e.g. show local next to UTC, or vice-versa). Empty if both would match.
+    static func secondaryClock(_ date: Date) -> String {
+        (useLocalTime ? utcClock : localClock).string(from: date)
+    }
 
     static func angle(_ degrees: Double, decimals: Int = 1) -> String {
         String(format: "%.*f°", decimals, degrees)

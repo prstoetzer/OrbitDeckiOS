@@ -184,6 +184,12 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Show times in local time", isOn: Binding(
+                    get: { store.preferences.useLocalTime ?? false },
+                    set: { store.preferences.useLocalTime = $0 }
+                ))
+                Text("Display all times in your device's local zone instead of UTC. Pass lists also show the other zone. Tiny BASIC always uses UTC.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
                 Toggle("Keep screen awake on Home", isOn: $keepScreenAwakeHome)
                 Text("Prevents auto-lock while the Home screen is showing, so you can leave it up as a live display during a pass. The rest of the app auto-locks normally.")
                     .font(.caption).foregroundStyle(ODTheme.muted)

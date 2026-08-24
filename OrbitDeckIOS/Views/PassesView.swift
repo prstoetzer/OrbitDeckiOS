@@ -17,7 +17,7 @@ struct ScheduleView: View {
     @State private var entries: [ScheduleEntry] = []
     @State private var daysForward = 7
     @State private var loading = false
-    @State private var didScrollToToday = false
+    @State private var didInitialScroll = false
 
     private let daysBack = 7
     private let maxDaysForward = 60
@@ -79,25 +79,35 @@ struct ScheduleView: View {
                     }
                 }
             }
-            // Open at today (the past week sits above, scrollable; the future
-            // extends below). Pin only after the first load finishes, so the
-            // freshly-populated past rows don't push today back off-screen.
+            // Open at the next pass (the earlier part of today and the past week
+            // sit above, scrollable; the rest extends below). Pin only after the
+            // first load finishes, so the freshly-populated rows have laid out.
             .onChange(of: loading) { _, isLoading in
-                guard !isLoading, !didScrollToToday, !favorites.isEmpty else { return }
-                didScrollToToday = true
-                pinToToday(proxy)
+                guard !isLoading, !didInitialScroll, !favorites.isEmpty else { return }
+                didInitialScroll = true
+                pinToNextPass(proxy)
             }
         }
         .task(id: scheduleKey) { await load() }
     }
 
-    /// Scroll today's section to the top. Deferred (and repeated once) so the pin
-    /// lands after the just-populated rows have laid out.
-    private func pinToToday(_ proxy: ScrollViewProxy) {
-        let today = utcCalendar.startOfDay(for: Date())
+    /// The first pass at or after the current instant — the row the schedule opens
+    /// to. Falls back to the start of today if every loaded pass is in the past.
+    private var firstUpcomingTarget: AnyHashable {
+        let now = Date()
+        if let next = entries.filter({ $0.pass.aos >= now }).min(by: { $0.pass.aos < $1.pass.aos }) {
+            return AnyHashable(next.id)
+        }
+        return AnyHashable(utcCalendar.startOfDay(for: now))
+    }
+
+    /// Scroll the next upcoming pass to the top. Deferred (and repeated once) so the
+    /// pin lands after the just-populated rows have laid out.
+    private func pinToNextPass(_ proxy: ScrollViewProxy) {
+        let target = firstUpcomingTarget
         for delay in [0.05, 0.35] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                withAnimation(.none) { proxy.scrollTo(today, anchor: .top) }
+                withAnimation(.none) { proxy.scrollTo(target, anchor: .top) }
             }
         }
     }
@@ -115,8 +125,9 @@ struct ScheduleView: View {
                     }
                     Spacer(minLength: 8)
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(Self.clock.string(from: entry.pass.aos)).font(.body.monospacedDigit())
-                        Text("max \(ODFormat.angle(entry.pass.maxElevation))").font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                        Text(ODFormat.primaryClock(entry.pass.aos)).font(.body.monospacedDigit())
+                        Text("\(ODFormat.secondaryClock(entry.pass.aos)) · max \(ODFormat.angle(entry.pass.maxElevation))")
+                            .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
                     }
                 }
                 .contentShape(Rectangle())
@@ -132,6 +143,7 @@ struct ScheduleView: View {
                 PassAlarmUnavailable()
             }
         }
+        .id(entry.id)
     }
 
     private func dayLabel(_ day: Date) -> String {
@@ -153,9 +165,13 @@ struct ScheduleView: View {
         let span = Double(daysBack + daysForward + 1)
         let result = await Task.detached(priority: .userInitiated) { () -> [ScheduleEntry] in
             var out: [ScheduleEntry] = []
+            // Allow enough passes to fill the whole span for even a frequently-seen
+            // satellite (~20/day is generous); the old fixed 500 truncated the later
+            // days once the window grew past a few weeks.
+            let cap = max(500, Int(span) * 20)
             for sat in sats {
                 let passes = (try? OrbitPredictor.predictPasses(sat, observer: observer, from: start,
-                                                                minElevation: minEl, maxCount: 500,
+                                                                minElevation: minEl, maxCount: cap,
                                                                 horizonDays: span)) ?? []
                 for p in passes {
                     out.append(ScheduleEntry(id: "\(sat.id)-\(p.aos.timeIntervalSince1970)",
@@ -171,14 +187,6 @@ struct ScheduleView: View {
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "EEE, MMM d"
-        f.timeZone = TimeZone(identifier: "UTC")
-        return f
-    }()
-
-    private static let clock: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "HH:mm 'UTC'"
         f.timeZone = TimeZone(identifier: "UTC")
         return f
     }()
@@ -292,6 +300,9 @@ struct PassesView: View {
                     HStack(spacing: 6) {
                         Text(ODFormat.utcShort.string(from: pass.aos))
                             .font(.subheadline.weight(.semibold))
+                        Text(ODFormat.secondaryClock(pass.aos))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(ODTheme.muted)
                         if isBest {
                             Image(systemName: "star.fill")
                                 .font(.caption2)

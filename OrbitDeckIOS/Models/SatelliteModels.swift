@@ -205,6 +205,9 @@ struct StorePreferences: Codable, Sendable {
     // site; the operator's real fixed primary site is preserved here so switching
     // back to Fixed restores it intact.
     var savedFixedSite: ObserverSite?
+    // Display all times in the device's local zone instead of UTC. Optional
+    // preserves decoding of older preference blobs; nil is treated as UTC.
+    var useLocalTime: Bool?
 }
 
 /// How OrbitDeck resolves the observer station.

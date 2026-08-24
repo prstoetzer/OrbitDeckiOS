@@ -9,7 +9,10 @@ import Security
 final class OrbitStore: ObservableObject {
     @Published var satellites: [SatelliteRecord] = []
     @Published var preferences = StorePreferences() {
-        didSet { savePreferences() }
+        didSet {
+            savePreferences()
+            ODFormat.useLocalTime = preferences.useLocalTime ?? false
+        }
     }
     @Published var isRefreshingGP = false
     @Published var isRefreshingTransponders = false

@@ -38,6 +38,12 @@ struct HomeView: View {
     // once per second.
     @State private var clockAnchor = Date()
     @State private var selectedTransponderID: String?
+    // Offset (Hz) from the transponder center for the passband tuning slider on a
+    // linear bird; 0 = centre (the default). Reset whenever the satellite or
+    // transponder changes.
+    @State private var passbandOffsetHz: Double = 0
+    // Whether the unobtrusive per-satellite calibration sliders are expanded.
+    @State private var showCalibration = false
 
     var body: some View {
         ScrollView {
@@ -140,7 +146,11 @@ struct HomeView: View {
         }
         .onAppear { if compassUp { location.startHeading() } }
         .onDisappear { location.stopHeading() }
-        .onChange(of: store.preferences.selectedNorad) { _, _ in selectedTransponderID = nil }
+        .onChange(of: store.preferences.selectedNorad) { _, _ in
+            selectedTransponderID = nil
+            passbandOffsetHz = 0
+        }
+        .onChange(of: selectedTransponderID) { _, _ in passbandOffsetHz = 0 }
     }
 
     @ViewBuilder
@@ -188,7 +198,7 @@ struct HomeView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(fleet.name)
                                             .foregroundStyle(fleet.id == store.selectedSatellite?.id ? ODTheme.accent : .primary)
-                                        Text("AOS \(ODFormat.utcShort.string(from: fleet.pass.aos))")
+                                        Text("AOS \(ODFormat.utcShort.string(from: fleet.pass.aos)) · \(ODFormat.secondaryClock(fleet.pass.aos))")
                                             .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
                                     }
                                     Spacer()
@@ -439,8 +449,15 @@ struct HomeView: View {
     }
 
     private func dopplerCard(satellite: SatelliteRecord, transponder: TransponderRecord, rangeRateKmS: Double) -> some View {
-        let downlink = transponder.downlinkCenter
-        let uplink = transponder.uplinkCenter
+        // Passband tuning: move the operating frequency off the transponder centre on
+        // a linear bird. An inverting transponder walks the uplink the opposite way.
+        let offset = transponder.isLinear ? Int64(passbandOffsetHz.rounded()) : 0
+        let downlink = transponder.downlinkCenter + offset
+        let uplink: Int64 = {
+            let u = transponder.uplinkCenter
+            guard transponder.isLinear, u > 0 else { return u }
+            return transponder.invert ? u - offset : u + offset
+        }()
         let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
         // Calibrated dials for the tune readouts; the uncalibrated pair gives the
         // true Doppler shift shown on the Doppler (DN/UP) rows.
@@ -457,8 +474,80 @@ struct HomeView: View {
                 MetricRow("TX (tune)", ODFormat.frequency(corrected.tx), valueColor: ODTheme.warning)
                 MetricRow("Doppler (UP)", String(format: "%+lld Hz", trueShift.tx - uplink))
             }
+            if transponder.isLinear, transponder.bandwidth > 0 {
+                passbandSlider(bandwidth: transponder.bandwidth)
+            }
             if cal != 0 { calibratedNote }
+            calibrationDisclosure(satellite: satellite)
         }
+    }
+
+    /// Passband tuning slider for a linear transponder — walks the operating point
+    /// ±half-bandwidth around centre (0 = centre, the default).
+    @ViewBuilder private func passbandSlider(bandwidth: Int64) -> some View {
+        let half = Double(bandwidth) / 2
+        Divider().padding(.vertical, 2)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Passband").font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
+                Spacer()
+                Text(passbandOffsetHz == 0 ? "centre" : String(format: "%+.1f kHz", passbandOffsetHz / 1000))
+                    .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                if passbandOffsetHz != 0 {
+                    Button { passbandOffsetHz = 0 } label: { Image(systemName: "arrow.counterclockwise") }
+                        .font(.caption).buttonStyle(.borderless)
+                        .accessibilityLabel("Recentre passband")
+                }
+            }
+            Slider(value: $passbandOffsetHz, in: -half...half, step: 100)
+        }
+    }
+
+    /// An unobtrusive expander that reveals per-satellite calibration sliders.
+    @ViewBuilder private func calibrationDisclosure(satellite: SatelliteRecord) -> some View {
+        Divider().padding(.vertical, 2)
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { showCalibration.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: showCalibration ? "chevron.down" : "chevron.right")
+                Label("Calibrate this satellite", systemImage: "tuningfork")
+                Spacer()
+            }
+            .font(.caption).foregroundStyle(ODTheme.muted)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+
+        if showCalibration {
+            calibrationSlider(title: "Downlink", value: calibrationBinding(satellite.id, uplink: false))
+            calibrationSlider(title: "Uplink", value: calibrationBinding(satellite.id, uplink: true))
+            Text("Combined oscillator correction folded into the receive dial (uplink sign-flipped on inverting transponders). Shared with every Doppler screen and the Calibrations editor.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    @ViewBuilder private func calibrationSlider(title: String, value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.caption).foregroundStyle(ODTheme.muted)
+                Spacer()
+                Text(String(format: "%+.0f Hz", value.wrappedValue))
+                    .font(.caption.monospacedDigit())
+            }
+            Slider(value: value, in: -5000...5000, step: 10)
+        }
+    }
+
+    private func calibrationBinding(_ norad: UInt, uplink: Bool) -> Binding<Double> {
+        Binding(
+            get: { uplink ? store.calibration(for: norad).uplinkHz : store.calibration(for: norad).downlinkHz },
+            set: {
+                var c = store.calibration(for: norad)
+                if uplink { c.uplinkHz = $0 } else { c.downlinkHz = $0 }
+                store.setCalibration(c, for: norad)
+            }
+        )
     }
 
     /// Unobtrusive note shown when a per-satellite calibration is folded into the
