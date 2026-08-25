@@ -83,10 +83,12 @@ final class BLESerialTransport: NSObject, CATTransport, @unchecked Sendable {
             queue.async {
                 self.connectCont = cont
                 self.wantConnect = true
-                // Fail if we never reach a connected state in time.
+                // Fail if we never reach a connected state in time. Route through
+                // finishConnect so the scan is stopped and intent cleared.
                 self.queue.asyncAfter(deadline: .now() + 12) { [weak self] in
-                    guard let self else { return }
-                    if let c = self.connectCont { self.connectCont = nil; c.resume(throwing: CATError.connectTimeout) }
+                    guard let self, self.connectCont != nil else { return }
+                    self.wantConnect = false
+                    self.finishConnect(.failure(CATError.connectTimeout))
                 }
                 self.tryConnect()
             }
@@ -130,6 +132,8 @@ final class BLESerialTransport: NSObject, CATTransport, @unchecked Sendable {
                 self.connected = false
                 if self.scanning { self.central.stopScan(); self.scanning = false }
                 if let p = self.peripheral { self.central.cancelPeripheralConnection(p) }
+                // Resolve a still-pending connect (disconnect tapped mid-connect).
+                if let c = self.connectCont { self.connectCont = nil; c.resume(throwing: CATError.notConnected) }
                 cont.resume()
             }
         }

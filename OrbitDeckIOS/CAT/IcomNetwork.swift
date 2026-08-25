@@ -54,7 +54,9 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
                 self.connectCont = cont
                 self.queue.asyncAfter(deadline: .now() + 25) { [weak self] in
                     guard let self, let c = self.connectCont else { return }
-                    self.connectCont = nil; c.resume(throwing: CATError.connectTimeout)
+                    self.connectCont = nil
+                    self.teardown()          // close sockets + cancel timers on timeout
+                    c.resume(throwing: CATError.connectTimeout)
                 }
                 self.startControl()
             }
@@ -62,8 +64,8 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     }
 
     func disconnect() async {
-        queue.sync {
-            self.teardown()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async { self.teardown(); cont.resume() }
         }
     }
 
@@ -73,12 +75,25 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     }
 
     func readAvailable(maxWait: TimeInterval) async -> [UInt8] {
-        let deadline = Date().addingTimeInterval(maxWait)
-        while Date() < deadline {
-            if lock.withLock({ !rxCIV.isEmpty }) { break }
-            try? await Task.sleep(nanoseconds: 15_000_000)
+        // Poll on the network queue (GCD timing) rather than a MainActor
+        // Task.sleep loop, which can stall the UI on this device. A CI-V reply
+        // arrives as one datagram, so resume as soon as any bytes are present.
+        await withCheckedContinuation { (cont: CheckedContinuation<[UInt8], Never>) in
+            queue.async {
+                let start = DispatchTime.now().uptimeNanoseconds
+                let cap = UInt64(maxWait * 1_000_000_000)
+                func poll() {
+                    let has = self.lock.withLock { !self.rxCIV.isEmpty }
+                    if has || (DispatchTime.now().uptimeNanoseconds &- start) > cap {
+                        let out = self.lock.withLock { let o = self.rxCIV; self.rxCIV.removeAll(); return o }
+                        cont.resume(returning: out)
+                    } else {
+                        self.queue.asyncAfter(deadline: .now() + .milliseconds(20)) { poll() }
+                    }
+                }
+                poll()
+            }
         }
-        return lock.withLock { let out = rxCIV; rxCIV.removeAll(); return out }
     }
 
     // MARK: State machine
@@ -97,6 +112,9 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         control?.close(); serial?.close()
         control = nil; serial = nil
         connected = false; authOK = false
+        // Resolve a still-pending connect (disconnect during the handshake). Safe
+        // because finishConnect() nils connectCont before it calls teardown.
+        if let c = connectCont { connectCont = nil; c.resume(throwing: CATError.notConnected) }
     }
 
     private func startControl() {
