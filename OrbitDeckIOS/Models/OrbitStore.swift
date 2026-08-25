@@ -618,6 +618,9 @@ final class OrbitStore: ObservableObject {
 enum OrbitSecret: String {
     case qrzPassword = "qrz-password"
     case spaceTrackPassword = "spacetrack-password"
+    // Personal hams.at API key (from the hams.at Settings page), used only to
+    // post activation alerts you explicitly confirm. Kept in the Keychain.
+    case hamsatApiKey = "hamsat-api-key"
 }
 
 enum OrbitSecretStore {

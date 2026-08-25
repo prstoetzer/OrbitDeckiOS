@@ -38,8 +38,10 @@
             <ul>
                 <li><strong>QRZ</strong> — for callsign lookups.</li>
                 <li><strong>Space-Track</strong> — for archival orbital elements used by the Orbital History feature.</li>
+                <li><strong>hams.at API key</strong> — a personal API token from your hams.at account, used only to post activation alerts you explicitly confirm.</li>
             </ul>
-            <p>Any passwords you enter are stored in the device's secure <strong>iOS Keychain</strong>, not in the app's preferences, and are never sent to the developer. They are transmitted only to the corresponding service, over an encrypted connection, when you use that feature. Your use of those services is governed by their own privacy policies.</p>
+            <p>Any passwords or API keys you enter are stored in the device's secure <strong>iOS Keychain</strong>, not in the app's preferences, and are never sent to the developer. They are transmitted only to the corresponding service, over an encrypted connection, when you use that feature. Your use of those services is governed by their own privacy policies.</p>
+            <p>When you post an activation alert to hams.at, the details you enter — including your callsign, grid squares and observer position — are sent to hams.at and published as a public alert attributed to your callsign. OrbitDeck submits an alert only when you confirm it.</p>
 
             <h2>Third-party data services</h2>
             <p>To function, OrbitDeck downloads publicly available data from the following services. These requests are made directly from your device to each service and necessarily include your device's IP address, which those services may process according to their own policies. OrbitDeck does not send them your personal information.</p>
@@ -49,7 +51,7 @@
                 <li><strong>NOAA Space Weather Prediction Center</strong> — space-weather indices</li>
                 <li><strong>hamqsl.com (N0NBH)</strong> — observed sunspot number</li>
                 <li><strong>SatNOGS</strong> — transponder database</li>
-                <li><strong>hams.at</strong> — upcoming satellite activations</li>
+                <li><strong>hams.at</strong> — upcoming satellite activations, and posting your own activation alerts (with your API key)</li>
             </ul>
             <p>OrbitDeck identifies itself and rate-limits its requests in accordance with these services' usage policies.</p>
 

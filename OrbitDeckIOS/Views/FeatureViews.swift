@@ -3049,6 +3049,7 @@ struct DataFeedsView: View {
     @State private var isLoadingActivations = false
     @State private var activationDetail: ActivationDetailResult?
     @State private var activationDetailLoadingID: String?
+    @State private var showingPostActivation = false
     @State private var qrzCall = ""
     @State private var qrzResult: QRZRecord?
     @State private var qrzMessage = ""
@@ -3071,6 +3072,15 @@ struct DataFeedsView: View {
                 Button("Refresh feed") { fetchActivations() }.disabled(isLoadingActivations)
                 if isLoadingActivations { ProgressView() }
                 Text(activationMessage).font(.caption).foregroundStyle(ODTheme.muted)
+            }
+            Section("Post your own") {
+                Button {
+                    showingPostActivation = true
+                } label: {
+                    Label("Post an activation to hams.at…", systemImage: "antenna.radiowaves.left.and.right")
+                }
+                Text("Publish an upcoming activation alert with your hams.at API key. The key is stored in the iOS Keychain.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Section("Scheduled") {
                 if activations.isEmpty && !isLoadingActivations { Text("No activation rows loaded.").foregroundStyle(ODTheme.muted) }
@@ -3108,6 +3118,9 @@ struct DataFeedsView: View {
         .task { if activations.isEmpty { fetchActivations() } }
         .sheet(item: $activationDetail) { detail in
             ActivationOperatingDetailView(detail: detail, home: store.preferences.observer, store: store)
+        }
+        .sheet(isPresented: $showingPostActivation) {
+            PostActivationView().environmentObject(store)
         }
     }
 
@@ -3224,6 +3237,247 @@ struct DataFeedsView: View {
         text.replacingOccurrences(of: "(UTC)", with: "", options: .caseInsensitive)
             .replacingOccurrences(of: "UTC", with: "", options: .caseInsensitive)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+
+/// Form for publishing your own upcoming activation alert to hams.at
+/// (`POST /api/alerts`). Prefills from your station and the selected satellite;
+/// requires your personal hams.at API key, which is kept in the iOS Keychain.
+struct PostActivationView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var apiKey = ""
+    @State private var apiKeyLoaded = false
+    @State private var selectedNorad: UInt?
+    @State private var callsign = ""
+    @State private var gridsText = ""
+    @State private var maxAt = Date()
+    @State private var observerGrid = ""
+    @State private var observerLat = 0.0
+    @State private var observerLon = 0.0
+    @State private var setMode = false
+    @State private var mode = "SSB"
+    @State private var setFrequency = false
+    @State private var mhzText = ""
+    @State private var mhzDirection = "down"
+    @State private var comment = ""
+    @State private var chatEnabled = true
+
+    @State private var confirmPost = false
+    @State private var isPosting = false
+    @State private var message = ""
+    @State private var posted: HamsatPostedAlert?
+    @State private var prefilled = false
+
+    private var sortedSatellites: [SatelliteRecord] {
+        let favorites = store.preferences.favorites
+        return store.satellites.sorted { a, b in
+            let fa = favorites.contains(a.id), fb = favorites.contains(b.id)
+            if fa != fb { return fa }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
+
+    private var canPost: Bool {
+        selectedNorad != nil
+        && callsign.trimmingCharacters(in: .whitespaces).count >= 3
+        && !HamsatAlertService.normalizedGrids(gridsText.split(separator: ",").map(String.init)).isEmpty
+        && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !isPosting
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("hams.at API key") {
+                    SecureField("API key", text: $apiKey)
+                        .textContentType(.password)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .textFieldStyle(.odField)
+                    Text("Found on your hams.at Settings page. Stored in the iOS Keychain, sent only to hams.at when you post.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
+
+                Section("Activation") {
+                    Picker("Satellite", selection: $selectedNorad) {
+                        Text("Select…").tag(UInt?.none)
+                        ForEach(sortedSatellites) { sat in
+                            // verbatim so the NORAD number isn't localized with a thousands comma.
+                            Text(verbatim: "\(sat.name) · \(sat.id)").tag(UInt?.some(sat.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    TextField("Callsign", text: $callsign)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .textFieldStyle(.odField)
+                    TextField("Grids (comma-separated, 1–4)", text: $gridsText)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .textFieldStyle(.odField)
+                    if store.operatorVuccGrids.count > 1 {
+                        let vucc = store.operatorVuccGrids
+                        Button("Use my grid \(vucc.count >= 4 ? "corner" : "line"): \(vucc.joined(separator: ", "))") {
+                            gridsText = vucc.joined(separator: ", ")
+                        }
+                        .font(.caption)
+                    }
+                    Text("Enter one grid, or several to activate a grid line (2) or corner (4).")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                    DatePicker("Pass maximum", selection: $maxAt)
+                    Text("Approximate time of the pass's maximum elevation (±30 min).")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
+
+                Section("Observer position") {
+                    TextField("Grid square", text: $observerGrid)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .textFieldStyle(.odField)
+                        .onChange(of: observerGrid) { _, newValue in
+                            if let ll = FeatureEngine.gridToLatLon(newValue.trimmingCharacters(in: .whitespaces)) {
+                                observerLat = ll.latitude
+                                observerLon = ll.longitude
+                            }
+                        }
+                    HStack {
+                        TextField("Latitude", value: $observerLat, format: .number.precision(.fractionLength(0...6)))
+                            .keyboardType(.numbersAndPunctuation).textFieldStyle(.odField)
+                        TextField("Longitude", value: $observerLon, format: .number.precision(.fractionLength(0...6)))
+                            .keyboardType(.numbersAndPunctuation).textFieldStyle(.odField)
+                    }
+                    Text("Enter a Maidenhead grid to fill the coordinates, or type latitude/longitude directly. Prefilled from your station.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
+
+                Section("Optional") {
+                    Toggle("Set operating mode", isOn: $setMode)
+                    if setMode {
+                        Picker("Mode", selection: $mode) {
+                            ForEach(HamsatAlertRequest.allowedModes, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                    Toggle("Set frequency", isOn: $setFrequency)
+                    if setFrequency {
+                        TextField("Frequency (MHz)", text: $mhzText)
+                            .keyboardType(.decimalPad).textFieldStyle(.odField)
+                        Picker("Direction", selection: $mhzDirection) {
+                            Text("Downlink").tag("down")
+                            Text("Uplink").tag("up")
+                        }.pickerStyle(.segmented)
+                    }
+                    TextField("Comment (≤ 50 chars)", text: $comment)
+                        .textFieldStyle(.odField)
+                        .onChange(of: comment) { _, newValue in
+                            if newValue.count > 50 { comment = String(newValue.prefix(50)) }
+                        }
+                    Toggle("Enable on-site chat", isOn: $chatEnabled)
+                }
+
+                Section {
+                    Button {
+                        confirmPost = true
+                    } label: {
+                        if isPosting { ProgressView() } else { Text("Post activation…") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canPost)
+                    if let posted {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Posted to hams.at", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(ODTheme.good)
+                            if !posted.url.isEmpty, let url = URL(string: posted.url) {
+                                Link(posted.url, destination: url).font(.caption)
+                            }
+                        }
+                    }
+                    if !message.isEmpty {
+                        Text(message).font(.caption)
+                            .foregroundStyle(posted == nil ? ODTheme.warning : ODTheme.muted)
+                    }
+                } footer: {
+                    Text("OrbitDeck posts only when you confirm. The activation is public and attributed to your callsign.")
+                }
+            }
+            .navigationTitle("Post activation")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                if posted != nil {
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                }
+            }
+            .confirmationDialog("Post this activation publicly to hams.at?", isPresented: $confirmPost, titleVisibility: .visible) {
+                Button("Post activation") { submit() }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This publishes a public alert attributed to \(callsign.uppercased()) from \(HamsatAlertService.normalizedGrids(gridsText.split(separator: ",").map(String.init)).joined(separator: ", ")) on hams.at.")
+            }
+            .task {
+                if !apiKeyLoaded {
+                    apiKey = OrbitSecretStore.get(.hamsatApiKey)
+                    apiKeyLoaded = true
+                }
+                prefill()
+            }
+            .onChange(of: apiKey) { _, newValue in
+                if apiKeyLoaded { OrbitSecretStore.set(newValue, for: .hamsatApiKey) }
+            }
+        }
+    }
+
+    private func prefill() {
+        guard !prefilled else { return }
+        prefilled = true
+        if selectedNorad == nil { selectedNorad = store.selectedSatellite?.id ?? sortedSatellites.first?.id }
+        if callsign.isEmpty { callsign = store.preferences.callsign ?? "" }
+        if gridsText.isEmpty {
+            // On a grid line/corner the station claims several grids — offer them all.
+            let vucc = store.operatorVuccGrids
+            gridsText = (vucc.count > 1 ? vucc : [store.operatorGrid]).joined(separator: ", ")
+        }
+        observerLat = store.preferences.observer.latitude
+        observerLon = store.preferences.observer.longitude
+        // Default the pass-maximum time to the selected satellite's next pass TCA.
+        if let sat = store.selectedSatellite,
+           let pass = try? OrbitPredictor.predictPasses(sat, observer: store.preferences.observer,
+                                                        minElevation: store.preferences.minElevation, maxCount: 1).first {
+            maxAt = pass.tca
+        }
+    }
+
+    private func submit() {
+        guard let norad = selectedNorad else { return }
+        let grids = HamsatAlertService.normalizedGrids(gridsText.split(separator: ",").map(String.init))
+        var request = HamsatAlertRequest(
+            satelliteNumber: Int(norad),
+            observerLatitude: observerLat,
+            observerLongitude: observerLon,
+            maxAt: maxAt,
+            callsign: callsign,
+            grids: grids
+        )
+        if setMode { request.mode = mode }
+        if setFrequency, let mhz = Double(mhzText.trimmingCharacters(in: .whitespaces)) {
+            request.mhz = mhz
+            request.mhzDirection = mhzDirection
+        }
+        let trimmedComment = comment.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedComment.isEmpty { request.comment = trimmedComment }
+        request.chatEnabled = chatEnabled
+
+        let key = apiKey
+        isPosting = true; message = ""; posted = nil
+        Task {
+            do {
+                let result = try await HamsatAlertService.postAlert(request, apiKey: key)
+                posted = result
+                message = "Activation posted\(result.satelliteName.isEmpty ? "" : " for \(result.satelliteName)")."
+            } catch {
+                message = error.localizedDescription
+            }
+            isPosting = false
+        }
     }
 }
 

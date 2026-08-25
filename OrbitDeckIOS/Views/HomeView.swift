@@ -53,6 +53,7 @@ struct HomeView: View {
                 if let satellite = store.selectedSatellite {
                     liveTrack(satellite)
                     transponderCard(satellite)
+                    HomeAmsatQuickReport(satellite: satellite)
                 }
 
                 fleetDashboard
@@ -622,6 +623,114 @@ struct HomeView: View {
             }
         } catch {
             passError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Home AMSAT quick report
+
+/// One-tap AMSAT status reporting from Home for the selected satellite, covering
+/// every status type. Resolves the AMSAT catalog/operating name (session-cached)
+/// and posts an attributed report through the same path as the full AMSAT status
+/// screen — always behind an explicit confirmation.
+struct HomeAmsatQuickReport: View {
+    @EnvironmentObject private var store: OrbitStore
+    let satellite: SatelliteRecord
+
+    @State private var apiMatches: [String] = []
+    @State private var apiName = ""
+    @State private var pendingStatus: String?
+    @State private var isSending = false
+    @State private var message = ""
+    @State private var succeeded = false
+
+    private var confirmBinding: Binding<Bool> {
+        Binding(get: { pendingStatus != nil }, set: { if !$0 { pendingStatus = nil } })
+    }
+
+    var body: some View {
+        SectionCard("Report AMSAT status") {
+            let call = store.preferences.callsign ?? ""
+            if call.isEmpty {
+                Text("Set your callsign in Settings to file an AMSAT status report.")
+                    .font(.caption).foregroundStyle(ODTheme.warning)
+            } else {
+                if apiMatches.count > 1 {
+                    Picker("AMSAT name", selection: $apiName) {
+                        ForEach(apiMatches, id: \.self) { Text($0).tag($0) }
+                    }
+                    .pickerStyle(.menu)
+                } else if !apiName.isEmpty {
+                    MetricRow("AMSAT name", apiName)
+                }
+                MetricRow("Attribution", "\(call.uppercased()) · \(store.operatorGrid)")
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(AmsatStatusService.reportStatuses, id: \.self) { status in
+                        Button {
+                            pendingStatus = status
+                        } label: {
+                            Text(status).frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isSending || apiName.isEmpty)
+                    }
+                }
+                .padding(.top, 2)
+
+                if isSending { ProgressView("Posting…") }
+                if !message.isEmpty {
+                    Text(message).font(.caption)
+                        .foregroundStyle(succeeded ? ODTheme.good : ODTheme.warning)
+                }
+                Text("Public, attributed report. OrbitDeck posts only after you confirm.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+        }
+        .task(id: satellite.id) { await resolve() }
+        .confirmationDialog("Post public AMSAT status report?",
+                            isPresented: confirmBinding, titleVisibility: .visible) {
+            if let status = pendingStatus {
+                Button("Post “\(status)”") { submit(status) }
+            }
+            Button("Cancel", role: .cancel) { pendingStatus = nil }
+        } message: {
+            Text("This publicly posts \(pendingStatus ?? "") for \(apiName) as \((store.preferences.callsign ?? "").uppercased()) / \(store.operatorGrid) on amsat.org.")
+        }
+    }
+
+    private func resolve() async {
+        // Retry quietly on cold networks; the catalog is session-cached once it
+        // succeeds. Fall back to the satellite name so manual reporting still works.
+        for attempt in 0..<5 {
+            if Task.isCancelled { return }
+            do {
+                let matches = try await AmsatStatusService.catalogMatches(commonName: satellite.name)
+                apiMatches = matches
+                if let first = matches.first { apiName = first }
+                else if apiName.isEmpty { apiName = satellite.name }
+                return
+            } catch {
+                if attempt < 4 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            }
+        }
+        if apiName.isEmpty { apiName = satellite.name }
+    }
+
+    private func submit(_ status: String) {
+        let name = apiName
+        let call = store.preferences.callsign ?? ""
+        let grid = store.operatorGrid
+        pendingStatus = nil
+        isSending = true; message = ""; succeeded = false
+        Task {
+            do {
+                message = try await AmsatStatusService.submitReport(apiName: name, status: status, callsign: call, grid: grid)
+                succeeded = true
+            } catch {
+                message = error.localizedDescription
+            }
+            isSending = false
         }
     }
 }

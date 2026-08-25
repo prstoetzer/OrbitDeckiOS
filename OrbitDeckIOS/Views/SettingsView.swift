@@ -12,6 +12,8 @@ struct SettingsView: View {
     @AppStorage("orbitdeck.spacetrack.identity") private var spaceTrackIdentity = ""
     @State private var spaceTrackPassword = ""
     @State private var spaceTrackLoaded = false
+    @State private var hamsatApiKey = ""
+    @State private var hamsatLoaded = false
 
     var body: some View {
         Form {
@@ -143,6 +145,16 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
+            Section("hams.at") {
+                SecureField("hams.at API key", text: $hamsatApiKey)
+                    .textContentType(.password)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .textFieldStyle(.odField)
+                Text("From your hams.at Settings page. Used only to post activation alerts you explicitly confirm. Stored in the iOS Keychain, not in the preferences JSON.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
             Section("Space-Track") {
                 TextField("Space-Track identity / email", text: $spaceTrackIdentity)
                     .textContentType(.username)
@@ -260,12 +272,19 @@ struct SettingsView: View {
                 spaceTrackPassword = OrbitSecretStore.get(.spaceTrackPassword)
                 spaceTrackLoaded = true
             }
+            if !hamsatLoaded {
+                hamsatApiKey = OrbitSecretStore.get(.hamsatApiKey)
+                hamsatLoaded = true
+            }
         }
         .onChange(of: qrzPassword) { _, newValue in
             if qrzLoaded { OrbitSecretStore.set(newValue, for: .qrzPassword) }
         }
         .onChange(of: spaceTrackPassword) { _, newValue in
             if spaceTrackLoaded { OrbitSecretStore.set(newValue, for: .spaceTrackPassword) }
+        }
+        .onChange(of: hamsatApiKey) { _, newValue in
+            if hamsatLoaded { OrbitSecretStore.set(newValue, for: .hamsatApiKey) }
         }
         .onChange(of: locationProvider.location) { _, _ in
             guard let location = locationProvider.location else { return }

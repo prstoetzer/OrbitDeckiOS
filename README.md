@@ -42,15 +42,16 @@ OrbitDeck retrieves publicly available data and identifies itself politely:
 | NOAA SWPC | Solar flux, planetary Kp and A index (and sunspot number as a fallback) |
 | hamqsl.com (N0NBH) | Observed sunspot number (the amateur-community reference) |
 | SatNOGS | Transponder database |
-| hams.at | Upcoming satellite activations |
+| hams.at | Upcoming satellite activations; posting your own alerts with an API key |
 | QRZ (optional) | Callsign lookup, if you provide credentials |
 | Space-Track (optional) | Archival elements for Orbital History, if you provide credentials |
+| hams.at API key (optional) | Posting activation alerts, if you provide your token |
 
 OrbitDeck honors CelesTrak's usage policy — at most one request per dataset every two hours, with back-off on rate-limit responses — so normal use will not get your address blocked. Cached data keeps core tracking working offline.
 
 ## Privacy
 
-OrbitDeck does not collect, store, or transmit personal information to the developer, and contains no advertising or third-party analytics or tracking. Location is used only on your device; optional QRZ/Space-Track passwords are stored in the iOS Keychain. See the [privacy policy](https://orbitdeckios.n8hm.radio/privacy.html).
+OrbitDeck does not collect, store, or transmit personal information to the developer, and contains no advertising or third-party analytics or tracking. Location is used only on your device; optional QRZ/Space-Track passwords and your hams.at API key are stored in the iOS Keychain. See the [privacy policy](https://orbitdeckios.n8hm.radio/privacy.html).
 
 ## Repository layout
 

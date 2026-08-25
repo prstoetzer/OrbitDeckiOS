@@ -2900,6 +2900,178 @@ enum ActivationServiceError: LocalizedError {
     }
 }
 
+// MARK: - hams.at activation alert posting (POST /api/alerts)
+
+/// A request to publish an activation alert to hams.at. Field names/semantics
+/// mirror the documented `POST /api/alerts` body.
+struct HamsatAlertRequest: Sendable, Equatable {
+    var satelliteNumber: Int          // NORAD catalog number (required)
+    var observerLatitude: Double      // required, -90…90
+    var observerLongitude: Double     // required, -180…180
+    var maxAt: Date                   // required, approx. time of pass maximum
+    var callsign: String              // required, ≥ 3 chars
+    var grids: [String]               // required, 1–4 Maidenhead squares (4 or 6 char)
+    var mode: String? = nil           // optional: SSB | CW | Data | FM
+    var comment: String? = nil        // optional, ≤ 50 chars
+    var mhz: Double? = nil            // optional frequency in MHz
+    var mhzDirection: String? = nil   // optional: up | down (defaults to down)
+    var chatEnabled: Bool? = nil      // optional, defaults to true server-side
+
+    static let allowedModes = ["SSB", "CW", "Data", "FM"]
+    static let allowedDirections = ["up", "down"]
+}
+
+/// The alert hams.at returns after a successful create.
+struct HamsatPostedAlert: Sendable, Equatable {
+    let id: String
+    let url: String
+    let callsign: String
+    let satelliteName: String
+}
+
+enum HamsatAlertError: LocalizedError, Equatable {
+    case missingAPIKey
+    case field(String)             // local pre-flight validation failure
+    case unauthorized([String])    // HTTP 401
+    case validation([String])      // HTTP 422
+    case server(Int, String)       // other non-2xx
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .missingAPIKey:
+            return "Enter your hams.at API key (from the hams.at Settings page) before posting."
+        case .field(let message):
+            return message
+        case .unauthorized(let messages):
+            let joined = messages.joined(separator: " ")
+            return joined.isEmpty ? "hams.at rejected the API key (401 Unauthorized)." : "hams.at rejected the API key: \(joined)"
+        case .validation(let messages):
+            let joined = messages.joined(separator: " ")
+            return joined.isEmpty ? "hams.at rejected the activation (422)." : "hams.at rejected the activation: \(joined)"
+        case .server(let code, let body):
+            return "hams.at returned HTTP \(code). \(body.prefix(160))"
+        case .invalidResponse:
+            return "hams.at returned a response OrbitDeck could not read."
+        }
+    }
+}
+
+/// A seam over the network so the posting client can be exercised by a local
+/// test harness (hams.at has no sandbox/test endpoint).
+protocol HamsatTransport: Sendable {
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
+}
+
+/// Production transport: a plain URLSession round-trip.
+struct URLSessionHamsatTransport: HamsatTransport {
+    let session: URLSession
+    init(session: URLSession = .shared) { self.session = session }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw HamsatAlertError.invalidResponse }
+        return (data, http)
+    }
+}
+
+enum HamsatAlertService {
+    static let baseURL = URL(string: "https://hams.at")!
+
+    /// Normalize grids: trim, upper-case, drop empties.
+    static func normalizedGrids(_ grids: [String]) -> [String] {
+        grids.map { $0.trimmingCharacters(in: .whitespaces).uppercased() }.filter { !$0.isEmpty }
+    }
+
+    /// Local pre-flight validation mirroring the server's required-field rules, so
+    /// obvious problems surface without a round-trip.
+    static func validate(_ alert: HamsatAlertRequest) throws {
+        guard alert.satelliteNumber > 0 else { throw HamsatAlertError.field("Choose a satellite.") }
+        let call = alert.callsign.trimmingCharacters(in: .whitespaces)
+        guard call.count >= 3 else { throw HamsatAlertError.field("Enter a callsign of at least three characters.") }
+        let grids = normalizedGrids(alert.grids)
+        guard (1...4).contains(grids.count) else { throw HamsatAlertError.field("Enter 1 to 4 Maidenhead grid squares.") }
+        for grid in grids where grid.count != 4 && grid.count != 6 {
+            throw HamsatAlertError.field("Grid \(grid) must be 4 or 6 characters.")
+        }
+        guard (-90.0...90.0).contains(alert.observerLatitude) else { throw HamsatAlertError.field("Observer latitude is out of range.") }
+        guard (-180.0...180.0).contains(alert.observerLongitude) else { throw HamsatAlertError.field("Observer longitude is out of range.") }
+        if let comment = alert.comment, comment.count > 50 { throw HamsatAlertError.field("Comment must be 50 characters or fewer.") }
+        if let mode = alert.mode, !HamsatAlertRequest.allowedModes.contains(mode) { throw HamsatAlertError.field("Mode must be SSB, CW, Data or FM.") }
+        if let dir = alert.mhzDirection, !HamsatAlertRequest.allowedDirections.contains(dir) { throw HamsatAlertError.field("Direction must be up or down.") }
+    }
+
+    /// Build the signed, JSON-bodied request. Pure and synchronous so it can be
+    /// asserted in tests without any network.
+    static func makeRequest(_ alert: HamsatAlertRequest, apiKey: String, baseURL: URL = baseURL) throws -> URLRequest {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw HamsatAlertError.missingAPIKey }
+
+        let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime]
+        var body: [String: Any] = [
+            "satellite_number": alert.satelliteNumber,
+            "observer_lat": alert.observerLatitude,
+            "observer_lon": alert.observerLongitude,
+            "max_at": iso.string(from: alert.maxAt),
+            "callsign": alert.callsign.trimmingCharacters(in: .whitespaces).uppercased(),
+            "grids": normalizedGrids(alert.grids)
+        ]
+        if let mode = alert.mode { body["mode"] = mode }
+        if let comment = alert.comment, !comment.isEmpty { body["comment"] = comment }
+        if let mhz = alert.mhz { body["mhz"] = mhz }
+        if let dir = alert.mhzDirection { body["mhz_direction"] = dir }
+        if let chat = alert.chatEnabled { body["chat_enabled"] = chat }
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/alerts"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 25
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(ActivationService.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    /// Turn a server response into a posted alert, or a typed error. Pure so the
+    /// 201 / 401 / 422 branches can each be unit-tested.
+    static func parseResponse(data: Data, response: HTTPURLResponse) throws -> HamsatPostedAlert {
+        func messages() -> [String] {
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let errors = object["errors"] as? [String] else { return [] }
+            return errors
+        }
+        switch response.statusCode {
+        case 200..<300:
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let alert = object["data"] as? [String: Any] else { throw HamsatAlertError.invalidResponse }
+            let id = alert["id"] as? String ?? ""
+            let url = alert["url"] as? String ?? ""
+            let callsign = alert["callsign"] as? String ?? ""
+            let satelliteName = (alert["satellite"] as? [String: Any])?["name"] as? String ?? ""
+            return HamsatPostedAlert(id: id, url: url, callsign: callsign, satelliteName: satelliteName)
+        case 401:
+            throw HamsatAlertError.unauthorized(messages())
+        case 422:
+            throw HamsatAlertError.validation(messages())
+        default:
+            let snippet = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw HamsatAlertError.server(response.statusCode, snippet)
+        }
+    }
+
+    /// Post an activation alert. The transport defaults to URLSession in the app
+    /// and is swapped for a mock hams.at server in tests.
+    @discardableResult
+    static func postAlert(_ alert: HamsatAlertRequest, apiKey: String,
+                          transport: HamsatTransport = URLSessionHamsatTransport(),
+                          baseURL: URL = baseURL) async throws -> HamsatPostedAlert {
+        try validate(alert)
+        let request = try makeRequest(alert, apiKey: apiKey, baseURL: baseURL)
+        let (data, http) = try await transport.send(request)
+        return try parseResponse(data: data, response: http)
+    }
+}
+
 struct ActivationService {
     static let feedURL = URL(string: "https://hams.at/feeds/upcoming_alerts")!
     // Some feeds/CDNs reject non-browser user agents; present a Safari-like one.
