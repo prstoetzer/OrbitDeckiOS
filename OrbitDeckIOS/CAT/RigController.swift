@@ -234,28 +234,6 @@ final class RigController: ObservableObject {
         guard connected, config.tuning.trackDoppler,
               let store, let sat = store.selectedSatellite, let tp = transponder(for: sat) else { return }
         let observer = store.preferences.observer
-        // Predictive lead: sample the geometry slightly ahead so the dial leads the pass.
-        let when = Date().addingTimeInterval(Double(config.tuning.leadMs) / 1000.0)
-        guard let look = try? OrbitPredictor.look(sat, observer: observer, at: when) else { return }
-
-        let offset = tp.isLinear ? Int64(config.tuning.passbandOffsetHz.rounded()) : 0
-        let downlink = tp.downlinkCenter + offset
-        let uplink: Int64 = {
-            let u = tp.uplinkCenter
-            guard tp.isLinear, u > 0 else { return u }
-            return tp.invert ? u - offset : u + offset
-        }()
-        let cal = store.downlinkCalibrationHz(for: sat.id, invert: tp.invert) + Double(config.tuning.calDownlinkHz)
-        let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink,
-                                                          rangeRateKmS: look.rangeRateKmS,
-                                                          downlinkCalibrationHz: cal,
-                                                          uplinkCalibrationHz: Double(config.tuning.calUplinkHz))
-        // Apply transverter LO: the rig tunes (real − LO).
-        let rxReal = corrected.rx, txReal = corrected.tx
-        downlinkDialHz = rxReal; uplinkDialHz = txReal
-        let rxRig = rxReal - config.tuning.xvtrDownlinkHz
-        let txRig = txReal - config.tuning.xvtrUplinkHz
-
         let isFM = tp.mode.uppercased().contains("FM")
         let deadband = Int64(isFM ? config.tuning.fmDeadbandHz : config.tuning.linearDeadbandHz)
         let dlMode = RigMode.parse(tp.mode)
@@ -270,9 +248,9 @@ final class RigController: ObservableObject {
             await applyModes(dlMode: dlMode, ulMode: ulMode, isFM: isFM)
         }
 
-        // One True Rule: read the followed leg and, if the operator moved the dial
-        // off what we last commanded, fold that into the passband offset so both
-        // legs re-map on the next cycle (downlink is the usual master).
+        // One True Rule: read the followed leg and fold an operator dial move into
+        // the passband offset. NO early return — the send loop below then re-commands
+        // both legs with the updated offset, so following never starves tuning.
         if config.tuning.followRadio {
             let followLeg = config.tuning.followLeg
             let last = (followLeg == .downlink) ? lastSentRx : lastSentTx
@@ -283,11 +261,30 @@ final class RigController: ObservableObject {
                 if abs(delta) >= thresh, abs(delta) < 1_000_000 {
                     let d = Double(delta)
                     config.tuning.passbandOffsetHz += (followLeg == .downlink) ? d : (tp.invert ? -d : d)
-                    lastSentRx = 0; lastSentTx = 0
-                    return   // re-command both legs next cycle with the new offset
                 }
             }
         }
+
+        // Predictive lead + Doppler using the current (possibly just-updated) offset.
+        let when = Date().addingTimeInterval(Double(config.tuning.leadMs) / 1000.0)
+        guard let look = try? OrbitPredictor.look(sat, observer: observer, at: when) else { return }
+        let offset = tp.isLinear ? Int64(config.tuning.passbandOffsetHz.rounded()) : 0
+        let downlink = tp.downlinkCenter + offset
+        let uplink: Int64 = {
+            let u = tp.uplinkCenter
+            guard tp.isLinear, u > 0 else { return u }
+            return tp.invert ? u - offset : u + offset
+        }()
+        let cal = store.downlinkCalibrationHz(for: sat.id, invert: tp.invert) + Double(config.tuning.calDownlinkHz)
+        let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink,
+                                                          rangeRateKmS: look.rangeRateKmS,
+                                                          downlinkCalibrationHz: cal,
+                                                          uplinkCalibrationHz: Double(config.tuning.calUplinkHz))
+        // Transverter LO: the rig tunes (real − LO).
+        let rxReal = corrected.rx, txReal = corrected.tx
+        downlinkDialHz = rxReal; uplinkDialHz = txReal
+        let rxRig = rxReal - config.tuning.xvtrDownlinkHz
+        let txRig = txReal - config.tuning.xvtrUplinkHz
 
         for link in links {
             switch link.leg {
