@@ -12,7 +12,7 @@ OrbitDeck is a companion to the OrbitDeck desktop app and CardSat by Paul Stoetz
 - **Work the birds** — four-dial DX Doppler and a single-station RX/TX Doppler playbook; per-satellite calibration (a combined oscillator correction, shared across DX Doppler, the playbook and every live Doppler readout) with a bulk Calibrations screen and CSV import/export; link budget with a per-elevation margin curve; SatNOGS transponder database (two-way transponders first); AO-7 mode timer; mutual-visibility windows.
 - **Plan & analyze** — orbital elements and derived quantities (J2 nodal/apsidal rates, beta angle, eclipse fraction, LTAN); equator crossings; Sun/Moon transits; illumination; orbital zones; conjunctions; workable-grid discovery; state-vector → GP element recovery (TEME or J2000) with export.
 - **Station & grids** — fixed site or follow-the-device location; enter your station by latitude/longitude or Maidenhead grid square; save secondary sites (including from your current GPS position); VUCC grid-line and corner recognition per ARRL rules; a live Grid Finder that guides you onto a grid line or corner with a compass arrow.
-- **Propagation & space weather** — MUF/HF path tool and a 6 m/HF operating outlook; live NOAA space weather (solar flux, sunspot number, planetary Kp and A index) with aurora likelihood.
+- **Propagation & space weather** — MUF/HF path tool and a 6 m/HF operating outlook; live space weather (solar flux and planetary Kp/A from NOAA SWPC, sunspot number from hamqsl.com/N0NBH) with aurora likelihood.
 - **OSCARLOCATOR** — on-screen simulator (polar and QTH-centered) with minute-tick ground tracks, printable PDF overlays, and a Reference Orbits schedule.
 - **Bench tools** — 60+ calculators for antennas, feedline, RF, link and orbits; a receipt-tape scientific calculator with RF/orbit functions and metric-prefix literals; a graphing calculator with trace, roots, integral, table and CSV export; grid ↔ lat/lon converter, Tiny BASIC and DXCC lookup.
 
@@ -39,7 +39,8 @@ OrbitDeck retrieves publicly available data and identifies itself politely:
 |---------|----------|
 | CelesTrak | General Perturbations (GP) orbital elements |
 | AMSAT | Daily bulletin GP feed and satellite status |
-| NOAA SWPC | Solar flux, sunspot number, planetary Kp and A index |
+| NOAA SWPC | Solar flux, planetary Kp and A index (and sunspot number as a fallback) |
+| hamqsl.com (N0NBH) | Observed sunspot number (the amateur-community reference) |
 | SatNOGS | Transponder database |
 | hams.at | Upcoming satellite activations |
 | QRZ (optional) | Callsign lookup, if you provide credentials |
