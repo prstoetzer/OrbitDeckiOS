@@ -29,6 +29,7 @@
                 <h4>Contents</h4>
                 <a href="#overview">Overview</a>
                 <a href="#interfaces">Connections &amp; adapters</a>
+                <a href="#adapters">Adapters that work</a>
                 <a href="#radios">Supported radios</a>
                 <a href="#stations">Station configurations</a>
                 <a href="#setup">Setting it up</a>
@@ -51,11 +52,22 @@
                 <h2 id="interfaces">Connections &amp; adapters</h2>
                 <p>OrbitDeck reaches a radio two ways:</p>
                 <ul>
-                    <li><strong>BLE serial adapter</strong> — a Bluetooth&nbsp;<em>Low Energy</em> UART adapter (Nordic UART Service or a generic write+notify pair) wired to the radio's CAT / CI-V / serial port. This is how CI-V, Yaesu and Kenwood radios are driven. The Kenwood TH-D74/D75 use the <strong>B.B.&nbsp;Link</strong> BLE adapter.</li>
+                    <li><strong>BLE serial adapter</strong> — a Bluetooth&nbsp;<em>Low Energy</em> UART adapter (Nordic UART Service or a generic write+notify pair) wired to the radio's CAT / CI-V / serial port. This is how CI-V, Yaesu and Kenwood radios are driven — for example the open-source <a href="#adapters">OrbitLinkS3</a> CI-V bridge, or the <strong>B.B.&nbsp;Link</strong> for the Kenwood TH-D74/D75.</li>
                     <li><strong>Icom network (Wi-Fi)</strong> — Icom's RS-BA1 network protocol over your local Wi-Fi, for network-capable Icoms (IC-9700, IC-705, IC-905). Enable Network Control on the radio with a User1 login.</li>
                 </ul>
                 <div class="note">
                     <strong>Bluetooth Classic (SPP) adapters are not supported on iOS.</strong> Apple restricts Bluetooth Classic to MFi-certified accessories, so the inexpensive HC-05/HC-06-style serial adapters (including most generic FT-817 Bluetooth adapters) cannot be opened by a normal app. Use a BLE adapter instead. Likewise, radios whose only computer interface is USB (for example the FT-991/991A and FTX-1) cannot be reached from an iPhone or iPad and are not listed.
+                </div>
+
+                <h2 id="adapters">Adapters that work</h2>
+                <p>Any BLE adapter that presents a generic UART service (Nordic UART, or a plain writable + notify characteristic pair) and matches your radio's serial electrical interface will work. Known-good options:</p>
+                <ul>
+                    <li><strong>OrbitLinkS3 on an M5Stack StickC (M5StickS3)</strong> — open-source firmware that turns an inexpensive M5StickC into a self-contained, rechargeable <strong>BLE&nbsp;&harr;&nbsp;CI-V</strong> bridge for Icom radios. Bench-validated driving an <strong>IC-821</strong> from OrbitDeck (Doppler tuning, mode/step, passband and the One True Rule). Firmware and wiring: <a href="https://github.com/prstoetzer/OrbitLinkS3" rel="noopener">github.com/prstoetzer/OrbitLinkS3</a>. This is the recommended path for wired CI-V Icoms.</li>
+                    <li><strong>Kenwood B.B.&nbsp;Link</strong> — the BLE adapter for the TH-D74/D75 handhelds (now discontinued, but the supported path for those radios).</li>
+                    <li><strong>Icom network (no adapter)</strong> — for the IC-705, IC-9700 and IC-905, use OrbitDeck's Wi-Fi (RS-BA1) mode instead of a serial adapter. The IC-705 is validated over Wi-Fi.</li>
+                </ul>
+                <div class="note">
+                    Building your own is straightforward: an ESP32/M5Stack (or an nRF52 / genuine HM-10) exposing a UART GATT, wired to the radio's CAT/CI-V port with the correct levels (CI-V is 3.5&nbsp;mm TTL single-wire; Yaesu/Kenwood use RS-232 or low-level serial). OrbitLinkS3 is a working reference for the CI-V case.
                 </div>
 
                 <h2 id="radios">Supported radios</h2>
