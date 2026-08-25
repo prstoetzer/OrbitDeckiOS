@@ -2,6 +2,17 @@
 
 Build 1. This release remains below 1.0. It follows 0.9.11 (1).
 
+## Build 2 fixes
+
+- **Icom network CAT now connects** (e.g. IC-705 over Wi-Fi): the connection
+  handshake retries "are you there" so it survives iOS silently dropping the
+  first packets while the Local Network permission prompt is shown, and the
+  ConnInfo packet layout now matches the reference implementation exactly.
+- The Home rig-control status line now **matches the actual connection type**
+  and **shows both radios** in a two-radio station (each connecting/connected
+  independently); the generic timeout message no longer says "BLE adapter".
+- The CAT control-port stepper no longer shows a thousands comma.
+
 ## Summary
 
 0.9.12 lets you **post your own activation alerts to hams.at** from inside

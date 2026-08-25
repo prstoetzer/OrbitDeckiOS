@@ -28,7 +28,7 @@ enum CATError: LocalizedError {
         case .bluetoothUnavailable: "Bluetooth is off or unavailable. Enable Bluetooth in Settings."
         case .deviceNotFound: "The BLE adapter could not be found. Make sure it is powered and in range."
         case .notConnected: "The radio link is not connected."
-        case .connectTimeout: "Timed out connecting to the BLE adapter."
+        case .connectTimeout: "Timed out connecting to the radio."
         case .characteristicsNotFound: "The BLE adapter does not expose a usable UART service."
         case .network(let m): m
         }

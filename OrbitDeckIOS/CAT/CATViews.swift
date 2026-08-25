@@ -103,8 +103,9 @@ struct RigControlSettingsView: View {
                     } else {
                         TextField("Radio IP / hostname", text: slotBind.host)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
-                        Stepper("Control port: \(rig.config.slots[index].port)",
-                                value: slotBind.port, in: 1...65535)
+                        Stepper(value: slotBind.port, in: 1...65535) {
+                            Text(verbatim: "Control port: \(rig.config.slots[index].port)")
+                        }
                         TextField("Network username", text: slotBind.username)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
                         NetworkPasswordField(index: index)
@@ -307,8 +308,6 @@ struct HomeRigControlCard: View {
         if rig.config.isConfigured {
             SectionCard("Rig control (CAT)") {
                 HStack {
-                    Circle().fill(rig.connected ? ODTheme.good : ODTheme.muted).frame(width: 10, height: 10)
-                    Text(rig.statusText).font(.caption).foregroundStyle(ODTheme.muted)
                     Spacer()
                     if rig.connecting {
                         ProgressView().controlSize(.small)
@@ -319,7 +318,29 @@ struct HomeRigControlCard: View {
                         .buttonStyle(.bordered)
                     }
                 }
-                if !rig.errorText.isEmpty {
+                // Per-radio status, matching the actual connection type; a two-radio
+                // station shows both. Falls back to a single idle line when idle.
+                if rig.statuses.isEmpty {
+                    HStack {
+                        Circle().fill(ODTheme.muted).frame(width: 10, height: 10)
+                        Text(rig.statusText).font(.caption).foregroundStyle(ODTheme.muted)
+                    }
+                } else {
+                    ForEach(rig.statuses) { s in
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle().fill(s.connected ? ODTheme.good : (s.error != nil ? ODTheme.warning : ODTheme.muted))
+                                .frame(width: 10, height: 10).padding(.top, 4)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(s.title).font(.caption.weight(.semibold))
+                                Text(s.stateText).font(.caption2)
+                                    .foregroundStyle(s.error != nil ? ODTheme.warning : ODTheme.muted)
+                            }
+                            Spacer()
+                            if s.connecting { ProgressView().controlSize(.small) }
+                        }
+                    }
+                }
+                if rig.statuses.isEmpty, !rig.errorText.isEmpty {
                     Text(rig.errorText).font(.caption).foregroundStyle(ODTheme.warning)
                 }
                 if rig.connected {

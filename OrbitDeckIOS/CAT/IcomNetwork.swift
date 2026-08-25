@@ -52,7 +52,7 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async {
                 self.connectCont = cont
-                self.queue.asyncAfter(deadline: .now() + 15) { [weak self] in
+                self.queue.asyncAfter(deadline: .now() + 25) { [weak self] in
                     guard let self, let c = self.connectCont else { return }
                     self.connectCont = nil; c.resume(throwing: CATError.connectTimeout)
                 }
@@ -135,8 +135,7 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
                 return
             }
             for i in 0..<6 { authID[i] = r[26 + i] }
-            sendAuth(magic: 0x02)
-            queue.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.sendAuth(magic: 0x05) }
+            sendAuth(magic: 0x02); sendAuth(magic: 0x05)
             return
         }
         // Capabilities (0xa8)
@@ -186,15 +185,20 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         for i in 0..<6 { p[26 + i] = authID[i] }
         for i in 0..<16 { p[32 + i] = a8replyID[i] }
         let name = Array(modelName.utf8)
-        for (i, b) in name.prefix(8).enumerated() { p[64 + i] = b }
+        for (i, b) in name.prefix(15).enumerated() { p[64 + i] = b }   // model name, plaintext
         let user = Self.passcode(username)
         for i in 0..<16 { p[96 + i] = user[i] }
+        // Exact ConnInfo trailer from CardSat (icomnet.cpp sendConnInfo): sample-rate
+        // words, then the serial (basePort+1) and audio (basePort+2) ports and a
+        // tx-buffer-length word — all big-endian at these specific offsets.
+        let sr: UInt16 = 16000
+        let serP = basePort + 1, audP = basePort + 2, txb: UInt16 = 100
         p[112] = 0x01; p[113] = 0x01; p[114] = 0x04; p[115] = 0x04
-        // Serial (basePort+1) and audio (basePort+2) ports, big-endian. Offsets are
-        // the least-certain part of the wire format — verify against real hardware.
-        let serialPort = basePort + 1, audioPort = basePort + 2
-        p[120] = UInt8(serialPort >> 8); p[121] = UInt8(serialPort & 0xFF)
-        p[122] = UInt8(audioPort >> 8); p[123] = UInt8(audioPort & 0xFF)
+        p[118] = UInt8(sr >> 8);   p[119] = UInt8(sr & 0xFF)
+        p[122] = UInt8(sr >> 8);   p[123] = UInt8(sr & 0xFF)
+        p[126] = UInt8(serP >> 8); p[127] = UInt8(serP & 0xFF)
+        p[130] = UInt8(audP >> 8); p[131] = UInt8(audP & 0xFF)
+        p[134] = UInt8(txb >> 8);  p[135] = UInt8(txb & 0xFF); p[136] = 0x01
         control.trackedSend(p)
     }
 
@@ -278,7 +282,7 @@ final class RSStream: @unchecked Sendable {
     private var lastTrackedSend = Date()
 
     private var keepalive: DispatchSourceTimer?
-    private var openReplyHandler: (() -> Void)?
+    private var bootstrapTimer: DispatchSourceTimer?
     private var bootstrapStage = 0
 
     var onReady: (() -> Void)?
@@ -309,11 +313,11 @@ final class RSStream: @unchecked Sendable {
 
     func close() {
         keepalive?.cancel(); keepalive = nil
+        bootstrapTimer?.cancel(); bootstrapTimer = nil
         // Best-effort disconnect (pkt5 ×2).
-        var p = header(len: 16, type: 0x0005, seq: 0)
+        let p = header(len: 16, type: 0x0005, seq: 0)
         rawSend(p); rawSend(p)
         conn?.cancel(); conn = nil
-        _ = p
     }
 
     private func receiveLoop() {
@@ -328,6 +332,22 @@ final class RSStream: @unchecked Sendable {
 
     func bootstrap() {
         bootstrapStage = 1
+        sendAreYouThere()
+        // Retry until "i am here" arrives. iOS silently drops the first datagrams
+        // while it shows the Local Network permission prompt, so a single send
+        // (as before) would time out; CardSat likewise retries the connect.
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 1.5, repeating: 1.5)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            if self.bootstrapStage == 1 { self.sendAreYouThere() }
+            else { self.bootstrapTimer?.cancel(); self.bootstrapTimer = nil }
+        }
+        t.resume()
+        bootstrapTimer = t
+    }
+
+    private func sendAreYouThere() {
         let p = header(len: 16, type: 0x0003, seq: 0)      // are-you-there ×2
         rawSend(p); rawSend(p)
     }
@@ -343,8 +363,9 @@ final class RSStream: @unchecked Sendable {
         if type == 0x0004, bootstrapStage == 1 {
             remoteSID = (UInt32(r[8]) << 24) | (UInt32(r[9]) << 16) | (UInt32(r[10]) << 8) | UInt32(r[11])
             bootstrapStage = 2
-            var p = header(len: 16, type: 0x0006, seq: 1)
-            rawSend(p); rawSend(p); _ = p
+            bootstrapTimer?.cancel(); bootstrapTimer = nil
+            let p = header(len: 16, type: 0x0006, seq: 1)   // are-you-ready ×2
+            rawSend(p); rawSend(p)
             return
         }
         // Ready (0x0006) → bootstrap done
@@ -366,10 +387,6 @@ final class RSStream: @unchecked Sendable {
             if r.count >= 21 + n { onCIV?(Array(r[21..<(21 + n)])) }
             return
         }
-        // Serial open reply (0x16) → fire handler
-        if r.count >= 22, r[0] == 0x16, let h = openReplyHandler {
-            openReplyHandler = nil; h(); return
-        }
         onPacket?(r)
     }
 
@@ -384,18 +401,15 @@ final class RSStream: @unchecked Sendable {
     // MARK: serial open + CI-V
 
     func openSerial(onOpen: @escaping () -> Void) {
-        openReplyHandler = onOpen
         civSeq &+= 1
         var p = header(len: 22, type: 0x0000, seq: nextTracked())
         p[16] = 0xC0; p[17] = 0x01; p[18] = 0x00
         p[19] = UInt8(civSeq >> 8); p[20] = UInt8(civSeq & 0xFF)
         p[21] = 0x05                                       // open
         store(p); rawSend(p)
-        // Some radios need a moment; the reply drives onOpen, but also succeed
-        // optimistically after a short delay if no explicit reply arrives.
-        queue.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            if let h = self?.openReplyHandler { self?.openReplyHandler = nil; h() }
-        }
+        // Like CardSat, the link is considered up once the serial-open is sent
+        // (the radio does not send a distinct open reply).
+        onOpen()
     }
 
     func sendCIV(_ frame: [UInt8]) {
@@ -411,7 +425,7 @@ final class RSStream: @unchecked Sendable {
 
     // MARK: tracked send / keepalive
 
-    func nextInnerSeq() -> UInt16 { innerSeq &+= 1; return innerSeq }
+    func nextInnerSeq() -> UInt16 { let s = innerSeq; innerSeq &+= 1; return s }
 
     func trackedSend(_ packet: [UInt8]) {
         var p = packet

@@ -29,6 +29,32 @@ final class RigController: ObservableObject {
     @Published var uplinkDialHz: Int64 = 0
     /// Which transponder of the selected satellite CAT tracks.
     @Published var transponderID: String?
+    /// Per-radio connection status for the Home card (one entry per configured
+    /// radio, so a two-radio station shows both).
+    @Published var statuses: [RigLinkStatus] = []
+
+    struct RigLinkStatus: Identifiable, Sendable {
+        let id: Int
+        let radioName: String
+        let transport: CATTransportKind
+        let leg: RigRole
+        var connecting: Bool
+        var connected: Bool
+        var error: String?
+
+        var stateText: String {
+            if connecting { return "Connecting…" }
+            if let error { return error }
+            if connected { return "Connected" }
+            return "Not connected"
+        }
+        /// e.g. "IC-705 · Icom network (Wi-Fi)" or "TH-D75 · BLE — downlink".
+        var title: String {
+            var s = "\(radioName) · \(transport.label)"
+            if leg != .both { s += " — \(leg == .uplink ? "uplink" : "downlink")" }
+            return s
+        }
+    }
 
     private weak var store: OrbitStore?
     private var links: [LiveLink] = []
@@ -85,17 +111,37 @@ final class RigController: ObservableObject {
                                   transport: makeTransport(config.slots[1], spec: spec1, index: 1), leg: .uplink))
         }
         links = built
+        // Seed per-radio status (both show "Connecting…" for a two-radio station).
+        statuses = built.enumerated().map { i, link in
+            RigLinkStatus(id: i, radioName: link.spec.name, transport: link.slot.transport,
+                          leg: link.leg, connecting: true, connected: false, error: nil)
+        }
 
         Task {
-            do {
-                for link in links { try await link.transport.connect() }
+            // Connect all radios concurrently so both progress at once. Capture the
+            // Sendable transport, not the (non-Sendable) LiveLink.
+            await withTaskGroup(of: (Int, String?).self) { group in
+                for (i, link) in links.enumerated() {
+                    let t = link.transport
+                    group.addTask {
+                        do { try await t.connect(); return (i, nil) }
+                        catch { return (i, error.localizedDescription) }
+                    }
+                }
+                for await (i, err) in group where i < statuses.count {
+                    statuses[i].connecting = false
+                    if let err { statuses[i].error = err } else { statuses[i].connected = true }
+                }
+            }
+
+            if statuses.allSatisfy({ $0.connected }) {
                 await engageOnce()
                 connected = true; connecting = false
                 statusText = "Connected."
                 startLoop()
-            } catch {
+            } else {
                 connecting = false; connected = false
-                errorText = error.localizedDescription
+                errorText = statuses.compactMap(\.error).first ?? "Connection failed."
                 statusText = "Connection failed."
                 await teardown()
             }
@@ -104,6 +150,7 @@ final class RigController: ObservableObject {
 
     func disconnect() {
         timer?.cancel(); timer = nil
+        statuses.removeAll()
         Task { await teardown(); connected = false; statusText = "Disconnected." }
     }
 
