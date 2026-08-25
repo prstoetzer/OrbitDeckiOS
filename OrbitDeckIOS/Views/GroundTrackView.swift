@@ -59,10 +59,14 @@ struct GroundTrackView: View {
                         }
 
                         if let current {
-                            MapCircle(
-                                center: current.coordinate,
-                                radius: OrbitPredictor.footprintRadius(altitudeKm: current.altitudeKm) * 1000
-                            )
+                            // Draw the footprint as an explicit geodesic boundary
+                            // polygon rather than MapCircle: MapKit renders a large
+                            // MapCircle as a constant-radius circle in the flat map
+                            // projection, which overshoots geographically (it drew
+                            // the AO-7 footprint covering stations well below the
+                            // horizon). This boundary is the true 0°-elevation circle.
+                            MapPolygon(coordinates: footprintBoundary(
+                                center: current.coordinate, altitudeKm: current.altitudeKm))
                             .foregroundStyle(ODTheme.accent.opacity(0.12))
                             .stroke(ODTheme.accent.opacity(0.7), lineWidth: 1.5)
 
@@ -152,6 +156,28 @@ struct GroundTrackView: View {
         var bearing = atan2(y, x) * 180 / .pi
         if bearing < 0 { bearing += 360 }
         return bearing
+    }
+
+    /// The true 0°-elevation footprint boundary: the ring of points at the
+    /// Earth-central angle acos(Re/(Re+h)) from the sub-point, walked by bearing.
+    /// Geodesically exact, unlike a projected MapCircle.
+    private func footprintBoundary(center: CLLocationCoordinate2D, altitudeKm: Double, samples: Int = 180) -> [CLLocationCoordinate2D] {
+        let re = 6371.0
+        let gamma = acos(max(-1, min(1, re / (re + max(0, altitudeKm)))))
+        let lat0 = center.latitude * .pi / 180, lon0 = center.longitude * .pi / 180
+        let sinLat0 = sin(lat0), cosLat0 = cos(lat0), sinG = sin(gamma), cosG = cos(gamma)
+        var coords: [CLLocationCoordinate2D] = []
+        coords.reserveCapacity(samples + 1)
+        for i in 0...samples {
+            let theta = Double(i) / Double(samples) * 2 * .pi
+            let lat = asin(sinLat0 * cosG + cosLat0 * sinG * cos(theta))
+            let lon = lon0 + atan2(sin(theta) * sinG * cosLat0, cosG - sinLat0 * sin(lat))
+            var lonDeg = lon * 180 / .pi
+            while lonDeg > 180 { lonDeg -= 360 }
+            while lonDeg < -180 { lonDeg += 360 }
+            coords.append(CLLocationCoordinate2D(latitude: lat * 180 / .pi, longitude: lonDeg))
+        }
+        return coords
     }
 
     private var trackSegments: [[CLLocationCoordinate2D]] {
