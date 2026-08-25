@@ -12,6 +12,12 @@
 		08EDC310E824B8CB90D8A3EE /* Views/HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A72471D03E195359C63155A /* Views/HomeView.swift */; };
 		0C4C1D39CC489508720D4198 /* Views/SkyRadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C400D0BA43629F11E97C6234 /* Views/SkyRadarView.swift */; };
 		24A2EC1FCE037F1FA7FD744D /* Services/LocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CC53E0E4F549F7E5A4BF44 /* Services/LocationProvider.swift */; };
+		2E1437DA303DCFC70001B31F /* CATCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D3303DCFC60001B31F /* CATCodec.swift */; };
+		2E1437DB303DCFC70001B31F /* CATTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D4303DCFC60001B31F /* CATTransport.swift */; };
+		2E1437DC303DCFC70001B31F /* IcomNetwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D6303DCFC60001B31F /* IcomNetwork.swift */; };
+		2E1437DD303DCFC70001B31F /* RigController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D7303DCFC60001B31F /* RigController.swift */; };
+		2E1437DE303DCFC70001B31F /* RigTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D8303DCFC60001B31F /* RigTypes.swift */; };
+		2E1437DF303DCFC70001B31F /* CATViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D5303DCFC60001B31F /* CATViews.swift */; };
 		2E75B92E303228E000338037 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */; };
 		2E946B4130308C7600960A39 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2E946B4030308C7600960A39 /* Assets.xcassets */; };
 		64DDAC67D6894708F4CDE021 /* Views/PassesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8FF6BE81A9340A8D932821F /* Views/PassesView.swift */; };
@@ -69,6 +75,12 @@
 		288DA342A9387B413727BBE4 /* Views/OrbitalAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/OrbitalAnalysisView.swift; sourceTree = "<group>"; };
 		2A72471D03E195359C63155A /* Views/HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/HomeView.swift; sourceTree = "<group>"; };
 		2E1437C8303DC53F0001B31F /* OrbitDeckIOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OrbitDeckIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2E1437D3303DCFC60001B31F /* CATCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CATCodec.swift; sourceTree = "<group>"; };
+		2E1437D4303DCFC60001B31F /* CATTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CATTransport.swift; sourceTree = "<group>"; };
+		2E1437D5303DCFC60001B31F /* CATViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CATViews.swift; sourceTree = "<group>"; };
+		2E1437D6303DCFC60001B31F /* IcomNetwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IcomNetwork.swift; sourceTree = "<group>"; };
+		2E1437D7303DCFC60001B31F /* RigController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RigController.swift; sourceTree = "<group>"; };
+		2E1437D8303DCFC60001B31F /* RigTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RigTypes.swift; sourceTree = "<group>"; };
 		2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		2E75B92F3037404300338037 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2E946B4030308C7600960A39 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -131,6 +143,19 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		2E1437D9303DCFC60001B31F /* CAT */ = {
+			isa = PBXGroup;
+			children = (
+				2E1437D3303DCFC60001B31F /* CATCodec.swift */,
+				2E1437D4303DCFC60001B31F /* CATTransport.swift */,
+				2E1437D5303DCFC60001B31F /* CATViews.swift */,
+				2E1437D6303DCFC60001B31F /* IcomNetwork.swift */,
+				2E1437D7303DCFC60001B31F /* RigController.swift */,
+				2E1437D8303DCFC60001B31F /* RigTypes.swift */,
+			);
+			path = CAT;
+			sourceTree = "<group>";
+		};
 		615B463D1028E4E24B674CF7 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -143,6 +168,7 @@
 		8309DD304D804F9D7F6302F5 /* OrbitDeckIOS */ = {
 			isa = PBXGroup;
 			children = (
+				2E1437D9303DCFC60001B31F /* CAT */,
 				2E75B92F3037404300338037 /* Info.plist */,
 				5D53E08BB4B7DAA62B0595EE /* AppTheme.swift */,
 				0377C74A272ACB831917414F /* Engine/OrbitPredictor.swift */,
@@ -334,6 +360,12 @@
 				A07A00010000000000000011 /* Services/AO7Service.swift in Sources */,
 				E09600010000000000000011 /* Services/XLSXExportService.swift in Sources */,
 				E05000010000000000000011 /* Services/ExportService.swift in Sources */,
+				2E1437DA303DCFC70001B31F /* CATCodec.swift in Sources */,
+				2E1437DB303DCFC70001B31F /* CATTransport.swift in Sources */,
+				2E1437DC303DCFC70001B31F /* IcomNetwork.swift in Sources */,
+				2E1437DD303DCFC70001B31F /* RigController.swift in Sources */,
+				2E1437DE303DCFC70001B31F /* RigTypes.swift in Sources */,
+				2E1437DF303DCFC70001B31F /* CATViews.swift in Sources */,
 				E05000020000000000000011 /* Services/PassAlarmService.swift in Sources */,
 				F08994C001BC8C8619BC6225 /* Views/Components.swift in Sources */,
 				A903F6A56AC625C98B5048C1 /* Views/GroundTrackView.swift in Sources */,

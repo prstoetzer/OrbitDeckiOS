@@ -27,6 +27,26 @@ introduces the app's first unit-test target, covering the new hams.at client.
   OrbitDeck posts only after you confirm; the alert is public and attributed to
   your callsign.
 
+## Rig control (CAT)
+
+- **Doppler-tune your transceiver from OrbitDeck** over a Bluetooth LE serial
+  adapter (Icom CI-V, Yaesu, Kenwood) or an Icom network (RS-BA1) connection over
+  Wi-Fi. Configure it in Settings → CAT / rig control; control it from a new
+  **Rig control** card on Home.
+- Supports a single full-duplex satellite radio, a single uplink- or
+  downlink-only radio, or two radios (one per leg). CI-V address and serial rate
+  are configurable; network CAT on the IC-9700 / IC-705 / IC-905.
+- Kenwood **TH-D74 / TH-D75** are supported via the B.B. Link BLE adapter; the
+  FT-847, FT-817/818/857/897, FT-100, TS-790/2000/711/811, the IC-9700/9100/910/
+  820/821/970 and many CI-V transceivers/receivers are included.
+- **One True Rule** read-back: follow the operator's dial (downlink or uplink) and
+  keep the other leg mapped through the transponder, both Doppler-corrected.
+- All CardSat tuning options: update rate, command delay, MAIN/SUB roles,
+  satellite mode, band assignment, FM/linear deadbands, predictive lead,
+  transverter LO offsets, oscillator calibration and uplink CTCSS.
+- Bluetooth Classic (SPP) adapters are not supported on iOS; only BLE adapters
+  work. USB-only radios (FT-991/991A, FTX-1) are excluded.
+
 ## Home AMSAT status reporting
 
 - A **Report AMSAT status** card on Home reports the selected satellite's status

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rig Control (CAT) — OrbitDeck for iOS</title>
+    <meta name="description" content="OrbitDeck for iOS can Doppler-tune your transceiver (CAT control) over a BLE serial adapter or an Icom network connection: supported radios, interfaces, tuning options, and the One True Rule read-back.">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav">
+            <a class="brand" href="index.html"><span class="dot"></span>OrbitDeck</a>
+            <a class="navlink" href="index.html">Home</a>
+            <a class="navlink" href="documentation.html">Documentation</a>
+            <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
+            <a class="navlink" href="catcontrol.html" aria-current="page">Rig Control</a>
+            <a class="navlink" href="source.html">Source</a>
+            <a class="navlink" href="privacy.html">Privacy</a>
+        </nav>
+    </header>
+
+    <section class="container">
+        <h1>Rig Control (CAT)</h1>
+        <p class="section-intro">OrbitDeck can Doppler-tune your transceiver directly — no PC or extra software — over a Bluetooth&nbsp;LE serial adapter or an Icom network (Wi-Fi) connection. You configure a radio in Settings and control it from the Home screen.</p>
+
+        <div class="doc">
+            <aside class="toc">
+                <h4>Contents</h4>
+                <a href="#overview">Overview</a>
+                <a href="#interfaces">Connections &amp; adapters</a>
+                <a href="#radios">Supported radios</a>
+                <a href="#stations">Station configurations</a>
+                <a href="#setup">Setting it up</a>
+                <a href="#control">Controlling on Home</a>
+                <a href="#tuning">Tuning options</a>
+                <a href="#onetrule">One True Rule</a>
+                <a href="#transverter">Transverters</a>
+                <a href="#privacy">Permissions &amp; privacy</a>
+                <a href="#troubleshooting">Troubleshooting</a>
+            </aside>
+
+            <div class="doc-body">
+                <h2 id="overview">Overview</h2>
+                <p>Rig control (CAT — Computer Aided Transceiver) keeps your radio on frequency through a satellite pass by continuously correcting for Doppler shift. OrbitDeck computes the corrected downlink and uplink from the live orbit, your station, the transponder, and your per-satellite calibration — exactly what the Home Doppler card shows — and sends it to the radio.</p>
+                <p>It supports a single full-duplex satellite radio (both uplink and downlink at once), a single half-duplex radio (uplink <em>or</em> downlink only), or two radios (one for each leg).</p>
+                <div class="note">
+                    Rig control works only while OrbitDeck is in the foreground — iOS suspends Bluetooth and networking for backgrounded apps. Turn on <strong>Keep screen awake on Home</strong> (Settings &rarr; Display) to leave it running during a pass.
+                </div>
+
+                <h2 id="interfaces">Connections &amp; adapters</h2>
+                <p>OrbitDeck reaches a radio two ways:</p>
+                <ul>
+                    <li><strong>BLE serial adapter</strong> — a Bluetooth&nbsp;<em>Low Energy</em> UART adapter (Nordic UART Service or a generic write+notify pair) wired to the radio's CAT / CI-V / serial port. This is how CI-V, Yaesu and Kenwood radios are driven. The Kenwood TH-D74/D75 use the <strong>B.B.&nbsp;Link</strong> BLE adapter.</li>
+                    <li><strong>Icom network (Wi-Fi)</strong> — Icom's RS-BA1 network protocol over your local Wi-Fi, for network-capable Icoms (IC-9700, IC-705, IC-905). Enable Network Control on the radio with a User1 login.</li>
+                </ul>
+                <div class="note">
+                    <strong>Bluetooth Classic (SPP) adapters are not supported on iOS.</strong> Apple restricts Bluetooth Classic to MFi-certified accessories, so the inexpensive HC-05/HC-06-style serial adapters (including most generic FT-817 Bluetooth adapters) cannot be opened by a normal app. Use a BLE adapter instead. Likewise, radios whose only computer interface is USB (for example the FT-991/991A and FTX-1) cannot be reached from an iPhone or iPad and are not listed.
+                </div>
+
+                <h2 id="radios">Supported radios</h2>
+                <p>OrbitDeck speaks three CAT dialect families and their variants, covering the radios in the CardSat reference set (minus USB-only models):</p>
+                <ul>
+                    <li><strong>Icom CI-V</strong> — full-duplex satellite rigs IC-820, IC-821, IC-910, IC-970, IC-9100, IC-9700; transceivers IC-705, IC-905, IC-7100, IC-7000, the IC-706 family, IC-275/471/271/475/575/1275; and CI-V receivers (IC-R10/R20/R30/R7000/R7100/R8500/R8600/R9000/R9500).</li>
+                    <li><strong>Yaesu</strong> — FT-847 (full-duplex), FT-817/818/857/897, FT-100, FT-736R, and the VR-5000 receiver.</li>
+                    <li><strong>Kenwood</strong> — TS-790 and TS-2000 (full-duplex), the TS-711/TS-811 all-mode base stations, and the TH-D74/D75 handhelds (all-mode receiver on band B, via the B.B.&nbsp;Link).</li>
+                </ul>
+                <p>For Icom radios you can override the <strong>CI-V address</strong>; for BLE connections you can set the <strong>serial rate</strong> to match your adapter. Network CAT is available on the IC-9700, IC-705 and IC-905.</p>
+
+                <h2 id="stations">Station configurations</h2>
+                <ul>
+                    <li><strong>One full-duplex radio</strong> (e.g. IC-9700, IC-9100, FT-847, TS-2000) — controls both legs. By default MAIN is the uplink and SUB the downlink; you can swap that.</li>
+                    <li><strong>One half-duplex radio</strong> — controls only the uplink <em>or</em> only the downlink, whichever you choose. Ideal for a single-band handheld like the TH-D75 on the downlink.</li>
+                    <li><strong>Two radios</strong> — radio&nbsp;1 drives the downlink, radio&nbsp;2 the uplink, each on its own BLE adapter (or network). This gives full duplex from two single-band rigs.</li>
+                </ul>
+
+                <h2 id="setup">Setting it up</h2>
+                <ol>
+                    <li>Open <strong>Settings &rarr; CAT / rig control</strong> and turn on <strong>Enable CAT control</strong>.</li>
+                    <li>Choose one radio or <strong>Two radios</strong>, then pick the radio model and, for a single radio, what it controls.</li>
+                    <li>Pick the <strong>connection</strong>: for BLE, tap <strong>BLE adapter</strong> and choose your adapter from the scan; for network, enter the radio's IP, port, username and password (stored in the iOS Keychain).</li>
+                    <li>Set the CI-V address and serial rate if needed, adjust the tuning options, and tap <strong>Done</strong>.</li>
+                </ol>
+
+                <h2 id="control">Controlling on Home</h2>
+                <p>With a radio configured, a <strong>Rig control (CAT)</strong> card appears on Home. Tap <strong>Connect</strong> to link up; the status dot turns green and the live downlink/uplink dials appear. CAT tracks the same satellite and transponder shown on the Home transponder card — including the passband slider — so what you see is what the radio is tuned to. Tap <strong>Disconnect</strong> when you're done.</p>
+
+                <h2 id="tuning">Tuning options</h2>
+                <ul>
+                    <li><strong>Track Doppler</strong> — enable/disable the tuning loop.</li>
+                    <li><strong>Update rate</strong> and <strong>command delay</strong> — how often frequencies are sent and the pause between CAT frames.</li>
+                    <li><strong>MAIN = uplink, SUB = downlink</strong> — the VFO role convention for a full-duplex rig.</li>
+                    <li><strong>Command satellite mode</strong> and <strong>assign MAIN/SUB bands</strong> — for Icoms that support it over CI-V (IC-9100/9700).</li>
+                    <li><strong>FM / linear deadbands</strong> — the smallest change that triggers a new command, so the radio isn't retuned needlessly.</li>
+                    <li><strong>Predictive lead</strong> — tune slightly ahead of the current geometry.</li>
+                    <li><strong>Oscillator calibration</strong> — additional global downlink/uplink trims (per-satellite calibration comes from the Calibrations screen).</li>
+                    <li><strong>Uplink CTCSS</strong> — a PL tone on the FM uplink.</li>
+                </ul>
+
+                <h2 id="onetrule">One True Rule (follow the dial)</h2>
+                <p>Turn on <strong>Follow radio tuning</strong> and choose whether OrbitDeck follows the <strong>downlink</strong> (the usual choice) or the <strong>uplink</strong>. OrbitDeck then reads the radio: when you spin the followed dial, it folds your change into the passband offset and keeps the <em>other</em> leg mapped correctly through the transponder — both Doppler-corrected. This is the classic full-duplex operating rule: you tune the receiver to a station and the transmitter follows automatically. It requires a radio that can report its frequency (the TH-D74/D75 can).</p>
+
+                <h2 id="transverter">Transverters</h2>
+                <p>If a leg runs through a transverter, enter its <strong>local-oscillator (LO) offset</strong> for the downlink and/or uplink. OrbitDeck tracks, displays and Doppler-corrects the real on-air frequency, and sends the radio the intermediate frequency (real &minus; LO) — so a rig that only tunes a lower band can still work the microwave satellite bands.</p>
+
+                <h2 id="privacy">Permissions &amp; privacy</h2>
+                <p>The first time you connect, iOS asks for <strong>Bluetooth</strong> and/or <strong>Local Network</strong> permission. These connections go directly from your device to your radio over Bluetooth&nbsp;LE or your local Wi-Fi; nothing is sent to the developer. Any radio network password is stored in the iOS Keychain. See the <a href="privacy.html">privacy policy</a>.</p>
+
+                <h2 id="troubleshooting">Troubleshooting</h2>
+                <ul>
+                    <li><strong>Adapter not found</strong> — make sure it's powered, in range, and not already connected to another app or the radio's own session; confirm Bluetooth permission was granted. Unnamed adapters still appear in the list (sorted by signal strength).</li>
+                    <li><strong>Mode changes but frequency doesn't</strong> (handhelds) — the TH-D74/D75 refuse off-grid writes; OrbitDeck rounds to the mode's step (20&nbsp;Hz fine, 5&nbsp;kHz FM). Make sure the radio is on band&nbsp;B.</li>
+                    <li><strong>Nothing moves</strong> — confirm the adapter's serial rate matches the radio, the CI-V address is correct, and <strong>Track Doppler</strong> is on.</li>
+                    <li><strong>Network radio won't connect</strong> — enable Network Control on the radio, set a User1 login, and check the IP and control port (serial is control&nbsp;+1).</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <footer class="site-footer">
+        <div class="container">
+            <span>&copy; 2026 Paul Stoetzer, N8HM</span>
+            <span>
+                <a href="index.html">Home</a> &nbsp;·&nbsp;
+                <a href="documentation.html">Documentation</a> &nbsp;·&nbsp;
+                <a href="https://www.amsat.org" rel="noopener">Support AMSAT</a>
+            </span>
+        </div>
+    </footer>
+</body>
+</html>

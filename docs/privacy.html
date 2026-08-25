@@ -14,6 +14,7 @@
             <a class="navlink" href="index.html">Home</a>
             <a class="navlink" href="documentation.html">Documentation</a>
             <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
+            <a class="navlink" href="catcontrol.html">Rig Control</a>
             <a class="navlink" href="source.html">Source</a>
             <a class="navlink" href="privacy.html" aria-current="page">Privacy</a>
         </nav>
@@ -54,6 +55,9 @@
                 <li><strong>hams.at</strong> — upcoming satellite activations, and posting your own activation alerts (with your API key)</li>
             </ul>
             <p>OrbitDeck identifies itself and rate-limits its requests in accordance with these services' usage policies.</p>
+
+            <h2>Bluetooth and local network (rig control)</h2>
+            <p>If you use OrbitDeck's CAT (rig control) feature to Doppler-tune your transceiver, OrbitDeck communicates directly with your radio: over <strong>Bluetooth Low Energy</strong> to a BLE serial adapter, or over your <strong>local Wi-Fi network</strong> to an Icom network-capable radio. These connections are made only when you configure and connect a radio. They stay on your device and local network and are never sent to the developer. iOS requests Bluetooth and local-network permission the first time you connect. Any radio network password you enter is stored in the iOS Keychain.</p>
 
             <h2>Notifications</h2>
             <p>If you schedule a pass alarm, OrbitDeck uses local notifications delivered on your device. Notification permission is requested only when you first schedule an alarm. No notification data leaves your device.</p>

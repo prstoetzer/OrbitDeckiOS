@@ -53,6 +53,9 @@ struct HomeView: View {
                 if let satellite = store.selectedSatellite {
                     liveTrack(satellite)
                     transponderCard(satellite)
+                    HomeRigControlCard(satellite: satellite,
+                                       selectedTransponderID: selectedTransponder(satellite)?.id,
+                                       passbandOffsetHz: passbandOffsetHz)
                     HomeAmsatQuickReport(satellite: satellite)
                 }
 

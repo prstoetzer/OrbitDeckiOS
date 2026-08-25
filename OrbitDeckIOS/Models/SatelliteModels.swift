@@ -215,6 +215,10 @@ struct StorePreferences: Codable, Sendable {
     // Display all times in the device's local zone instead of UTC. Optional
     // preserves decoding of older preference blobs; nil is treated as UTC.
     var useLocalTime: Bool?
+    // NOTE: CAT (rig control) configuration is intentionally NOT stored here.
+    // It lives in its own UserDefaults key (see RigController) so that evolving
+    // its schema can never break decoding of the main preferences blob and reset
+    // the user's settings.
 }
 
 /// How OrbitDeck resolves the observer station.

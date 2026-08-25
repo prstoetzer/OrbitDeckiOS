@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var spaceTrackLoaded = false
     @State private var hamsatApiKey = ""
     @State private var hamsatLoaded = false
+    @State private var showRigControl = false
 
     var body: some View {
         Form {
@@ -155,6 +156,16 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
+            Section("Rig control") {
+                Button {
+                    showRigControl = true
+                } label: {
+                    Label("CAT / rig control", systemImage: "antenna.radiowaves.left.and.right")
+                }
+                Text("Doppler-tune your transceiver from OrbitDeck over a BLE serial adapter or an Icom network (Wi-Fi) connection. Control is on the Home screen once a radio is configured.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
             Section("Space-Track") {
                 TextField("Space-Track identity / email", text: $spaceTrackIdentity)
                     .textContentType(.username)
@@ -261,6 +272,16 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(store.lastError == nil ? ODTheme.muted : ODTheme.warning)
                 }
+            }
+        }
+        .sheet(isPresented: $showRigControl) {
+            NavigationStack {
+                RigControlSettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showRigControl = false }
+                        }
+                    }
             }
         }
         .task {

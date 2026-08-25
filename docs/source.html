@@ -14,6 +14,7 @@
             <a class="navlink" href="index.html">Home</a>
             <a class="navlink" href="documentation.html">Documentation</a>
             <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
+            <a class="navlink" href="catcontrol.html">Rig Control</a>
             <a class="navlink" href="source.html" aria-current="page">Source</a>
             <a class="navlink" href="privacy.html">Privacy</a>
         </nav>
@@ -44,6 +45,7 @@
                 <a href="#basic">Tiny BASIC &amp; bench tools</a>
                 <a href="#dxcc">DXCC &amp; geocoding</a>
                 <a href="#services">Data services</a>
+                <a href="#catcontrol">Rig control (CAT)</a>
                 <a href="#location">Location</a>
                 <a href="#exports">Exports</a>
                 <a href="#notify">Notifications</a>
@@ -195,6 +197,20 @@
                     <li>Space weather is fetched by the small service inside <code>FeatureEngine</code> described above.</li>
                 </ul>
 
+                <h2 id="catcontrol">Rig control (CAT)</h2>
+                <p>The <code>CAT/</code> group implements direct transceiver control (Doppler tuning). It is split into a data model, protocol codecs, transports, an orchestrator and its UI:</p>
+                <ul>
+                    <li><strong><code>RigTypes.swift</code></strong> — the radio catalog (<code>RadioCatalog</code> of <code>RadioSpec</code>s ported from CardSat: CI-V addresses, bauds, full-duplex/RX-only/LAN flags, MAIN/SUB select bytes, sat-mode and tone sub-commands), the persisted <code>CATConfig</code>/<code>RigSlot</code>/<code>CATTuning</code>, the <code>RigMode</code>/<code>RigFamily</code>/<code>RigRole</code>/<code>CATTransportKind</code> enums, and the 39-tone CTCSS table. The config types use <strong>tolerant custom <code>Codable</code></strong> (decode-if-present with defaults) so adding fields in a later release never fails to decode a saved setup.</li>
+                    <li><strong><code>CATCodec.swift</code></strong> — pure, stateless frame builders/parsers for every dialect: Icom CI-V (little-endian BCD frequency, mode, MAIN/SUB select, sat mode, CTCSS, 07&nbsp;D2 band assignment, read/parse), Yaesu 5-byte binary (FT-847 SAT-RX/TX opcodes, FT-817 family, FT-100 little-endian, VR-5000, FT-736R), and Kenwood ASCII (TS base <code>FA/FB/MD</code>, and the TH-D74/D75 band-B <code>FQ</code>/<code>MD</code>/<code>FO</code> with fine-step handling). Being pure, they are unit-testable without hardware.</li>
+                    <li><strong><code>CATTransport.swift</code></strong> — the <code>CATTransport</code> abstraction and <code>BLESerialTransport</code>, a CoreBluetooth UART client (Nordic UART or a generic write+notify pair) that scans-and-matches the chosen peripheral by identifier and exposes async send / read. A <code>BLEScanner</code> backs the Settings device picker.</li>
+                    <li><strong><code>IcomNetwork.swift</code></strong> — <code>IcomNetworkTransport</code>, a byte-exact port of Icom's RS-BA1 UDP protocol (control + serial streams, the login/auth/ConnInfo handshake with the passcode cipher, ping/idle keepalive, and CI-V tunnelling), built on <code>Network.framework</code>.</li>
+                    <li><strong><code>RigController.swift</code></strong> — a <code>@MainActor ObservableObject</code> that owns the configured radios and the tuning loop. It computes the corrected dials exactly as Home does (<code>OrbitPredictor.dopplerFrequencies</code> + per-satellite calibration + passband + transverter LO), applies FM/linear deadbands and a predictive lead, and routes each leg to the right radio and VFO. It also implements the <strong>One True Rule</strong> read-back: it reads the followed leg and folds an operator dial move into the passband offset so the other leg stays transponder-correct. The loop is driven by a <code>DispatchSource</code> timer on the main queue with an overlap guard, and all command pacing/reads use GCD timing — <em>not</em> a MainActor <code>Task.sleep</code> loop, which is unreliable on device and would freeze the UI. Config persists to its own UserDefaults key, decoupled from <code>StorePreferences</code>.</li>
+                    <li><strong><code>CATViews.swift</code></strong> — the Rig Control configuration screen (presented as a sheet from Settings so it can't wedge the split-view navigation) and the Home <strong>Rig control</strong> card (connect/disconnect, live dials, Doppler toggle), which tracks the Home transponder and passband selection.</li>
+                </ul>
+                <div class="note">
+                    iOS supports only Bluetooth&nbsp;LE here — generic Bluetooth Classic (SPP) adapters require MFi and cannot be opened. The RS-BA1 network path is implemented to the reverse-engineered spec and verified against real hardware where possible.
+                </div>
+
                 <h2 id="location">Location</h2>
                 <p><code>LocationProvider</code> is a <code>@MainActor ObservableObject</code> wrapper over <code>CLLocationManager</code> that serves two independent consumers: the <strong>compass</strong> (which needs location fixes so Core Location can resolve <em>true</em> heading from magnetic) and the <strong>observer follow</strong>. <code>startHeading</code>/<code>stopHeading</code> and <code>startFollowing</code>/<code>stopFollowing</code> track those consumers separately so releasing one doesn't cut updates the other still needs; <code>setPrecise</code> switches between a battery-friendly ~100&nbsp;m accuracy with a 50&nbsp;m distance filter and full best-accuracy with no filter (used by the Grid Finder). It also offers opt-in reverse geocoding: with <code>geocodeEnabled</code> set, each fix is geocoded (throttled to ~1&nbsp;km) and published as <code>entity</code>, which the Grid Finder reads. The shared "current location" follow that drives observer-relative screens is coalesced to ~1&nbsp;Hz in <code>RootView</code> so live screens don't re-render faster than once per second.</p>
 
@@ -238,6 +254,7 @@
                     <tr><td><code>FeatureViews.swift</code></td><td>Workable, Mutual windows, Sun/Moon, Sky Map, Celestial, EME, Transits, Orbital Zones, Astronomy, Orbital History, Space Wx, MUF, Propagation, New Launches, Sites, Activations/QRZ, AMSAT Status, Sky at a Glance, Planning, Conjunctions, and the DX Doppler sheet.</td></tr>
                     <tr><td><code>AdvancedFeatureViews.swift</code></td><td>OSCARLOCATOR Sim (live/QTH projections, A/B reference-orbit comparison), Reference Orbits, and Exports.</td></tr>
                     <tr><td><code>DeepParityViews.swift</code>, <code>UtilityFeatureViews.swift</code></td><td>Tools, the scientific and graphing calculators, Tiny BASIC, Learn, References, and the 3D globe.</td></tr>
+                    <tr><td><code>CAT/CATViews.swift</code></td><td>Rig Control (CAT) configuration sheet and the Home rig-control card. Engine, transports and codecs live alongside it in the <code>CAT/</code> group (see <a href="#catcontrol">Rig control</a>).</td></tr>
                 </table>
 
                 <h2 id="build">Building &amp; contributing</h2>

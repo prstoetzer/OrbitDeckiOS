@@ -621,6 +621,9 @@ enum OrbitSecret: String {
     // Personal hams.at API key (from the hams.at Settings page), used only to
     // post activation alerts you explicitly confirm. Kept in the Keychain.
     case hamsatApiKey = "hamsat-api-key"
+    // Icom network (RS-BA1) CAT passwords, per configured radio slot.
+    case rigPassword0 = "rig-password-0"
+    case rigPassword1 = "rig-password-1"
 }
 
 enum OrbitSecretStore {
