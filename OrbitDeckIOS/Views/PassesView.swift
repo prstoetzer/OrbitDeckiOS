@@ -20,7 +20,10 @@ struct ScheduleView: View {
     @State private var entriesByDay: [Date: [ScheduleEntry]] = [:]
     @State private var upcomingTargetID: String?
     @State private var loading = false
-    @State private var didInitialScroll = false
+    // Bumped after each satellite's passes are merged in, so the view re-pins the
+    // "now" row while the schedule streams in (content inserted above would
+    // otherwise drift the snapped position downward).
+    @State private var streamTick = 0
 
     private let daysBack = 7
     // A fixed window loaded in one pass. Incrementally growing this via row
@@ -83,32 +86,34 @@ struct ScheduleView: View {
                     }
                 }
             }
-            // Open at the next pass (the earlier part of today and the past week
-            // sit above, scrollable; the rest extends below). Pin only after the
-            // first load finishes, so the freshly-populated rows have laid out.
-            .onChange(of: loading) { _, isLoading in
-                guard !isLoading, !didInitialScroll, !favorites.isEmpty else { return }
-                didInitialScroll = true
-                pinToNextPass(proxy)
-            }
+            // Keep the current time pinned to the top: re-pin as each satellite's
+            // passes stream in (they can insert rows above and drift the position),
+            // settle once the stream finishes, and always snap on appear.
+            .onChange(of: streamTick) { _, _ in pin(proxy) }
+            .onChange(of: loading) { _, isLoading in if !isLoading { pin(proxy, settle: true) } }
+            .onAppear { pin(proxy, settle: true) }
         }
         .task(id: scheduleKey) { await load() }
     }
 
     /// The first pass at or after the current instant — the row the schedule opens
-    /// to. Falls back to the start of today if every loaded pass is in the past.
+    /// to. Falls back to the start of today if no upcoming pass has loaded yet.
     private var firstUpcomingTarget: AnyHashable {
         if let upcomingTargetID { return AnyHashable(upcomingTargetID) }
         return AnyHashable(utcCalendar.startOfDay(for: Date()))
     }
 
-    /// Scroll the next upcoming pass to the top. Deferred (and repeated once) so the
-    /// pin lands after the just-populated rows have laid out.
-    private func pinToNextPass(_ proxy: ScrollViewProxy) {
+    /// Snap the next upcoming pass to the top. `settle` repeats the scroll after a
+    /// beat so it lands once freshly-inserted rows have laid out.
+    private func pin(_ proxy: ScrollViewProxy, settle: Bool = false) {
+        guard !favorites.isEmpty else { return }
         let target = firstUpcomingTarget
-        for delay in [0.05, 0.35] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                withAnimation(.none) { proxy.scrollTo(target, anchor: .top) }
+        withAnimation(.none) { proxy.scrollTo(target, anchor: .top) }
+        if settle {
+            for delay in [0.1, 0.35] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    withAnimation(.none) { proxy.scrollTo(target, anchor: .top) }
+                }
             }
         }
     }
@@ -160,35 +165,42 @@ struct ScheduleView: View {
 
     @MainActor private func load() async {
         let sats = favorites
-        guard !sats.isEmpty else { entriesByDay = [:]; upcomingTargetID = nil; return }
+        guard !sats.isEmpty else { entriesByDay = [:]; upcomingTargetID = nil; loading = false; return }
         loading = true
+        entriesByDay = [:]
+        upcomingTargetID = nil
         let observer = store.preferences.observer
         let minEl = store.preferences.minElevation
         let cal = utcCalendar
         let start = cal.startOfDay(for: Date()).addingTimeInterval(-Double(daysBack) * 86400)
         let span = Double(daysBack + daysForward + 1)
+        let cap = max(500, Int(span) * 20)
         let now = Date()
-        let (grouped, targetID) = await Task.detached(priority: .userInitiated) { () -> ([Date: [ScheduleEntry]], String?) in
-            var all: [ScheduleEntry] = []
-            // ~20 passes/day is generous headroom so the whole window fills.
-            let cap = max(500, Int(span) * 20)
-            for sat in sats {
-                let passes = (try? OrbitPredictor.predictPasses(sat, observer: observer, from: start,
-                                                                minElevation: minEl, maxCount: cap,
-                                                                horizonDays: span)) ?? []
-                for p in passes {
-                    all.append(ScheduleEntry(id: "\(sat.id)-\(p.aos.timeIntervalSince1970)",
-                                             satelliteID: sat.id, name: sat.name, pass: p))
-                }
+        var best: (aos: Date, id: String)?
+        // Stream one satellite at a time and publish after each so days fill in
+        // progressively instead of the whole window landing at once.
+        for sat in sats {
+            if Task.isCancelled { return }
+            let passes = await Task.detached(priority: .userInitiated) { () -> [PredictedPass] in
+                (try? OrbitPredictor.predictPasses(sat, observer: observer, from: start,
+                                                   minElevation: minEl, maxCount: cap, horizonDays: span)) ?? []
+            }.value
+            if Task.isCancelled { return }
+            guard !passes.isEmpty else { continue }
+            var map = entriesByDay
+            var touched = Set<Date>()
+            for p in passes {
+                let id = "\(sat.id)-\(p.aos.timeIntervalSince1970)"
+                map[cal.startOfDay(for: p.aos), default: []].append(
+                    ScheduleEntry(id: id, satelliteID: sat.id, name: sat.name, pass: p))
+                touched.insert(cal.startOfDay(for: p.aos))
+                if p.aos >= now, best == nil || p.aos < best!.aos { best = (p.aos, id) }
             }
-            var byDay: [Date: [ScheduleEntry]] = [:]
-            for e in all { byDay[cal.startOfDay(for: e.pass.aos), default: []].append(e) }
-            for key in byDay.keys { byDay[key]?.sort { $0.pass.aos < $1.pass.aos } }
-            let target = all.filter { $0.pass.aos >= now }.min { $0.pass.aos < $1.pass.aos }?.id
-            return (byDay, target)
-        }.value
-        entriesByDay = grouped
-        upcomingTargetID = targetID
+            for key in touched { map[key]?.sort { $0.pass.aos < $1.pass.aos } }
+            entriesByDay = map
+            upcomingTargetID = best?.id
+            streamTick &+= 1
+        }
         loading = false
     }
 
