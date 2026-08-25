@@ -1783,7 +1783,11 @@ enum FeatureEngine {
         let sinDec = sin(dec)
         let cosDec = cos(dec)
         let elevation = asin(sinLat * sinDec + cosLat * cosDec * cos(hourAngle))
-        let azimuth = atan2(-cosDec * sin(hourAngle),
+        // Azimuth from North, measured eastward. The sin(hourAngle) term must be
+        // positive here; a leading minus mirrored azimuth about the meridian, which
+        // put planets on the wrong side of the sky (e.g. Venus shown east of you
+        // when it was west). Matches the ENU convention used by vectorToAltAz.
+        let azimuth = atan2(cosDec * sin(hourAngle),
                             cosDec * cos(hourAngle) * sinLat - sinDec * cosLat) + .pi
         return (normalizedDegrees(azimuth / degreesToRadians), elevation / degreesToRadians)
     }
