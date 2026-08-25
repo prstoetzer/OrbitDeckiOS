@@ -171,7 +171,7 @@ struct RigControlSettingsView: View {
                     Text("Downlink").tag(RigRole.downlink)
                     Text("Uplink").tag(RigRole.uplink)
                 }
-                Text("Reads the radio so tuning you do on the dial is honoured: the followed leg leads and the other leg stays mapped through the transponder, both Doppler-corrected. Requires a radio that reports its frequency.")
+                Text("Reads the radio so tuning you do on the dial is honored: the followed leg leads and the other leg stays mapped through the transponder, both Doppler-corrected. Requires a radio that reports its frequency (most supported radios do).")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Stepper("Update rate: \(rig.config.tuning.updateMs) ms", value: bindTuning(\.updateMs), in: 100...2000, step: 50)
