@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Source &amp; architecture — OrbitDeck for iOS</title>
+    <meta name="description" content="How OrbitDeck for iOS is built: project layout, the SwiftUI + SatelliteKit architecture, the orbit-propagation engine, live-update pattern, state and persistence, location/DXCC, radio and Doppler, data services, and how to build it. Links to the GitHub repository.">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav">
+            <a class="brand" href="index.html"><span class="dot"></span>OrbitDeck</a>
+            <a class="navlink" href="index.html">Home</a>
+            <a class="navlink" href="documentation.html">Documentation</a>
+            <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
+            <a class="navlink" href="source.html" aria-current="page">Source</a>
+            <a class="navlink" href="privacy.html">Privacy</a>
+        </nav>
+    </header>
+
+    <section class="container">
+        <h1>Source &amp; architecture</h1>
+        <p class="section-intro">OrbitDeck for iOS is open source. This page is a comprehensive tour of the codebase — how it is organized, how the pieces fit together, and where to look for any given feature — so you can read, build, or contribute to it.</p>
+        <div class="badges" style="margin-bottom: 8px;">
+            <a class="btn primary" href="https://github.com/prstoetzer/OrbitDeckiOS" rel="noopener">View the repository on GitHub</a>
+            <a class="btn" href="documentation.html">User documentation</a>
+        </div>
+
+        <div class="doc">
+            <aside class="toc">
+                <h4>Contents</h4>
+                <a href="#overview">Overview</a>
+                <a href="#stack">Tech stack</a>
+                <a href="#layout">Project layout</a>
+                <a href="#state">State &amp; persistence</a>
+                <a href="#engine">Propagation engine</a>
+                <a href="#live">Live-update pattern</a>
+                <a href="#navigation">Navigation &amp; UI</a>
+                <a href="#time">Time formatting</a>
+                <a href="#location">Location &amp; DXCC</a>
+                <a href="#radio">Radio &amp; Doppler</a>
+                <a href="#data">Data services</a>
+                <a href="#tools">Tools &amp; Tiny BASIC</a>
+                <a href="#exports">Exports</a>
+                <a href="#build">Building it</a>
+                <a href="#license">License &amp; credits</a>
+            </aside>
+
+            <div class="doc-body">
+                <h2 id="overview">Overview</h2>
+                <p>OrbitDeck is a native SwiftUI application for iPhone and iPad (iOS/iPadOS 17+). It computes satellite passes, Doppler, look angles, footprints, link budgets, and a large set of orbital-analysis and operating tools entirely on-device from live orbital elements. It is a companion to the OrbitDeck desktop app and CardSat by Paul Stoetzer, N8HM.</p>
+                <p>The design is deliberately simple: one observable <strong>store</strong> holds all state, a set of pure <strong>engine</strong> types do the math, thin <strong>service</strong> types fetch data, and SwiftUI <strong>views</strong> render it. There is no external app framework, no database, and one third-party library.</p>
+
+                <h2 id="stack">Tech stack</h2>
+                <table>
+                    <tr><th>Concern</th><th>Choice</th></tr>
+                    <tr><td>UI</td><td>SwiftUI (declarative), MapKit for maps, Swift Charts / Canvas for plots</td></tr>
+                    <tr><td>Concurrency</td><td>Swift <code>async</code>/<code>await</code> and <code>Task</code>. Combine is intentionally avoided in favor of async APIs.</td></tr>
+                    <tr><td>Propagation</td><td><a href="https://github.com/gavineadie/SatelliteKit" rel="noopener">SatelliteKit</a> — SGP4/SDP4, vendored in the repo as a local Swift package</td></tr>
+                    <tr><td>Persistence</td><td><code>UserDefaults</code> (preferences as JSON) and the Keychain (secrets); on-disk caches for the GP catalog and SatNOGS database</td></tr>
+                    <tr><td>Minimum OS</td><td>iOS/iPadOS 17</td></tr>
+                    <tr><td>Dependencies</td><td>One: SatelliteKit. No analytics, ads, or tracking SDKs.</td></tr>
+                </table>
+
+                <h2 id="layout">Project layout</h2>
+                <p>The app target lives under <code>OrbitDeckIOS/</code>, split by role:</p>
+                <table>
+                    <tr><th>Folder</th><th>What's in it</th></tr>
+                    <tr><td><code>Models/</code></td><td><code>OrbitStore</code> (the single source of truth) and <code>SatelliteModels</code> (the value types: <code>ObserverSite</code>, <code>SatelliteRecord</code>, <code>TransponderRecord</code>, <code>PredictedPass</code>, <code>RadioCalibration</code>, <code>StorePreferences</code>, …).</td></tr>
+                    <tr><td><code>Engine/</code></td><td>Pure computation. <code>OrbitPredictor</code> (look angles, passes, ground track, Doppler, footprint, decay), <code>FeatureEngine</code> (Sun/Moon, grids/VUCC, space weather, MUF, footprints), <code>ParityPlanningEngine</code> (workable grids/DXCC, mutual windows), <code>AstronomyParityEngine</code>, <code>DeepParityEngine</code> (bench-tool math + the Tiny BASIC interpreter), <code>DXCCData</code>/<code>DXCCNumericData</code>, <code>WorldMapData</code>, <code>UtilityEngine</code>.</td></tr>
+                    <tr><td><code>Services/</code></td><td>Networking and system integration. <code>GPService</code> (orbital elements), <code>TransponderService</code> (SatNOGS), <code>AO7Service</code>, <code>LocationProvider</code> (Core Location + reverse geocoding), <code>ExportService</code>/<code>XLSXExportService</code> (PDF/CSV/ICS/XLSX), <code>PassAlarmService</code> (local notifications).</td></tr>
+                    <tr><td><code>Views/</code></td><td>All SwiftUI screens. <code>RootView</code> (navigation), <code>HomeView</code>, <code>TrackView</code>, <code>GroundTrackView</code>, <code>PassesView</code> (Next Passes + Daily Schedule), <code>RadioView</code>, plus large multi-screen files (<code>FeatureViews</code>, <code>AdvancedFeatureViews</code>, <code>DeepParityViews</code>, <code>UtilityFeatureViews</code>), and shared UI (<code>Components</code>, <code>AppTheme</code>).</td></tr>
+                    <tr><td><code>Assets.xcassets</code>, <code>Info.plist</code>, <code>PrivacyInfo.xcprivacy</code></td><td>App icon and launch-screen color, generated Info.plist keys, and the privacy manifest.</td></tr>
+                </table>
+                <p>Roughly: Views ~12k lines, Engine ~9k, Services ~3.5k, Models ~1k. <code>SatelliteKit/</code> is the vendored propagation library and its tests.</p>
+
+                <h2 id="state">State &amp; persistence</h2>
+                <p><code>OrbitStore</code> is an <code>@MainActor final class OrbitStore: ObservableObject</code>, created once in <code>OrbitDeckIOSApp</code> and injected as an <code>@EnvironmentObject</code>. It owns the satellite catalog, the selected satellite, favorites, space-weather snapshot, the reverse-geocoded location entity, and the operator's <code>preferences</code>.</p>
+                <p><code>StorePreferences</code> is a single <code>Codable</code> struct (observer site, favorites, minimum elevation, GP source, per-satellite calibrations, location mode, the local-time flag, and more). Its <code>didSet</code> encodes to JSON in <code>UserDefaults</code>, so every setting is persisted the moment it changes. New fields are added as <code>Optional</code> so older stored blobs keep decoding without a migration step. Secrets (QRZ/Space-Track passwords) go to the Keychain, never the preferences JSON.</p>
+                <div class="note">Because there is exactly one store and it is <code>@Published</code>, any screen reflects a preference change immediately, and the app has no separate "reload" plumbing — SwiftUI re-renders what changed.</div>
+
+                <h2 id="engine">Propagation engine</h2>
+                <p>All orbital math funnels through <code>OrbitPredictor</code>, which wraps SatelliteKit. A <code>SatelliteRecord</code> carries a SatelliteKit <code>Elements</code> value; <code>OrbitPredictor</code> builds a <code>Satellite(elements:)</code> and asks it for position/velocity at a Julian date, then derives everything else:</p>
+                <ul>
+                    <li><code>look(_:observer:at:)</code> — topocentric azimuth/elevation/range/range-rate, the sub-point (lat/lon/alt), sunlit flag, beta angle and footprint radius.</li>
+                    <li><code>predictPasses(…)</code> — a coarse rise/set scan with bisection refinement, handling in-progress and continuously-visible (high-orbit) passes.</li>
+                    <li><code>groundTrack(…)</code>, <code>subpoint(…)</code>, <code>skyPath(…)</code>, <code>currentOrNextPass(…)</code>.</li>
+                    <li><code>dopplerFrequencies(…)</code> — downlink/uplink dial frequencies with an optional calibration term.</li>
+                    <li><code>footprintRadius(altitudeKm:)</code> — the 0&deg;-elevation surface radius, <code>Re·acos(Re/(Re+h))</code>.</li>
+                    <li><code>OrbitDecayModel</code> — a King-Hele decay integrator used by the orbit-lifetime and debris-compliance tools.</li>
+                </ul>
+                <p>The engine types are pure and <code>Sendable</code>, so heavy work runs off the main actor via <code>Task.detached</code> and only the result is published back.</p>
+
+                <h2 id="live">Live-update pattern</h2>
+                <p>Live screens (Home, Track, Sky Radar, Ground Track, OSCARLOCATOR, Workable) refresh once per second. The reliable driver is SwiftUI's <code>TimelineView(.periodic(from:by:))</code>: each tick recomputes the current look/sub-point from the true tick time and redraws, while the surrounding view (and any Map camera or gestures) is preserved. Ad-hoc <code>Task.sleep</code> loops proved unreliable on device, so the codebase standardizes on TimelineView, anchored to a stable date so frequent re-renders don't re-fire it faster than 1&nbsp;Hz.</p>
+                <p>Two related techniques recur:</p>
+                <ul>
+                    <li><strong>Render-time memoization.</strong> Expensive but occasional work (e.g. the Home sky-track arc) is computed inside the TimelineView and cached in a reference held in <code>@State</code>, recomputed only when its inputs change — so it always draws without depending on a cancellable <code>.task</code>.</li>
+                    <li><strong>Stable location keys.</strong> While following the device, the raw GPS jitters. Reload keys round the position to ~100&nbsp;m (<code>coarseKey</code>) or ~1&nbsp;km (<code>stableKey</code>) so a moving fix doesn't thrash multi-second recomputes (pass lists, the Daily Schedule).</li>
+                </ul>
+
+                <h2 id="navigation">Navigation &amp; UI</h2>
+                <p><code>RootView</code> is a <code>NavigationSplitView</code>: a sidebar of grouped destinations and a detail pane. Every screen is a case of the <code>OrbitDestination</code> enum (title, SF Symbol, whether it uses the selected satellite), and <code>destinationView(_:)</code> maps a case to its view. The detail pane caps reading-oriented screens to a comfortable width on iPad and lets full-bleed visual screens (globe, radar, ground track) use the whole pane; it also resolves a transient nil selection to the last real screen so it never flashes Home.</p>
+                <p>Shared UI lives in <code>AppTheme</code> (the <code>ODTheme</code> color palette, <code>MetricRow</code>, <code>SectionCard</code>) and <code>Components</code> (<code>ODFormat</code>, the selected-satellite header, the pass-alarm button, polar plots, and small helpers such as a center-snapping slider binding).</p>
+
+                <h2 id="time">Time formatting</h2>
+                <p><code>ODFormat</code> centralizes date/number formatting. A single <code>useLocalTime</code> flag (mirrored from the store) switches every displayed time between UTC and the device's local zone; the local formatters honor the device's 12/24-hour preference, while UTC stays 24-hour by convention. <code>primaryClock</code>/<code>secondaryClock</code> render a time in the chosen zone and the other zone, which the pass lists use to show both at a glance. Tiny BASIC deliberately ignores the flag and always uses UTC.</p>
+
+                <h2 id="location">Location &amp; DXCC</h2>
+                <p><code>LocationProvider</code> wraps Core Location for one-shot fixes, continuous follow, and true-north heading (used by the compass screens). It can optionally reverse-geocode each fix and publish the result, which the Grid Finder uses.</p>
+                <p><code>GeoEntityLookup</code> turns a coordinate into a DXCC entity and administrative subdivisions using Apple's reverse geocoder plus an ISO-3166 &rarr; DXCC map. It normalizes the subdivisions to the names LoTW/TQSL expect: US state codes, county-designator stripping, Connecticut planning-region &rarr; legacy county (from a full town&rarr;county table), and the independent cities of Virginia, Maryland, Missouri and Nevada — disambiguated from same-named counties by a "county designator first" rule. <code>DXCCData</code> and <code>DXCCNumericData</code> provide the entity roster and ARRL numeric codes used across the app and by Tiny BASIC.</p>
+
+                <h2 id="radio">Radio &amp; Doppler</h2>
+                <p>Transponders come from SatNOGS (<code>TransponderService</code>) as <code>TransponderRecord</code>s that classify themselves as linear/FM/beacon and expose passband centers. <code>OrbitPredictor.dopplerFrequencies</code> computes the RX/TX dial frequencies from range-rate.</p>
+                <p>Calibration follows the CardSat model: a single combined oscillator correction, measurable from either leg, folded only into the operator's receive dial (uplink sign-flipped on an inverting transponder) and never onto the DX station's dials. It is stored per satellite in preferences and applied on every Doppler screen. The Home Live Doppler card adds a passband tuning slider (linear transponders) and an expander with per-satellite calibration sliders that share this same value with the bulk Calibrations editor.</p>
+
+                <h2 id="data">Data services</h2>
+                <table>
+                    <tr><th>Service</th><th>Role</th></tr>
+                    <tr><td><code>GPService</code></td><td>Fetches General Perturbations elements from AMSAT's daily bulletin, a CelesTrak group, or a custom OMM-JSON URL. Honors CelesTrak's rate policy (at most one request per dataset every two hours, with back-off) and caches to disk for offline launches.</td></tr>
+                    <tr><td><code>TransponderService</code></td><td>Downloads and caches the SatNOGS transmitter database, keyed by NORAD id, so every catalog satellite shows its transponders offline.</td></tr>
+                    <tr><td><code>FeatureEngine</code> (space weather)</td><td>Pulls solar flux / sunspot / Kp / A-index (hamqsl with a NOAA SWPC fallback) for the Space Wx and propagation screens.</td></tr>
+                    <tr><td><code>PassAlarmService</code></td><td>Schedules local <code>UNUserNotifications</code> for upcoming passes; a router opens Home when one is tapped.</td></tr>
+                    <tr><td><code>AO7Service</code></td><td>AO-7 A/B illumination-mode timing.</td></tr>
+                </table>
+                <p>All fetches identify the app with a browser-style User-Agent where feeds require it, and network access is only ever for these public data sources.</p>
+
+                <h2 id="tools">Tools &amp; Tiny BASIC</h2>
+                <p>The Tools screen is data-driven: <code>BenchTools.allTools</code> is a list of tool definitions (id, category, fields), and a single compute function dispatches on the id. Adding a calculator means adding a definition and a case. <code>DeepParityEngine</code> also contains the full <a href="tinybasic.html">Tiny BASIC</a> interpreter — a self-contained tokenizer/parser/VM with live satellite host variables, a 240&times;135 graphics surface, and a sandboxed file store — documented in detail on its own page.</p>
+
+                <h2 id="exports">Exports</h2>
+                <p><code>ExportService</code> renders PDFs with Core Graphics (pass schedules, site comparisons, and the printable OSCARLOCATOR overlays — base map, range circle, and path arc) and writes CSV and ICS (calendar) files; <code>XLSXExportService</code> writes spreadsheets. Everything is shared through the standard iOS share sheet.</p>
+
+                <h2 id="build">Building it</h2>
+                <ul>
+                    <li>Clone the repository and open <code>OrbitDeckIOS.xcodeproj</code> in a recent Xcode (iOS 17 SDK or later).</li>
+                    <li><strong>SatelliteKit</strong> is vendored in the repo as a local Swift package, so there is nothing to fetch — just build and run on a device or simulator.</li>
+                    <li>The <code>Info.plist</code> is generated from build settings; the launch screen uses a <code>LaunchBackground</code> color in the asset catalog.</li>
+                    <li>Location, compass, and reverse-geocoding features need a real device (the Simulator has no magnetometer and limited geocoding).</li>
+                </ul>
+
+                <h2 id="license">License &amp; credits</h2>
+                <p>OrbitDeck iOS is MIT-licensed. SatelliteKit is a separate open-source project with its own license (see <code>SatelliteKit/LICENSE</code> in the repo). OrbitDeck is written and maintained by Paul Stoetzer, N8HM. If you find it useful, please consider supporting <a href="https://www.amsat.org" rel="noopener">AMSAT</a>, which builds and launches the satellites it tracks.</p>
+                <div class="badges" style="margin-top: 14px;">
+                    <a class="btn primary" href="https://github.com/prstoetzer/OrbitDeckiOS" rel="noopener">Open the repository</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="site-footer">
+        <div class="container">
+            <span>&copy; 2026 Paul Stoetzer, N8HM</span>
+            <span>
+                <a href="index.html">Home</a> &nbsp;&middot;&nbsp;
+                <a href="documentation.html">Documentation</a> &nbsp;&middot;&nbsp;
+                <a href="https://github.com/prstoetzer/OrbitDeckiOS" rel="noopener">GitHub</a> &nbsp;&middot;&nbsp;
+                <a href="https://www.amsat.org" rel="noopener">Support AMSAT</a>
+            </span>
+        </div>
+    </footer>
+</body>
+</html>

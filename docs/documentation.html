@@ -14,6 +14,7 @@
             <a class="navlink" href="index.html">Home</a>
             <a class="navlink" href="documentation.html" aria-current="page">Documentation</a>
             <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
+            <a class="navlink" href="source.html">Source</a>
             <a class="navlink" href="privacy.html">Privacy</a>
         </nav>
     </header>
@@ -28,6 +29,8 @@
                 <a href="#getting-started">Getting started</a>
                 <a href="#station">Setting your station</a>
                 <a href="#grids">Grid squares &amp; VUCC</a>
+                <a href="#location">Location, DXCC &amp; subdivisions</a>
+                <a href="#times">Times &amp; display</a>
                 <a href="#catalog">Satellites &amp; catalog</a>
                 <a href="#passes">Passes &amp; tracking</a>
                 <a href="#radio">Radio &amp; Doppler</a>
@@ -73,6 +76,22 @@
                     Per the VUCC rules, "on the line" means physically on the boundary as established by a GPS receiver whose error figure does not exceed 20 feet. OrbitDeck treats a position within that tolerance (about 6 meters) of a grid boundary as on it. Grid-square-entered locations sit at the grid center and will not trigger a boundary claim.
                 </div>
 
+                <h2 id="location">Location, DXCC &amp; subdivisions</h2>
+                <p>While you are following your current location, OrbitDeck reverse-geocodes your position and adds three rows to the Home <strong>Station</strong> card and to <strong>Settings &rarr; Observer station</strong>, and to the <strong>Grid Finder</strong> readout:</p>
+                <ul>
+                    <li><strong>DXCC</strong> — your current DXCC entity (prefix and name).</li>
+                    <li><strong>Primary subdivision</strong> — your state/province.</li>
+                    <li><strong>Secondary subdivision</strong> — your county/district.</li>
+                </ul>
+                <p>The subdivisions use the names LoTW/TQSL expect. Notably, Connecticut resolves to the correct legacy county (from your town) rather than the newer census "planning region," and the independent cities of Virginia, Maryland (Baltimore), Missouri (St. Louis) and Nevada (Carson City) are named correctly and kept distinct from same-named counties.</p>
+                <div class="note">
+                    These rows appear only in current-location mode and require a network connection for the first lookup. They reflect your device's reverse geocode; near a border the underlying map data determines which side you are on.
+                </div>
+
+                <h2 id="times">Times &amp; display</h2>
+                <p>By default all times are shown in UTC, the amateur-satellite convention. Under <strong>Settings &rarr; Display</strong> you can enable <strong>Show times in local time</strong> to display every time in your device's zone instead, following your 12/24-hour preference. Pass lists (Daily Schedule, Next Passes, Home upcoming favorites) then show the other zone as an unobtrusive secondary clock. Tiny BASIC always uses UTC.</p>
+                <p>The same Display section has a <strong>Keep screen awake on Home</strong> option, which prevents auto-lock while the Home screen is showing so you can leave it up as a live display during a pass.</p>
+
                 <h2 id="catalog">Satellites &amp; catalog</h2>
                 <p>The <strong>Satellites</strong> screen lists the catalog and lets you mark favorites, which drive the Home dashboard and all-sky radar. The <strong>New Launches</strong> screen surfaces recently launched objects.</p>
                 <p>Choose your element source in <strong>Settings &rarr; GP element source</strong>:</p>
@@ -87,9 +106,9 @@
                 <ul>
                     <li><strong>Home</strong> — live look angles, the next qualifying pass, and your favorites' upcoming passes.</li>
                     <li><strong>Track</strong> — a real-time polar sky plot; toggle north-up or compass-up. AOS/LOS and the live position are shown as small direction-of-travel arrows.</li>
-                    <li><strong>Daily Schedule</strong> — every favorite's passes grouped by day and ordered by AOS. It opens on today, scrolls back seven days, and extends into the future as you scroll.</li>
+                    <li><strong>Daily Schedule</strong> — every favorite's passes grouped by day and ordered by AOS. It opens snapped to the next pass, keeps a week of past days above, and fills in as it computes.</li>
                     <li><strong>Next Passes</strong> and <strong>Pass Detail</strong> — pass lists with polar plots and elevation-vs-time profiles.</li>
-                    <li><strong>Ground Track</strong> — the sub-point path and a live footprint/heading marker on a map.</li>
+                    <li><strong>Ground Track</strong> — the sub-point path with a live heading marker and a geographically accurate footprint (the true 0&deg;-elevation boundary) on a map.</li>
                     <li><strong>Pass Progression</strong> — passes across the coming days.</li>
                     <li><strong>Sky Radar</strong> — every favorite plotted on one all-sky chart.</li>
                     <li><strong>Grid Finder</strong> (Live) — a high-precision GPS tool that guides you onto a Maidenhead grid line or corner with a compass arrow and a proximity map, for VUCC roving.</li>
@@ -105,6 +124,7 @@
                     <li>Transponder listings from the SatNOGS database, with two-way transponders shown first.</li>
                 </ul>
                 <p>The <strong>Calibrations</strong> screen (Catalog &amp; Configuration) is a bulk editor: an editable downlink/uplink table for every satellite, favorites first and searchable, with CSV import and export for entering many calibrations at once.</p>
+                <p>The <strong>Home</strong> Live Doppler card also carries a <strong>passband tuning slider</strong> for linear transponders (centered by default; an inverting transponder walks the uplink the other way), and an unobtrusive <em>Calibrate this satellite</em> expander with downlink/uplink calibration sliders shared with the Calibrations editor.</p>
 
                 <h2 id="analysis">Orbital analysis</h2>
                 <p>The Analysis group includes orbital elements and derived quantities (J2 nodal and apsidal rates, beta angle, eclipse fraction, local time of the ascending node), equator crossings, Sun/Moon transits, illumination, orbital zones, conjunctions, AO-7 mode timing, mutual-visibility windows, and workable-grid discovery.</p>
