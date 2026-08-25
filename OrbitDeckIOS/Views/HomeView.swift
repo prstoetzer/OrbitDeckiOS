@@ -55,7 +55,7 @@ struct HomeView: View {
                     transponderCard(satellite)
                     HomeRigControlCard(satellite: satellite,
                                        selectedTransponderID: selectedTransponder(satellite)?.id,
-                                       passbandOffsetHz: passbandOffsetHz)
+                                       passbandOffsetHz: $passbandOffsetHz)
                     HomeAmsatQuickReport(satellite: satellite)
                 }
 

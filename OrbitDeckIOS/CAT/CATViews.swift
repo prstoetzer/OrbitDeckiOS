@@ -298,9 +298,10 @@ struct HomeRigControlCard: View {
     /// The transponder currently selected on the Home transponder card — CAT
     /// always tracks the same one, so there is no separate picker here.
     let selectedTransponderID: String?
-    /// The passband offset from the Home Doppler card, so CAT tunes to the same
-    /// spot the operator scrubbed to.
-    let passbandOffsetHz: Double
+    /// The passband offset from the Home Doppler card. A two-way binding so a dial
+    /// move followed by the One True Rule (which updates the offset in the rig)
+    /// also moves the Home slider and the live Doppler readouts.
+    @Binding var passbandOffsetHz: Double
 
     var body: some View {
         if rig.config.isConfigured {
@@ -339,7 +340,14 @@ struct HomeRigControlCard: View {
                 rig.config.tuning.passbandOffsetHz = passbandOffsetHz
             }
             .onChange(of: selectedTransponderID) { _, v in rig.transponderID = v }
-            .onChange(of: passbandOffsetHz) { _, v in rig.config.tuning.passbandOffsetHz = v }
+            // Home slider → rig (operator scrubs the passband).
+            .onChange(of: passbandOffsetHz) { _, v in
+                if abs(rig.config.tuning.passbandOffsetHz - v) > 0.5 { rig.config.tuning.passbandOffsetHz = v }
+            }
+            // rig → Home slider + Doppler card (One True Rule moved the offset).
+            .onChange(of: rig.config.tuning.passbandOffsetHz) { _, v in
+                if abs(passbandOffsetHz - v) > 0.5 { passbandOffsetHz = v }
+            }
         }
     }
 }
