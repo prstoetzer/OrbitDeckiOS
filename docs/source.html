@@ -194,6 +194,9 @@
                     <li><strong><code>GPService</code></strong> — fetches General Perturbations elements from the AMSAT daily bulletin, a CelesTrak group, or a custom URL, and parses OMM (JSON/XML/CSV) and classic TLE (with checksum validation) into <code>SatelliteRecord</code>s via SatelliteKit <code>Elements</code>. It exposes the CelesTrak group list, a browser-style User-Agent, per-NORAD "extra" fetches for New Launches, and <code>makeManualRecord</code> for hand-entered elements.</li>
                     <li><strong><code>TransponderService</code></strong> — downloads the SatNOGS transmitter database (per-NORAD or the whole set), keeps rows with a real downlink, and builds <code>TransponderRecord</code>s keyed by NORAD id.</li>
                     <li><strong><code>AO7Service</code></strong> — fits AMSAT status reports of AO-7's A/B mode to a periodic switch model (coarse then fine search, positive/negative report weighting), returning the current mode, the next switch time, and a confidence figure — windowed by the satellite's last eclipse exit so stale phase is ignored.</li>
+                    <li><strong><code>ActivationService</code> &amp; <code>HamsatAlertService</code></strong> — read the hams.at upcoming-activations Atom feed (with a browser User-Agent) and compute mutual-visibility windows for "Can I work it?"; and post an activation via hams.at's authenticated <code>POST /api/alerts</code>. The posting client is split into pure request-building, validation and response-parsing behind a <code>HamsatTransport</code> seam, so it is unit-tested against a local mock of the hams.at server; the API key is stored in the Keychain.</li>
+                    <li><strong><code>QRZService</code></strong> — QRZ XML callsign lookup using the operator's subscription credentials (password from the Keychain).</li>
+                    <li><strong><code>AmsatStatusService</code></strong> — the AMSAT status API (summary, catalog and reports), catalog-name matching to the GP catalog, and attributed status submission, used by the AMSAT Status screen and the Home one-tap report card.</li>
                     <li>Space weather is fetched by the small service inside <code>FeatureEngine</code> described above.</li>
                 </ul>
 
@@ -247,7 +250,7 @@
                 <p>Where to find each screen:</p>
                 <table>
                     <tr><th>File</th><th>Screens</th></tr>
-                    <tr><td><code>HomeView.swift</code></td><td>Home (live track with the memoized arc, transponder/Doppler cards with passband + calibration sliders, fleet dashboard) and the Grid Finder (VUCC compass dials + proximity map).</td></tr>
+                    <tr><td><code>HomeView.swift</code></td><td>Home (live track with the memoized arc, transponder/Doppler cards with passband + calibration sliders, the CAT rig-control card, one-tap AMSAT status reporting, fleet dashboard) and the Grid Finder (VUCC compass dials + proximity map).</td></tr>
                     <tr><td><code>GroundTrackView.swift</code></td><td>Ground Track — a MapKit map with the sub-point path, a live heading marker, and the geodesic footprint drawn as an explicit 0&deg;-elevation boundary polygon (walked by bearing from the sub-point) instead of a projected <code>MapCircle</code>.</td></tr>
                     <tr><td><code>PassesView.swift</code></td><td>Next Passes (quality-scored list, pass-detail sheet) and the Daily Schedule (per-satellite streaming, day grouping, pin-to-now).</td></tr>
                     <tr><td><code>TrackView</code>, <code>SkyRadarView</code>, <code>OrbitalAnalysisView</code>, <code>IlluminationView</code>, <code>PassDetailView</code>, <code>TenDayView</code>, <code>RadioView</code>, <code>SatellitesView</code>, <code>SettingsView</code></td><td>The standalone screens (real-time polar plot; all-sky radar; orbital analysis; illumination; pass detail; pass progression; the Radio/Doppler screen; the catalog; and Settings/About/Calibrations).</td></tr>
@@ -264,6 +267,7 @@
                     <li>The <code>Info.plist</code> is generated from build settings; the launch screen uses a <code>LaunchBackground</code> color in the asset catalog.</li>
                     <li>Location, compass, and reverse-geocoding features need a real device (the Simulator has no magnetometer and limited geocoding).</li>
                     <li>The project uses explicit file references (not a synchronized group), so a brand-new source file must be added to the target in Xcode; small additions often fit naturally into an existing engine file.</li>
+                    <li>The <code>OrbitDeckIOSTests</code> target (Swift Testing) covers the hams.at posting client end-to-end against a local mock of the <code>POST /api/alerts</code> server — request building, field validation and 201/401/422 response parsing — since hams.at has no sandbox API.</li>
                 </ul>
 
                 <h2 id="license">License &amp; credits</h2>
