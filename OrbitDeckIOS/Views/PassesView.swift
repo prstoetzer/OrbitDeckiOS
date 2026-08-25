@@ -24,6 +24,11 @@ struct ScheduleView: View {
     // "now" row while the schedule streams in (content inserted above would
     // otherwise drift the snapped position downward).
     @State private var streamTick = 0
+    // Supersession token: a load stops publishing only when a newer load starts.
+    // We deliberately do NOT gate on Task.isCancelled — a spurious `.task` cancel
+    // during the split-view push transition would otherwise abort the load and,
+    // since scheduleKey is unchanged, it would never restart (stuck on "Computing…").
+    @State private var loadGeneration = 0
 
     private let daysBack = 7
     // A fixed window loaded in one pass. Incrementally growing this via row
@@ -164,10 +169,12 @@ struct ScheduleView: View {
     }
 
     @MainActor private func load() async {
+        loadGeneration &+= 1
+        let gen = loadGeneration
         let sats = favorites
         guard !sats.isEmpty else { entriesByDay = [:]; upcomingTargetID = nil; loading = false; return }
         loading = true
-        entriesByDay = [:]
+        var acc: [Date: [ScheduleEntry]] = [:]
         upcomingTargetID = nil
         let observer = store.preferences.observer
         let minEl = store.preferences.minElevation
@@ -180,24 +187,24 @@ struct ScheduleView: View {
         // Stream one satellite at a time and publish after each so days fill in
         // progressively instead of the whole window landing at once.
         for sat in sats {
-            if Task.isCancelled { return }
             let passes = await Task.detached(priority: .userInitiated) { () -> [PredictedPass] in
                 (try? OrbitPredictor.predictPasses(sat, observer: observer, from: start,
                                                    minElevation: minEl, maxCount: cap, horizonDays: span)) ?? []
             }.value
-            if Task.isCancelled { return }
+            // Stop only if a newer load has superseded this one.
+            if gen != loadGeneration { return }
             guard !passes.isEmpty else { continue }
-            var map = entriesByDay
             var touched = Set<Date>()
             for p in passes {
                 let id = "\(sat.id)-\(p.aos.timeIntervalSince1970)"
-                map[cal.startOfDay(for: p.aos), default: []].append(
+                let key = cal.startOfDay(for: p.aos)
+                acc[key, default: []].append(
                     ScheduleEntry(id: id, satelliteID: sat.id, name: sat.name, pass: p))
-                touched.insert(cal.startOfDay(for: p.aos))
+                touched.insert(key)
                 if p.aos >= now, best == nil || p.aos < best!.aos { best = (p.aos, id) }
             }
-            for key in touched { map[key]?.sort { $0.pass.aos < $1.pass.aos } }
-            entriesByDay = map
+            for key in touched { acc[key]?.sort { $0.pass.aos < $1.pass.aos } }
+            entriesByDay = acc
             upcomingTargetID = best?.id
             streamTick &+= 1
         }
