@@ -87,8 +87,13 @@ final class QSOStore: ObservableObject {
     func uploadLoTW() async -> String {
         let pending = qsos.filter { !$0.uploaded.contains(.lotw) }
         guard !pending.isEmpty else { return "Nothing to upload — all QSOs already sent to LoTW." }
+        let station = config.station
         do {
-            let tq8 = try LoTW.buildTQ8(pending, station: config.station)
+            // Sign + gzip off the main actor — RSA signing every QSO on the main
+            // thread would freeze the UI for a large log.
+            let tq8 = try await Task.detached(priority: .userInitiated) {
+                try LoTW.buildTQ8(pending, station: station)
+            }.value
             let result = try await LoTW.upload(tq8)
             if result.ok {
                 mark(pending, flag: .lotw)

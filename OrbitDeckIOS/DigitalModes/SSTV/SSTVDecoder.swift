@@ -71,7 +71,14 @@ final class SSTVDecoder: ObservableObject {
     }
 
     private nonisolated func decodeOnce(final: Bool) {
-        lock.lock(); let buf = samples; let r = rate; lock.unlock()
+        lock.lock()
+        // Cap the working buffer so a long listening session can't grow unbounded
+        // (which would OOM — each decode also allocates ~3× this in Doubles). ~150 s
+        // covers all but the very slowest modes.
+        let cap = Int(rate * 150)
+        if samples.count > cap { samples.removeFirst(samples.count - cap) }
+        let buf = samples; let r = rate
+        lock.unlock()
         guard buf.count > Int(r * 0.5) else { return }
         let freq = Self.demodulate(buf, rate: r)
         guard let vis = Self.findVIS(freq, rate: r), let mode = SSTVModes.mode(forVIS: vis.code) else { return }
