@@ -33,8 +33,8 @@ enum FeatureVisibility: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .auto: "Auto (with audio device)"
-        case .always: "Always show"
+        case .auto: "Auto"
+        case .always: "Always"
         case .off: "Hidden"
         }
     }
