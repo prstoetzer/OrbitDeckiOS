@@ -624,6 +624,9 @@ enum OrbitSecret: String {
     // Icom network (RS-BA1) CAT passwords, per configured radio slot.
     case rigPassword0 = "rig-password-0"
     case rigPassword1 = "rig-password-1"
+    // Logging upload secrets.
+    case lotwP12Passphrase = "lotw-p12-passphrase"   // passphrase for the imported LoTW .p12
+    case cloudlogKey = "cloudlog-api-key"            // Cloudlog/Wavelog read-write API key
 }
 
 enum OrbitSecretStore {

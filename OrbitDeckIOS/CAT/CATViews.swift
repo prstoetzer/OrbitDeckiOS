@@ -56,35 +56,73 @@ struct RigControlSettingsView: View {
 
     @ViewBuilder private func slotSection(index: Int, title: String) -> some View {
         let slotBind = bindSlot(index)
-        let spec = rig.config.slots[index].spec
+        let slot = rig.config.slots[index]
+        let catalogSpec = RadioCatalog.spec(id: slot.radioID)   // real radio; nil for rigctld/none
         Section(title) {
             Toggle("Use this radio", isOn: slotBind.enabled)
-            if rig.config.slots[index].enabled {
-                Picker("Radio", selection: slotBind.radioID) {
-                    Text("Select…").tag("")
-                    ForEach(radioChoices(index)) { r in
-                        Text(r.name).tag(r.id)
-                    }
-                }
-                .pickerStyle(.menu)
-
-                if !rig.config.twoRadios, let spec, spec.fullDuplex {
-                    Picker("Controls", selection: slotBind.role) {
-                        ForEach(RigRole.allCases) { Text($0.label).tag($0) }
-                    }
-                } else if !rig.config.twoRadios {
-                    Picker("Controls", selection: slotBind.role) {
-                        Text(RigRole.downlink.label).tag(RigRole.downlink)
-                        Text(RigRole.uplink.label).tag(RigRole.uplink)
-                    }
+            if slot.enabled {
+                // Connection type first, so a network-only rigctld link doesn't need
+                // a catalog radio. Icom network only appears for LAN-capable radios.
+                Picker("Connection", selection: transportBinding(index)) {
+                    Text(CATTransportKind.ble.label).tag(CATTransportKind.ble)
+                    if catalogSpec?.hasLan == true { Text(CATTransportKind.network.label).tag(CATTransportKind.network) }
+                    Text(CATTransportKind.rigctld.label).tag(CATTransportKind.rigctld)
                 }
 
-                if let spec {
-                    Picker("Connection", selection: slotBind.transport) {
-                        Text(CATTransportKind.ble.label).tag(CATTransportKind.ble)
-                        if spec.hasLan { Text(CATTransportKind.network.label).tag(CATTransportKind.network) }
-                    }
+                if slot.transport == .rigctld {
+                    rigctldSlotFields(index: index)
+                } else {
+                    radioSlotFields(index: index, spec: catalogSpec)
+                }
+            }
+        }
+    }
 
+    /// Fields for a Hamlib rigctld link: role (single-radio), host and port, and
+    /// the split-VFO toggle for full duplex. No catalog radio — Hamlib abstracts it.
+    @ViewBuilder private func rigctldSlotFields(index: Int) -> some View {
+        let slotBind = bindSlot(index)
+        let slot = rig.config.slots[index]
+        if !rig.config.twoRadios {
+            Picker("Controls", selection: slotBind.role) {
+                ForEach(RigRole.allCases) { Text($0.label).tag($0) }
+            }
+        }
+        TextField("rigctld host / IP", text: slotBind.host)
+            .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
+        Stepper(value: slotBind.port, in: 1...65535) {
+            Text(verbatim: "Port: \(slot.port)")
+        }
+        if rig.config.twoRadios == false, slot.role == .both {
+            Toggle("Use split VFO for full duplex", isOn: bindTuning(\.rigctldUseSplit))
+        }
+        Text("Drives any radio through a Hamlib rigctld server on your network (default port 4532). Run rigctld on a computer connected to the radio; full duplex uses the radio's split/TX VFO.")
+            .font(.caption).foregroundStyle(ODTheme.muted)
+    }
+
+    /// Fields for a catalog radio over BLE or Icom network (the original flow).
+    @ViewBuilder private func radioSlotFields(index: Int, spec: RadioSpec?) -> some View {
+        let slotBind = bindSlot(index)
+        Picker("Radio", selection: slotBind.radioID) {
+            Text("Select…").tag("")
+            ForEach(radioChoices(index)) { r in
+                Text(r.name).tag(r.id)
+            }
+        }
+        .pickerStyle(.menu)
+
+        if !rig.config.twoRadios, let spec, spec.fullDuplex {
+            Picker("Controls", selection: slotBind.role) {
+                ForEach(RigRole.allCases) { Text($0.label).tag($0) }
+            }
+        } else if !rig.config.twoRadios {
+            Picker("Controls", selection: slotBind.role) {
+                Text(RigRole.downlink.label).tag(RigRole.downlink)
+                Text(RigRole.uplink.label).tag(RigRole.uplink)
+            }
+        }
+
+        if let spec {
                     if rig.config.slots[index].transport == .ble {
                         Button {
                             blePickerSlot = SlotRef(id: index)
@@ -133,8 +171,17 @@ struct RigControlSettingsView: View {
                             .font(.caption).foregroundStyle(ODTheme.muted)
                     }
                 }
-            }
-        }
+    }
+
+    /// Transport picker binding that fills in the right default port when switching
+    /// to a network protocol (Icom 50001, rigctld 4532), so the Stepper starts sane.
+    private func transportBinding(_ i: Int) -> Binding<CATTransportKind> {
+        Binding(get: { rig.config.slots[i].transport }, set: { newT in
+            let old = rig.config.slots[i].transport
+            rig.config.slots[i].transport = newT
+            if newT == .rigctld, rig.config.slots[i].port == 50001 { rig.config.slots[i].port = 4532 }
+            if newT == .network, old == .rigctld, rig.config.slots[i].port == 4532 { rig.config.slots[i].port = 50001 }
+        })
     }
 
     private func civAddrHex(_ i: Int) -> Binding<String> {

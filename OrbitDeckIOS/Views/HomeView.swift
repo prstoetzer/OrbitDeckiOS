@@ -57,6 +57,10 @@ struct HomeView: View {
                                        selectedTransponderID: selectedTransponder(satellite)?.id,
                                        passbandOffsetHz: $passbandOffsetHz)
                     HomeRotatorCard(satellite: satellite)
+                    HomeQuickLogCard(satellite: satellite)
+                    HomeRecordingCard(satellite: satellite)
+                    HomeSSTVCard(satellite: satellite)
+                    HomeFT4Card(satellite: satellite)
                     HomeAmsatQuickReport(satellite: satellite)
                 }
 

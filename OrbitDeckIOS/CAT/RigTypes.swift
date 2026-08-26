@@ -48,6 +48,7 @@ enum RigFamily: String, Codable, Sendable {
     case yaesuFT736     // FT-736R — FT-817 framing, needs CAT-ON, write-only
     case kenwoodBase    // TS-711/811/790/2000 — ASCII FA/FB/MD ';'-terminated
     case kenwoodHandheld // TH-D74/D75 — ASCII "FQ b,hz" / "MD b,m" on band B
+    case rigctld        // Hamlib NET rigctl over TCP; Hamlib abstracts the rig
 }
 
 /// A radio the app can drive. Fields mirror CardSat's RadioProfile / LegProfile.
@@ -164,7 +165,18 @@ enum RadioCatalog {
     /// Every radio, full-duplex first.
     static let all: [RadioSpec] = fullDuplex + mono
 
-    static func spec(id: String) -> RadioSpec? { all.first { $0.id == id } }
+    /// Synthetic spec for a radio driven through a Hamlib `rigctld` server. Hamlib
+    /// abstracts the actual rig, so there is no catalog entry — this stands in so
+    /// the controller's per-link plumbing (which expects a `RadioSpec`) works. It
+    /// is treated as full-duplex-capable (split VFO) and frequency-readable.
+    static let rigctld = RadioSpec(id: "RIGCTLD", name: "rigctld", family: .rigctld, civAddr: 0, defaultBaud: 0,
+                                   fullDuplex: true, rxOnly: false, hasLan: false, canReadFreq: true, modeFilter: false,
+                                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
+                                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false)
+
+    static func spec(id: String) -> RadioSpec? {
+        id == rigctld.id ? rigctld : all.first { $0.id == id }
+    }
 
     // -- builders ----------------------------------------------------------
     private static func civ(_ name: String, _ addr: UInt8, _ baud: Int,
@@ -212,8 +224,15 @@ enum RigRole: String, Codable, Sendable, CaseIterable, Identifiable {
 enum CATTransportKind: String, Codable, Sendable, CaseIterable, Identifiable {
     case ble        // BLE UART adapter (CoreBluetooth)
     case network    // Icom RS-BA1 over Wi-Fi
+    case rigctld    // Hamlib rigctld server over TCP
     var id: String { rawValue }
-    var label: String { self == .ble ? "BLE serial adapter" : "Icom network (Wi-Fi)" }
+    var label: String {
+        switch self {
+        case .ble: "BLE serial adapter"
+        case .network: "Icom network (Wi-Fi)"
+        case .rigctld: "Hamlib rigctld (network)"
+        }
+    }
 }
 
 /// One configured radio.
@@ -230,7 +249,9 @@ struct RigSlot: Codable, Sendable, Equatable {
     var civAddrOverride = 0          // 0 = use radio default
     var baudOverride = 0             // 0 = use radio default (informational; BLE adapters set their own baud)
 
-    var spec: RadioSpec? { RadioCatalog.spec(id: radioID) }
+    /// The driving radio spec. For a rigctld link there is no catalog radio —
+    /// Hamlib abstracts it — so return the synthetic rigctld spec.
+    var spec: RadioSpec? { transport == .rigctld ? RadioCatalog.rigctld : RadioCatalog.spec(id: radioID) }
 }
 
 /// Persisted CAT configuration. Slot 0 is the primary/downlink radio; slot 1 is
@@ -243,8 +264,10 @@ struct CATConfig: Codable, Sendable, Equatable {
 
     var isConfigured: Bool {
         guard enabled else { return false }
-        if let s = slots.first, s.enabled, !s.radioID.isEmpty { return true }
-        return false
+        guard let s = slots.first, s.enabled else { return false }
+        // A rigctld link needs only a host; a catalog radio needs a model.
+        if s.transport == .rigctld { return !s.host.isEmpty }
+        return !s.radioID.isEmpty
     }
 }
 
@@ -269,6 +292,10 @@ struct CATTuning: Codable, Sendable, Equatable {
     // the other leg mapped through the transponder. Downlink is the usual master.
     var followRadio = false
     var followLeg: RigRole = .downlink
+    // rigctld: for a full-duplex single radio (role .both), track uplink on the
+    // split/TX VFO (rigctl `S 1 VFOB` + `I`/`X`). Turn off for backends without a
+    // usable split.
+    var rigctldUseSplit = true
 }
 
 // MARK: - CTCSS
@@ -325,7 +352,7 @@ extension CATTuning {
     enum CK: String, CodingKey {
         case trackDoppler, updateMs, commandDelayMs, mainIsUplink, satMode, assignBands
         case fmDeadbandHz, linearDeadbandHz, leadMs, calDownlinkHz, calUplinkHz
-        case xvtrDownlinkHz, xvtrUplinkHz, uplinkToneHz, passbandOffsetHz, followRadio, followLeg
+        case xvtrDownlinkHz, xvtrUplinkHz, uplinkToneHz, passbandOffsetHz, followRadio, followLeg, rigctldUseSplit
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
@@ -347,6 +374,7 @@ extension CATTuning {
         t.passbandOffsetHz = c.value(Double.self, .passbandOffsetHz, t.passbandOffsetHz)
         t.followRadio = c.value(Bool.self, .followRadio, t.followRadio)
         t.followLeg = c.value(RigRole.self, .followLeg, t.followLeg)
+        t.rigctldUseSplit = c.value(Bool.self, .rigctldUseSplit, t.rigctldUseSplit)
         self = t
     }
     func encode(to encoder: Encoder) throws {
@@ -368,6 +396,7 @@ extension CATTuning {
         try c.encode(passbandOffsetHz, forKey: .passbandOffsetHz)
         try c.encode(followRadio, forKey: .followRadio)
         try c.encode(followLeg, forKey: .followLeg)
+        try c.encode(rigctldUseSplit, forKey: .rigctldUseSplit)
     }
 }
 

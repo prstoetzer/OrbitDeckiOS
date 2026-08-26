@@ -168,6 +168,11 @@ final class RigController: ObservableObject {
         case .ble:
             let uuid = UUID(uuidString: slot.bleIdentifier) ?? UUID()
             return BLESerialTransport(identifier: uuid)
+        case .rigctld:
+            // Reuse the generic TCP transport (also used by rotctld); rigctld is a
+            // plain line-oriented TCP protocol. Default Hamlib NET port is 4532.
+            let port = UInt16(slot.port == 0 ? 4532 : min(65535, max(1, slot.port)))
+            return RotatorNetworkTransport(host: slot.host, port: port, udp: false)
         }
     }
 
@@ -184,6 +189,11 @@ final class RigController: ObservableObject {
             if config.tuning.satMode, link.spec.family == .civ, link.spec.fullDuplex,
                let f = CATCodec.civSatMode(link.spec, addr: addr, on: true) {
                 await sendRaw(link, f)
+            }
+            // rigctld full-duplex single radio: enable split so uplink tracks on
+            // the TX VFO while downlink tracks on the RX VFO.
+            if link.spec.family == .rigctld, link.leg == .both, config.tuning.rigctldUseSplit {
+                await sendRaw(link, CATCodec.rigctldSetSplit(on: true))
             }
         }
     }
@@ -328,6 +338,10 @@ final class RigController: ObservableObject {
             await sendRaw(link, CATCodec.khtReadFreq())
             let data = await link.transport.readAvailable(maxWait: 0.5)
             return CATCodec.khtParseFreq(data)
+        case .rigctld:
+            await sendRaw(link, CATCodec.rigctldReadFreq())
+            let data = await link.transport.readAvailable(maxWait: 0.5)
+            return CATCodec.rigctldParseFreq(data)
         }
     }
 
@@ -376,6 +390,14 @@ final class RigController: ObservableObject {
             let step: UInt64 = (mode == .usb || mode == .lsb || mode == .cw || mode == .am) ? 20 : 5000
             let rounded = ((u + step / 2) / step) * step
             await sendRaw(link, CATCodec.khtSetFreq(hz: rounded))
+        case .rigctld:
+            // Full-duplex single radio: uplink on the split/TX VFO, downlink on the
+            // current VFO. A standalone leg (two-radio station) uses the main VFO.
+            if link.leg == .both, leg == .uplink, config.tuning.rigctldUseSplit {
+                await sendRaw(link, CATCodec.rigctldSetSplitFreq(hz: u))
+            } else {
+                await sendRaw(link, CATCodec.rigctldSetFreq(hz: u))
+            }
         }
     }
 
@@ -395,6 +417,12 @@ final class RigController: ObservableObject {
         case .kenwoodHandheld:
             for f in CATCodec.khtStep(for: mode) { await sendRaw(link, f); await pace(20) }
             await sendRaw(link, CATCodec.khtSetMode(mode))
+        case .rigctld:
+            if link.leg == .both, leg == .uplink, config.tuning.rigctldUseSplit {
+                await sendRaw(link, CATCodec.rigctldSetSplitMode(mode))
+            } else {
+                await sendRaw(link, CATCodec.rigctldSetMode(mode))
+            }
         }
     }
 
@@ -421,6 +449,38 @@ final class RigController: ObservableObject {
         guard ms > 0 else { return }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(ms)) { c.resume() }
+        }
+    }
+
+    /// The live Icom network transport, if a configured radio uses one — lets the
+    /// audio subsystem (recording/SSTV/FT4) run over the RS-BA1 audio stream.
+    var icomAudioTransport: IcomNetworkTransport? {
+        guard connected else { return nil }
+        for link in links { if let t = link.transport as? IcomNetworkTransport { return t } }
+        return nil
+    }
+
+    // MARK: PTT (for full-duplex FT4)
+
+    /// Whether the uplink radio can be keyed over CAT.
+    var pttSupported: Bool {
+        guard connected, let link = links.first(where: { $0.leg == .uplink || $0.leg == .both }) else { return false }
+        switch link.spec.family {
+        case .civ, .yaesuBinary, .yaesuFT736, .kenwoodBase, .rigctld: return true
+        default: return false
+        }
+    }
+
+    /// Key/unkey the uplink radio over CAT, if supported. No-op otherwise (the
+    /// operator uses VOX or manual PTT).
+    func setPTT(_ on: Bool) async {
+        guard connected, let link = links.first(where: { $0.leg == .uplink || $0.leg == .both }) else { return }
+        switch link.spec.family {
+        case .civ: await sendRaw(link, CATCodec.civPTT(addr: civAddr(link), on: on))
+        case .yaesuBinary, .yaesuFT736: await sendRaw(link, CATCodec.yaesuPTT(on: on))
+        case .kenwoodBase: await sendRaw(link, CATCodec.kwPTT(on: on))
+        case .rigctld: await sendRaw(link, CATCodec.rigctldSetPTT(on: on))
+        default: break
         }
     }
 

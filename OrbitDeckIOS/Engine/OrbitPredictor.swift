@@ -52,6 +52,43 @@ enum OrbitPredictor {
         }
     }
 
+    /// Compass bearing (0° = north) of the satellite's ground-track motion at
+    /// `date`, from a **symmetric central difference** whose step adapts to the
+    /// orbital period (~0.5° of mean anomaly, clamped 2–90 s). The central
+    /// difference and period-scaled step keep the bearing stable at HEO apogee,
+    /// where a short forward step spans sub-degree motion; the great-circle
+    /// bearing formula is inherently antimeridian-safe. Returns `nil` only if
+    /// propagation fails — never a bogus constant.
+    static func groundBearing(_ record: SatelliteRecord, observer: ObserverSite, at date: Date) -> Double? {
+        let dt = travelSampleStep(record)
+        guard let a = try? look(record, observer: observer, at: date.addingTimeInterval(-dt)),
+              let b = try? look(record, observer: observer, at: date.addingTimeInterval(dt)) else { return nil }
+        return initialBearing(fromLat: a.subLatitude, lon: a.subLongitude, toLat: b.subLatitude, lon: b.subLongitude)
+    }
+
+    /// Half-step (seconds) for travel-direction sampling: ~0.5° of mean anomaly,
+    /// so a slow HEO apogee still subtends a measurable arc. Clamped to 2–90 s.
+    static func travelSampleStep(_ record: SatelliteRecord) -> TimeInterval {
+        travelSampleStep(periodMinutes: record.periodMinutes)
+    }
+
+    static func travelSampleStep(periodMinutes: Double) -> TimeInterval {
+        let periodSec = periodMinutes > 0 ? periodMinutes * 60 : 5400
+        return min(90, max(2, periodSec * 0.5 / 360))
+    }
+
+    /// Initial great-circle bearing (0° = north) from one geographic point to
+    /// another. Wrap-safe across the antimeridian.
+    static func initialBearing(fromLat lat1d: Double, lon lon1d: Double, toLat lat2d: Double, lon lon2d: Double) -> Double {
+        let lat1 = lat1d * .pi / 180, lat2 = lat2d * .pi / 180
+        let dLon = (lon2d - lon1d) * .pi / 180
+        let y = sin(dLon) * cos(lat2)
+        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+        var bearing = atan2(y, x) * 180 / .pi
+        if bearing < 0 { bearing += 360 }
+        return bearing
+    }
+
     /// Lightweight illumination-only propagation used by report rasters.
     /// This deliberately avoids topocentric observer work because sunlight is
     /// a satellite/Earth/Sun geometry question, not a station-relative one.

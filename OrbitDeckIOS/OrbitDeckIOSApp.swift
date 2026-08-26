@@ -6,6 +6,11 @@ struct OrbitDeckIOSApp: App {
     @StateObject private var notifications = NotificationRouter()
     @StateObject private var rig = RigController()
     @StateObject private var rotator = RotatorController()
+    @StateObject private var audio = AudioHub()
+    @StateObject private var qsoLog = QSOStore()
+    @StateObject private var recorder = PassRecorder()
+    @StateObject private var sstv = SSTVDecoder()
+    @StateObject private var ft4 = FT4Engine()
 
     var body: some Scene {
         WindowGroup {
@@ -14,11 +19,21 @@ struct OrbitDeckIOSApp: App {
                 .environmentObject(notifications)
                 .environmentObject(rig)
                 .environmentObject(rotator)
+                .environmentObject(audio)
+                .environmentObject(qsoLog)
+                .environmentObject(recorder)
+                .environmentObject(sstv)
+                .environmentObject(ft4)
                 .preferredColorScheme(.dark)
                 .task {
                     notifications.activate()
                     rig.attach(store)
                     rotator.attach(store)
+                    audio.attach(rig)
+                    qsoLog.attach()
+                    recorder.attach(qsoLog)
+                    sstv.attach(qsoLog)
+                    ft4.attach(rig: rig, qso: qsoLog)
                     await store.bootstrap()
                 }
         }

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Logging &amp; Uploads — OrbitDeck for iOS</title>
+    <meta name="description" content="OrbitDeck for iOS logs satellite QSOs and uploads them to LoTW (signed on-device) and Cloudlog/Wavelog, with ADIF import/export and pass recordings.">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav">
+            <a class="brand" href="index.html"><span class="dot"></span>OrbitDeck</a>
+            <a class="navlink" href="index.html">Home</a>
+            <a class="navlink" href="documentation.html">Documentation</a>
+            <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
+            <a class="navlink" href="catcontrol.html">Rig Control</a>
+            <a class="navlink" href="rotator.html">Rotator</a>
+            <a class="navlink" href="logging.html" aria-current="page">Logging</a>
+            <a class="navlink" href="digitalmodes.html">Digital Modes</a>
+            <a class="navlink" href="source.html">Source</a>
+            <a class="navlink" href="privacy.html">Privacy</a>
+        </nav>
+    </header>
+
+    <section class="container">
+        <h1>Logging &amp; Uploads</h1>
+        <p class="section-intro">OrbitDeck keeps a satellite QSO log on device and uploads it — signed for LoTW right on your iPhone or iPad, and to a self-hosted Cloudlog/Wavelog — with ADIF import/export. Pass audio recordings live alongside the log.</p>
+
+        <div class="doc">
+            <aside class="toc">
+                <h4>Contents</h4>
+                <a href="#overview">Overview</a>
+                <a href="#quicklog">Quick-log on Home</a>
+                <a href="#logscreen">The Log screen</a>
+                <a href="#fields">What's logged</a>
+                <a href="#lotw">LoTW upload</a>
+                <a href="#cloudlog">Cloudlog / Wavelog</a>
+                <a href="#adif">ADIF import/export</a>
+                <a href="#recordings">Pass recordings</a>
+                <a href="#privacy">Permissions &amp; privacy</a>
+            </aside>
+
+            <div class="doc-body">
+                <h2 id="overview">Overview</h2>
+                <p>Turn on <strong>Settings &rarr; (Log screen) &rarr; Log settings &rarr; Enable logging</strong> to show a <strong>Log QSO</strong> card on Home and populate the <strong>Log</strong> screen. Every contact is stored on device as JSON; uploads mark each QSO so it is never sent twice.</p>
+
+                <h2 id="quicklog">Quick-log on Home</h2>
+                <p>The Home <strong>Log QSO</strong> card is prefilled from the selected satellite, the current transponder (uplink/downlink and mode) and your station grid. Type the other station's call (and optionally their grid and RST), tap <strong>Log QSO</strong>, and it's saved — ready to upload later.</p>
+
+                <h2 id="logscreen">The Log screen</h2>
+                <p>The <strong>Log</strong> screen (Operating Tools) lists your contacts and pass recordings. From the &hellip; menu you can add or edit a QSO, import or export ADIF, and upload to LoTW or Cloudlog. Each QSO shows small <strong>L</strong> / <strong>C</strong> badges once it has been sent to LoTW / Cloudlog.</p>
+
+                <h2 id="fields">What's logged</h2>
+                <p>Full parity with CardSat's satellite log: worked call, satellite, mode, uplink and downlink frequencies, RST sent/received, the worked station's grid (multiple grids for a rover, VUCC), your call and grid, time (UTC) and notes. Satellite names are normalized to the correct <strong>LoTW SAT_NAME</strong> automatically (e.g. an in-app name like <code>FOX-1B (AO-91)</code> logs as <code>AO-91</code>).</p>
+
+                <h2 id="lotw">LoTW upload (signed on device)</h2>
+                <p>OrbitDeck signs a standard <code>.tq8</code> entirely on your device — no computer, no TQSL round-trip:</p>
+                <ol>
+                    <li>In TQSL on a computer, export your callsign certificate to a <strong>.p12</strong> file (with a passphrase).</li>
+                    <li>In OrbitDeck, <strong>Log settings &rarr; Import .p12 certificate</strong>, enter the passphrase. The certificate stays on your device; the passphrase is stored in the iOS Keychain.</li>
+                    <li>Fill in your <strong>station location</strong> (grid, DXCC, zones, and US state/county or a non-US subdivision as applicable).</li>
+                    <li>Tap <strong>Upload to LoTW</strong>. OrbitDeck signs each QSO (RSA over SHA-1, as LoTW requires), gzips the batch, and posts it — the whole log in one pass.</li>
+                </ol>
+                <div class="note">The signature format (field order, normalization and dates) matches TQSL's LoTW&nbsp;V2.0 specification exactly; anything else makes LoTW silently drop the QSO. Getting a certificate in the first place still requires ARRL's one-time postcard enrollment via TQSL — that can't happen on device.</div>
+
+                <h2 id="cloudlog">Cloudlog / Wavelog</h2>
+                <p>Enter your instance URL, station profile ID and a read-write API key (kept in the Keychain), then <strong>Upload to Cloudlog</strong>. OrbitDeck posts the un-sent QSOs as ADIF in one request. A self-hosted Cloudlog can be configured to forward to LoTW server-side as an alternative to on-device signing.</p>
+
+                <h2 id="adif">ADIF import/export</h2>
+                <p>Export your whole log as ADIF (share to any app), or import an <code>.adi</code> file to merge contacts in. Exports use the satellite ADIF conventions (<code>PROP_MODE=SAT</code>, uplink&rarr;<code>FREQ</code>/<code>BAND</code>, downlink&rarr;<code>FREQ_RX</code>/<code>BAND_RX</code>, VUCC grids).</p>
+
+                <h2 id="recordings">Pass recordings</h2>
+                <p>With an audio interface connected (see <a href="digitalmodes.html">Digital Modes</a>), the Home <strong>Pass recording</strong> card records the received audio to a WAV tagged with the satellite and time; clips appear on the Log screen with playback and share.</p>
+
+                <h2 id="privacy">Permissions &amp; privacy</h2>
+                <p>The log and your certificate stay on your device. Uploading sends your QSOs to LoTW (ARRL) or your Cloudlog instance only when you tap upload; credentials are stored in the iOS Keychain. See the <a href="privacy.html">privacy policy</a>.</p>
+            </div>
+        </div>
+    </section>
+
+    <footer class="site-footer">
+        <div class="container">
+            <span>&copy; 2026 Paul Stoetzer, N8HM</span>
+            <span>
+                <a href="index.html">Home</a> &nbsp;·&nbsp;
+                <a href="documentation.html">Documentation</a> &nbsp;·&nbsp;
+                <a href="https://www.amsat.org" rel="noopener">Support AMSAT</a>
+            </span>
+        </div>
+    </footer>
+</body>
+</html>

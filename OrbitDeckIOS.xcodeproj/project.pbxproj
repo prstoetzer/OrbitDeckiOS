@@ -23,6 +23,36 @@
 		2E1437E8303E8A010001B31F /* RotatorViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437E4303E8A010001B31F /* RotatorViews.swift */; };
 		2E1437E9303E8A010001B31F /* RotatorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437E1303E8A010001B31F /* RotatorController.swift */; };
 		2E1437EA303E8A010001B31F /* RotatorTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437E3303E8A010001B31F /* RotatorTypes.swift */; };
+		2E1437F3303F0D4B0001B31F /* AudioSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437EF303F0D4B0001B31F /* AudioSource.swift */; };
+		2E1437F4303F0D4B0001B31F /* AudioHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437EE303F0D4B0001B31F /* AudioHub.swift */; };
+		2E1437F5303F0D4B0001B31F /* IcomAudioSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437F0303F0D4B0001B31F /* IcomAudioSource.swift */; };
+		2E1437F6303F0D4B0001B31F /* USBAudioSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437F1303F0D4B0001B31F /* USBAudioSource.swift */; };
+		2E1437F7303F0D4B0001B31F /* AudioDSP.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437ED303F0D4B0001B31F /* AudioDSP.swift */; };
+		2E143800303F110D0001B31F /* LoTW.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437FC303F110D0001B31F /* LoTW.swift */; };
+		2E143801303F110D0001B31F /* QSOTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437FE303F110D0001B31F /* QSOTypes.swift */; };
+		2E143802303F110D0001B31F /* ADIF.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437F8303F110D0001B31F /* ADIF.swift */; };
+		2E143803303F110D0001B31F /* QSOStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437FD303F110D0001B31F /* QSOStore.swift */; };
+		2E143804303F110D0001B31F /* Cloudlog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437F9303F110D0001B31F /* Cloudlog.swift */; };
+		2E143805303F110D0001B31F /* LogViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437FB303F110D0001B31F /* LogViews.swift */; };
+		2E143806303F110D0001B31F /* Gzip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437FA303F110D0001B31F /* Gzip.swift */; };
+		2E14380A303F112D0001B31F /* RecordingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E143808303F112D0001B31F /* RecordingViews.swift */; };
+		2E14380B303F112D0001B31F /* PassRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E143807303F112D0001B31F /* PassRecorder.swift */; };
+		2E143811303F12EA0001B31F /* SSTVModes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E14380D303F12EA0001B31F /* SSTVModes.swift */; };
+		2E143812303F12EA0001B31F /* SSTVViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E14380E303F12EA0001B31F /* SSTVViews.swift */; };
+		2E143813303F12EA0001B31F /* SSTVDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E14380C303F12EA0001B31F /* SSTVDecoder.swift */; };
+		2E143832303F15A60001B31F /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = 2E143830303F15A60001B31F /* LICENSE */; };
+		2E143833303F15A60001B31F /* FT4Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E143815303F15A60001B31F /* FT4Views.swift */; };
+		2E143834303F15A60001B31F /* constants.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E143821303F15A60001B31F /* constants.c */; };
+		2E143835303F15A60001B31F /* crc.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E143823303F15A60001B31F /* crc.c */; };
+		2E143836303F15A60001B31F /* decode.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E143826303F15A60001B31F /* decode.c */; };
+		2E143837303F15A60001B31F /* encode.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E143828303F15A60001B31F /* encode.c */; };
+		2E143838303F15A60001B31F /* monitor.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E143818303F15A60001B31F /* monitor.c */; };
+		2E143839303F15A60001B31F /* kiss_fft.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E14381C303F15A60001B31F /* kiss_fft.c */; };
+		2E14383A303F15A60001B31F /* kiss_fftr.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E14381E303F15A60001B31F /* kiss_fftr.c */; };
+		2E14383B303F15A60001B31F /* ldpc.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E14382A303F15A60001B31F /* ldpc.c */; };
+		2E14383C303F15A60001B31F /* FT4Engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E143814303F15A60001B31F /* FT4Engine.swift */; };
+		2E14383D303F15A60001B31F /* message.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E14382C303F15A60001B31F /* message.c */; };
+		2E14383E303F15A60001B31F /* text.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E14382E303F15A60001B31F /* text.c */; };
 		2E75B92E303228E000338037 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */; };
 		2E946B4130308C7600960A39 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2E946B4030308C7600960A39 /* Assets.xcassets */; };
 		64DDAC67D6894708F4CDE021 /* Views/PassesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8FF6BE81A9340A8D932821F /* Views/PassesView.swift */; };
@@ -91,6 +121,49 @@
 		2E1437E2303E8A010001B31F /* RotatorNetwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RotatorNetwork.swift; sourceTree = "<group>"; };
 		2E1437E3303E8A010001B31F /* RotatorTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RotatorTypes.swift; sourceTree = "<group>"; };
 		2E1437E4303E8A010001B31F /* RotatorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RotatorViews.swift; sourceTree = "<group>"; };
+		2E1437ED303F0D4B0001B31F /* AudioDSP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDSP.swift; sourceTree = "<group>"; };
+		2E1437EE303F0D4B0001B31F /* AudioHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHub.swift; sourceTree = "<group>"; };
+		2E1437EF303F0D4B0001B31F /* AudioSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSource.swift; sourceTree = "<group>"; };
+		2E1437F0303F0D4B0001B31F /* IcomAudioSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IcomAudioSource.swift; sourceTree = "<group>"; };
+		2E1437F1303F0D4B0001B31F /* USBAudioSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = USBAudioSource.swift; sourceTree = "<group>"; };
+		2E1437F8303F110D0001B31F /* ADIF.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ADIF.swift; sourceTree = "<group>"; };
+		2E1437F9303F110D0001B31F /* Cloudlog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cloudlog.swift; sourceTree = "<group>"; };
+		2E1437FA303F110D0001B31F /* Gzip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Gzip.swift; sourceTree = "<group>"; };
+		2E1437FB303F110D0001B31F /* LogViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogViews.swift; sourceTree = "<group>"; };
+		2E1437FC303F110D0001B31F /* LoTW.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoTW.swift; sourceTree = "<group>"; };
+		2E1437FD303F110D0001B31F /* QSOStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QSOStore.swift; sourceTree = "<group>"; };
+		2E1437FE303F110D0001B31F /* QSOTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QSOTypes.swift; sourceTree = "<group>"; };
+		2E143807303F112D0001B31F /* PassRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PassRecorder.swift; sourceTree = "<group>"; };
+		2E143808303F112D0001B31F /* RecordingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingViews.swift; sourceTree = "<group>"; };
+		2E14380C303F12EA0001B31F /* SSTVDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSTVDecoder.swift; sourceTree = "<group>"; };
+		2E14380D303F12EA0001B31F /* SSTVModes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSTVModes.swift; sourceTree = "<group>"; };
+		2E14380E303F12EA0001B31F /* SSTVViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSTVViews.swift; sourceTree = "<group>"; };
+		2E143814303F15A60001B31F /* FT4Engine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FT4Engine.swift; sourceTree = "<group>"; };
+		2E143815303F15A60001B31F /* FT4Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FT4Views.swift; sourceTree = "<group>"; };
+		2E143816303F15A60001B31F /* common.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = common.h; sourceTree = "<group>"; };
+		2E143817303F15A60001B31F /* monitor.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = monitor.h; sourceTree = "<group>"; };
+		2E143818303F15A60001B31F /* monitor.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = monitor.c; sourceTree = "<group>"; };
+		2E14381A303F15A60001B31F /* _kiss_fft_guts.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = _kiss_fft_guts.h; sourceTree = "<group>"; };
+		2E14381B303F15A60001B31F /* kiss_fft.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = kiss_fft.h; sourceTree = "<group>"; };
+		2E14381C303F15A60001B31F /* kiss_fft.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = kiss_fft.c; sourceTree = "<group>"; };
+		2E14381D303F15A60001B31F /* kiss_fftr.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = kiss_fftr.h; sourceTree = "<group>"; };
+		2E14381E303F15A60001B31F /* kiss_fftr.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = kiss_fftr.c; sourceTree = "<group>"; };
+		2E143820303F15A60001B31F /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
+		2E143821303F15A60001B31F /* constants.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = constants.c; sourceTree = "<group>"; };
+		2E143822303F15A60001B31F /* crc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = crc.h; sourceTree = "<group>"; };
+		2E143823303F15A60001B31F /* crc.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = crc.c; sourceTree = "<group>"; };
+		2E143824303F15A60001B31F /* debug.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = debug.h; sourceTree = "<group>"; };
+		2E143825303F15A60001B31F /* decode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = decode.h; sourceTree = "<group>"; };
+		2E143826303F15A60001B31F /* decode.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = decode.c; sourceTree = "<group>"; };
+		2E143827303F15A60001B31F /* encode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = encode.h; sourceTree = "<group>"; };
+		2E143828303F15A60001B31F /* encode.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = encode.c; sourceTree = "<group>"; };
+		2E143829303F15A60001B31F /* ldpc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ldpc.h; sourceTree = "<group>"; };
+		2E14382A303F15A60001B31F /* ldpc.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ldpc.c; sourceTree = "<group>"; };
+		2E14382B303F15A60001B31F /* message.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = message.h; sourceTree = "<group>"; };
+		2E14382C303F15A60001B31F /* message.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = message.c; sourceTree = "<group>"; };
+		2E14382D303F15A60001B31F /* text.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = text.h; sourceTree = "<group>"; };
+		2E14382E303F15A60001B31F /* text.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = text.c; sourceTree = "<group>"; };
+		2E143830303F15A60001B31F /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
 		2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		2E75B92F3037404300338037 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2E946B4030308C7600960A39 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -178,6 +251,117 @@
 			path = Rotator;
 			sourceTree = "<group>";
 		};
+		2E1437F2303F0D4B0001B31F /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				2E1437ED303F0D4B0001B31F /* AudioDSP.swift */,
+				2E1437EE303F0D4B0001B31F /* AudioHub.swift */,
+				2E1437EF303F0D4B0001B31F /* AudioSource.swift */,
+				2E1437F0303F0D4B0001B31F /* IcomAudioSource.swift */,
+				2E1437F1303F0D4B0001B31F /* USBAudioSource.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		2E1437FF303F110D0001B31F /* Log */ = {
+			isa = PBXGroup;
+			children = (
+				2E1437F8303F110D0001B31F /* ADIF.swift */,
+				2E1437F9303F110D0001B31F /* Cloudlog.swift */,
+				2E1437FA303F110D0001B31F /* Gzip.swift */,
+				2E1437FB303F110D0001B31F /* LogViews.swift */,
+				2E1437FC303F110D0001B31F /* LoTW.swift */,
+				2E1437FD303F110D0001B31F /* QSOStore.swift */,
+				2E1437FE303F110D0001B31F /* QSOTypes.swift */,
+			);
+			path = Log;
+			sourceTree = "<group>";
+		};
+		2E143809303F112D0001B31F /* Recording */ = {
+			isa = PBXGroup;
+			children = (
+				2E143807303F112D0001B31F /* PassRecorder.swift */,
+				2E143808303F112D0001B31F /* RecordingViews.swift */,
+			);
+			path = Recording;
+			sourceTree = "<group>";
+		};
+		2E14380F303F12EA0001B31F /* SSTV */ = {
+			isa = PBXGroup;
+			children = (
+				2E14380C303F12EA0001B31F /* SSTVDecoder.swift */,
+				2E14380D303F12EA0001B31F /* SSTVModes.swift */,
+				2E14380E303F12EA0001B31F /* SSTVViews.swift */,
+			);
+			path = SSTV;
+			sourceTree = "<group>";
+		};
+		2E143810303F12EA0001B31F /* DigitalModes */ = {
+			isa = PBXGroup;
+			children = (
+				2E143814303F15A60001B31F /* FT4Engine.swift */,
+				2E143815303F15A60001B31F /* FT4Views.swift */,
+				2E143831303F15A60001B31F /* ft8_lib */,
+				2E14380F303F12EA0001B31F /* SSTV */,
+			);
+			path = DigitalModes;
+			sourceTree = "<group>";
+		};
+		2E143819303F15A60001B31F /* common */ = {
+			isa = PBXGroup;
+			children = (
+				2E143816303F15A60001B31F /* common.h */,
+				2E143817303F15A60001B31F /* monitor.h */,
+				2E143818303F15A60001B31F /* monitor.c */,
+			);
+			path = common;
+			sourceTree = "<group>";
+		};
+		2E14381F303F15A60001B31F /* fft */ = {
+			isa = PBXGroup;
+			children = (
+				2E14381A303F15A60001B31F /* _kiss_fft_guts.h */,
+				2E14381B303F15A60001B31F /* kiss_fft.h */,
+				2E14381C303F15A60001B31F /* kiss_fft.c */,
+				2E14381D303F15A60001B31F /* kiss_fftr.h */,
+				2E14381E303F15A60001B31F /* kiss_fftr.c */,
+			);
+			path = fft;
+			sourceTree = "<group>";
+		};
+		2E14382F303F15A60001B31F /* ft8 */ = {
+			isa = PBXGroup;
+			children = (
+				2E143820303F15A60001B31F /* constants.h */,
+				2E143821303F15A60001B31F /* constants.c */,
+				2E143822303F15A60001B31F /* crc.h */,
+				2E143823303F15A60001B31F /* crc.c */,
+				2E143824303F15A60001B31F /* debug.h */,
+				2E143825303F15A60001B31F /* decode.h */,
+				2E143826303F15A60001B31F /* decode.c */,
+				2E143827303F15A60001B31F /* encode.h */,
+				2E143828303F15A60001B31F /* encode.c */,
+				2E143829303F15A60001B31F /* ldpc.h */,
+				2E14382A303F15A60001B31F /* ldpc.c */,
+				2E14382B303F15A60001B31F /* message.h */,
+				2E14382C303F15A60001B31F /* message.c */,
+				2E14382D303F15A60001B31F /* text.h */,
+				2E14382E303F15A60001B31F /* text.c */,
+			);
+			path = ft8;
+			sourceTree = "<group>";
+		};
+		2E143831303F15A60001B31F /* ft8_lib */ = {
+			isa = PBXGroup;
+			children = (
+				2E143819303F15A60001B31F /* common */,
+				2E14381F303F15A60001B31F /* fft */,
+				2E14382F303F15A60001B31F /* ft8 */,
+				2E143830303F15A60001B31F /* LICENSE */,
+			);
+			path = ft8_lib;
+			sourceTree = "<group>";
+		};
 		615B463D1028E4E24B674CF7 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -190,6 +374,10 @@
 		8309DD304D804F9D7F6302F5 /* OrbitDeckIOS */ = {
 			isa = PBXGroup;
 			children = (
+				2E143810303F12EA0001B31F /* DigitalModes */,
+				2E143809303F112D0001B31F /* Recording */,
+				2E1437FF303F110D0001B31F /* Log */,
+				2E1437F2303F0D4B0001B31F /* Audio */,
 				2E1437E5303E8A010001B31F /* Rotator */,
 				2E1437D9303DCFC60001B31F /* CAT */,
 				2E75B92F3037404300338037 /* Info.plist */,
@@ -346,6 +534,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2E143832303F15A60001B31F /* LICENSE in Resources */,
 				2E75B92E303228E000338037 /* PrivacyInfo.xcprivacy in Resources */,
 				2E946B4130308C7600960A39 /* Assets.xcassets in Resources */,
 			);
@@ -372,6 +561,20 @@
 				E09000010000000000000011 /* Engine/DXCCData.swift in Sources */,
 				E09000020000000000000011 /* Engine/ParityPlanningEngine.swift in Sources */,
 				E09000030000000000000011 /* Engine/AstronomyParityEngine.swift in Sources */,
+				2E14380A303F112D0001B31F /* RecordingViews.swift in Sources */,
+				2E143833303F15A60001B31F /* FT4Views.swift in Sources */,
+				2E143834303F15A60001B31F /* constants.c in Sources */,
+				2E143835303F15A60001B31F /* crc.c in Sources */,
+				2E143836303F15A60001B31F /* decode.c in Sources */,
+				2E143837303F15A60001B31F /* encode.c in Sources */,
+				2E143838303F15A60001B31F /* monitor.c in Sources */,
+				2E143839303F15A60001B31F /* kiss_fft.c in Sources */,
+				2E14383A303F15A60001B31F /* kiss_fftr.c in Sources */,
+				2E14383B303F15A60001B31F /* ldpc.c in Sources */,
+				2E14383C303F15A60001B31F /* FT4Engine.swift in Sources */,
+				2E14383D303F15A60001B31F /* message.c in Sources */,
+				2E14383E303F15A60001B31F /* text.c in Sources */,
+				2E14380B303F112D0001B31F /* PassRecorder.swift in Sources */,
 				E09300010000000000000011 /* Engine/WorldMapData.swift in Sources */,
 				E09400010000000000000011 /* Engine/DXCCNumericData.swift in Sources */,
 				C078BFB7DE4C528E6F37E562 /* Models/OrbitStore.swift in Sources */,
@@ -381,6 +584,13 @@
 				24A2EC1FCE037F1FA7FD744D /* Services/LocationProvider.swift in Sources */,
 				BCE0B03C6AD18E7E84526787 /* Services/TransponderService.swift in Sources */,
 				A07A00010000000000000011 /* Services/AO7Service.swift in Sources */,
+				2E143800303F110D0001B31F /* LoTW.swift in Sources */,
+				2E143801303F110D0001B31F /* QSOTypes.swift in Sources */,
+				2E143802303F110D0001B31F /* ADIF.swift in Sources */,
+				2E143803303F110D0001B31F /* QSOStore.swift in Sources */,
+				2E143804303F110D0001B31F /* Cloudlog.swift in Sources */,
+				2E143805303F110D0001B31F /* LogViews.swift in Sources */,
+				2E143806303F110D0001B31F /* Gzip.swift in Sources */,
 				E09600010000000000000011 /* Services/XLSXExportService.swift in Sources */,
 				E05000010000000000000011 /* Services/ExportService.swift in Sources */,
 				2E1437E6303E8A010001B31F /* RotatorNetwork.swift in Sources */,
@@ -404,6 +614,9 @@
 				64DDAC67D6894708F4CDE021 /* Views/PassesView.swift in Sources */,
 				BDD443FC7935C36BB4F88C04 /* Views/RadioView.swift in Sources */,
 				6E7F478781FCC9B1E67B0963 /* Views/RootView.swift in Sources */,
+				2E143811303F12EA0001B31F /* SSTVModes.swift in Sources */,
+				2E143812303F12EA0001B31F /* SSTVViews.swift in Sources */,
+				2E143813303F12EA0001B31F /* SSTVDecoder.swift in Sources */,
 				FEA7E0020000000000000011 /* Views/FeatureViews.swift in Sources */,
 				E05000030000000000000011 /* Views/AdvancedFeatureViews.swift in Sources */,
 				E06000010000000000000011 /* Engine/UtilityEngine.swift in Sources */,
@@ -412,6 +625,11 @@
 				E07000020000000000000011 /* Views/DeepParityViews.swift in Sources */,
 				089C7BC84DD8E89D8A53B10C /* Views/SatellitesView.swift in Sources */,
 				66289466ED75BEC0DCF9ABC8 /* Views/SettingsView.swift in Sources */,
+				2E1437F3303F0D4B0001B31F /* AudioSource.swift in Sources */,
+				2E1437F4303F0D4B0001B31F /* AudioHub.swift in Sources */,
+				2E1437F5303F0D4B0001B31F /* IcomAudioSource.swift in Sources */,
+				2E1437F6303F0D4B0001B31F /* USBAudioSource.swift in Sources */,
+				2E1437F7303F0D4B0001B31F /* AudioDSP.swift in Sources */,
 				0C4C1D39CC489508720D4198 /* Views/SkyRadarView.swift in Sources */,
 				A699DCA775DAC77E69FB06C3 /* Views/TenDayView.swift in Sources */,
 				E4D1D287D264EDD14A01DEEF /* Views/TrackView.swift in Sources */,
@@ -603,6 +821,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/OrbitDeckIOS/DigitalModes/ft8_lib";
 				INFOPLIST_FILE = OrbitDeckIOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OrbitDeck;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = "";
@@ -616,12 +835,13 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.9.13;
+				MARKETING_VERSION = 0.9.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.prstoetzer.OrbitDeckIOS;
 				PRODUCT_NAME = OrbitDeck;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "OrbitDeckIOS/OrbitDeck-Bridging-Header.h";
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -636,6 +856,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/OrbitDeckIOS/DigitalModes/ft8_lib";
 				INFOPLIST_FILE = OrbitDeckIOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = OrbitDeck;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = "";
@@ -649,12 +870,13 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.9.13;
+				MARKETING_VERSION = 0.9.14;
 				PRODUCT_BUNDLE_IDENTIFIER = com.prstoetzer.OrbitDeckIOS;
 				PRODUCT_NAME = OrbitDeck;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "OrbitDeckIOS/OrbitDeck-Bridging-Header.h";
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

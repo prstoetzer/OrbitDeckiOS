@@ -270,20 +270,28 @@ struct PolarSkyPlot: View {
             // so they read as direction-of-travel and stay clear of the rim compass
             // labels.
             if points.count > 1 {
-                let a0 = plotPoint(points[0].azimuth, points[0].elevation, center, outerRadius)
-                let a1 = plotPoint(points[1].azimuth, points[1].elevation, center, outerRadius)
-                drawHeadingArrow(&context, at: a0, angle: atan2(a1.y - a0.y, a1.x - a0.x), color: ODTheme.good, size: 6)
+                let a = points[0], b = points[1]
+                if let ang = screenTangent(atAz: a.azimuth, atEl: a.elevation,
+                                           dAzDeg: angularDeltaDeg(b.azimuth - a.azimuth),
+                                           dElDeg: b.elevation - a.elevation, outerRadius: outerRadius) {
+                    drawHeadingArrow(&context, at: plotPoint(a.azimuth, a.elevation, center, outerRadius),
+                                     angle: ang, color: ODTheme.good, size: 6)
+                }
                 let n = points.count
-                let l0 = plotPoint(points[n - 2].azimuth, points[n - 2].elevation, center, outerRadius)
-                let l1 = plotPoint(points[n - 1].azimuth, points[n - 1].elevation, center, outerRadius)
-                drawHeadingArrow(&context, at: l1, angle: atan2(l1.y - l0.y, l1.x - l0.x), color: ODTheme.warning, size: 6)
+                let p0 = points[n - 2], p1 = points[n - 1]
+                if let ang = screenTangent(atAz: p1.azimuth, atEl: p1.elevation,
+                                           dAzDeg: angularDeltaDeg(p1.azimuth - p0.azimuth),
+                                           dElDeg: p1.elevation - p0.elevation, outerRadius: outerRadius) {
+                    drawHeadingArrow(&context, at: plotPoint(p1.azimuth, p1.elevation, center, outerRadius),
+                                     angle: ang, color: ODTheme.warning, size: 6)
+                }
             }
 
             // Live position: a small arrow pointing the satellite's direction of
             // travel (only while above the horizon).
             if let currentPoint, currentPoint.elevation >= 0 {
                 let p = plotPoint(currentPoint.azimuth, currentPoint.elevation, center, outerRadius)
-                let angle = headingAngle(for: currentPoint, center: center, outerRadius: outerRadius) ?? -.pi / 2
+                let angle = headingAngle(for: currentPoint, outerRadius: outerRadius) ?? -.pi / 2
                 drawHeadingArrow(&context, at: p, angle: angle, color: .white, size: 8.5)
                 drawHeadingArrow(&context, at: p, angle: angle, color: ODTheme.accent, size: 6.5)
             }
@@ -306,19 +314,57 @@ struct PolarSkyPlot: View {
         )
     }
 
-    /// Screen-space direction of travel at `point`, from the track segment that
-    /// brackets its time (falls back to the nearest segment).
-    private func headingAngle(for point: SkyPoint, center: CGPoint, outerRadius: Double) -> Double? {
+    /// Screen-space direction of travel at `point`. Works in **azimuth/elevation
+    /// (angular) space** rather than pixel deltas, then maps to the screen tangent
+    /// analytically — so it stays correct even when consecutive samples project to
+    /// a sub-pixel step (a HEO satellite crawling near apogee), which used to
+    /// collapse the old pixel-threshold fallback into a bogus constant. Searches
+    /// outward for a neighbour with a meaningful angular separation.
+    private func headingAngle(for point: SkyPoint, outerRadius: Double) -> Double? {
         guard points.count > 1 else { return nil }
-        for i in 0..<(points.count - 1) where points[i].date <= point.date && point.date <= points[i + 1].date {
-            let a = plotPoint(points[i].azimuth, points[i].elevation, center, outerRadius)
-            let b = plotPoint(points[i + 1].azimuth, points[i + 1].elevation, center, outerRadius)
-            if hypot(b.x - a.x, b.y - a.y) > 0.5 { return atan2(b.y - a.y, b.x - a.x) }
+        var i = 0
+        for k in 0..<points.count where points[k].date <= point.date { i = k }
+        let minDelta = 0.05     // degrees (combined az+el) that counts as real motion
+        // Forward neighbour first (direction of travel), then backward.
+        for j in (i + 1)..<points.count {
+            let dAz = angularDeltaDeg(points[j].azimuth - point.azimuth)
+            let dEl = points[j].elevation - point.elevation
+            if abs(dAz) + abs(dEl) >= minDelta {
+                return screenTangent(atAz: point.azimuth, atEl: point.elevation, dAzDeg: dAz, dElDeg: dEl, outerRadius: outerRadius)
+            }
         }
-        // Fallback: overall AOS→next direction.
-        let a = plotPoint(points[0].azimuth, points[0].elevation, center, outerRadius)
-        let b = plotPoint(points[1].azimuth, points[1].elevation, center, outerRadius)
-        return hypot(b.x - a.x, b.y - a.y) > 0.5 ? atan2(b.y - a.y, b.x - a.x) : nil
+        for j in stride(from: i, through: 0, by: -1) {
+            let dAz = angularDeltaDeg(point.azimuth - points[j].azimuth)
+            let dEl = point.elevation - points[j].elevation
+            if abs(dAz) + abs(dEl) >= minDelta {
+                return screenTangent(atAz: point.azimuth, atEl: point.elevation, dAzDeg: dAz, dElDeg: dEl, outerRadius: outerRadius)
+            }
+        }
+        return nil
+    }
+
+    /// The screen-space angle of motion `(dAz, dEl)` evaluated at `(az, el)`, using
+    /// the analytic derivative of `plotPoint` (`x = r·sinθ`, `y = −r·cosθ`, with
+    /// `θ = (az−orientation)·π/180`, `r = R·(90−el)/90`). Near the zenith `r → 0`
+    /// so the `r·dθ` terms vanish and the arrow follows the stable radial `dEl`
+    /// motion instead of the ill-defined azimuth — exactly the desired behaviour.
+    private func screenTangent(atAz az: Double, atEl el: Double, dAzDeg: Double, dElDeg: Double, outerRadius: Double) -> Double? {
+        let dTheta = atan2(sin(dAzDeg * .pi / 180), cos(dAzDeg * .pi / 180))   // short way around, radians
+        if abs(dTheta) < 1e-9 && abs(dElDeg) < 1e-9 { return nil }
+        let theta = (az - orientation) * .pi / 180
+        let r = outerRadius * max(0, min(1, (90 - el) / 90))
+        let dr = -outerRadius * dElDeg / 90
+        let dx = dr * sin(theta) + r * cos(theta) * dTheta
+        let dy = -dr * cos(theta) + r * sin(theta) * dTheta
+        if abs(dx) < 1e-12 && abs(dy) < 1e-12 { return nil }
+        return atan2(dy, dx)
+    }
+
+    /// Difference between two azimuths, wrapped to (−180°, 180°].
+    private func angularDeltaDeg(_ d: Double) -> Double {
+        var x = d.truncatingRemainder(dividingBy: 360)
+        if x > 180 { x -= 360 } else if x <= -180 { x += 360 }
+        return x
     }
 }
 

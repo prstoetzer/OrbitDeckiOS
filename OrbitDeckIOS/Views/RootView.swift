@@ -29,7 +29,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     case home, track, globe, radar, gridfinder
     case passes, skyglance, schedule, passdetail, groundtrack, tenday
     case orbit, orbithistory, illum, zones, ao7, mutual, transits, astronomy, skymap, conjunction, grids
-    case radio, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, oscarsim, oscarref, learn, references, exports
+    case radio, log, sstv, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, oscarsim, oscarref, learn, references, exports
     case sunmoon, celestial, eme, spacewx, muf, propagation
     case satellites, newlaunch, sites, calibrations, settings, about
 
@@ -60,6 +60,8 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .conjunction: "Conjunctions"
         case .grids: "Workable"
         case .radio: "Radio"
+        case .log: "Log"
+        case .sstv: "SSTV Images"
         case .planning: "Planning"
         case .tools: "Tools"
         case .graphcalc: "Graphing Calc"
@@ -111,6 +113,8 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .conjunction: "arrow.trianglehead.merge"
         case .grids: "square.grid.3x3"
         case .radio: "radio"
+        case .log: "book.pages"
+        case .sstv: "photo.on.rectangle.angled"
         case .planning: "calendar"
         case .tools: "wrench.and.screwdriver"
         case .graphcalc: "function"
@@ -142,7 +146,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     var usesSelectedSatellite: Bool {
         switch self {
         case .radar, .gridfinder, .schedule, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
-             .datafeeds, .learn, .references, .newlaunch, .sites, .astronomy, .eme,
+             .datafeeds, .learn, .references, .newlaunch, .sites, .astronomy, .eme, .log, .sstv,
              .satellites, .calibrations, .settings, .about:
             return false
         default:
@@ -155,7 +159,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .home, .track, .globe, .radar, .gridfinder, .passes, .skyglance, .schedule, .passdetail, .groundtrack, .tenday,
              .orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy,
              .skymap, .conjunction, .grids,
-             .radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
+             .radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
              .satellites, .newlaunch, .sites, .calibrations, .settings, .about:
             true
         default:
@@ -174,7 +178,7 @@ private let navGroups: [NavGroup] = [
     NavGroup(id: "live", title: "LIVE", items: [.home, .globe, .radar, .gridfinder]),
     NavGroup(id: "passes", title: "PASSES", items: [.passes, .skyglance, .schedule, .groundtrack, .tenday]),
     NavGroup(id: "analysis", title: "ANALYSIS", items: [.orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy, .skymap, .conjunction, .grids]),
-    NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports]),
+    NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports]),
     NavGroup(id: "sky", title: "SKY & SPACE", items: [.sunmoon, .celestial, .eme, .spacewx, .muf, .propagation]),
     NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .calibrations, .settings, .about])
 ]
@@ -388,6 +392,8 @@ struct RootView: View {
         case .grids: WorkableView()
         case .calibrations: CalibrationsView()
         case .radio: RadioView()
+        case .log: LogScreen()
+        case .sstv: SSTVGalleryScreen()
         case .planning: PlanningView()
         case .tools: DeepToolsView()
         case .graphcalc: GraphCalcView()

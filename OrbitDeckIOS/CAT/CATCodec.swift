@@ -272,4 +272,49 @@ enum CATCodec {
         guard digits.count == 10, digits.allSatisfy(\.isNumber) else { return nil }
         return UInt64(digits)
     }
+
+    // MARK: PTT (transmit keying) — used by full-duplex FT4
+
+    /// CI-V PTT: 1C 00, 01 = TX, 00 = RX.
+    static func civPTT(addr: UInt8, on: Bool) -> [UInt8] { [0xFE, 0xFE, addr, host, 0x1C, 0x00, on ? 0x01 : 0x00, 0xFD] }
+    /// Yaesu 5-byte PTT (FT-817/847/857/897 family): 08 = ON, 88 = OFF.
+    static func yaesuPTT(on: Bool) -> [UInt8] { [0, 0, 0, 0, on ? 0x08 : 0x88] }
+    /// Kenwood ASCII PTT.
+    static func kwPTT(on: Bool) -> [UInt8] { Array((on ? "TX;" : "RX;").utf8) }
+    /// rigctld PTT (Hamlib NET): T 1 / T 0.
+    static func rigctldSetPTT(on: Bool) -> [UInt8] { Array("T \(on ? 1 : 0)\n".utf8) }
+
+    // MARK: rigctld (Hamlib NET rigctl)
+    //
+    // Long-form, newline-terminated ASCII commands to a `rigctld` server. Hamlib
+    // owns the radio model, so these are model-agnostic. For a full-duplex single
+    // radio we track downlink on the current VFO (`F`/`M`) and uplink on the split
+    // VFO (`I`/`X`, with split enabled via `S 1 VFOB`). Replies to reads are the
+    // value alone; errors are `RPRT <n>`.
+
+    static func rigctldSetFreq(hz: UInt64) -> [UInt8] { Array("F \(hz)\n".utf8) }
+    static func rigctldSetSplitFreq(hz: UInt64) -> [UInt8] { Array("I \(hz)\n".utf8) }
+    static func rigctldSetMode(_ mode: RigMode) -> [UInt8] { Array("M \(hamlibMode(mode)) 0\n".utf8) }
+    static func rigctldSetSplitMode(_ mode: RigMode) -> [UInt8] { Array("X \(hamlibMode(mode)) 0\n".utf8) }
+    static func rigctldSetSplit(on: Bool) -> [UInt8] { Array("S \(on ? 1 : 0) VFOB\n".utf8) }
+    static func rigctldReadFreq() -> [UInt8] { Array("f\n".utf8) }
+
+    /// First numeric line of a rigctld reply (skips `RPRT` status lines).
+    static func rigctldParseFreq(_ bytes: [UInt8]) -> UInt64? {
+        guard let s = String(bytes: bytes, encoding: .ascii) else { return nil }
+        for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty || t.hasPrefix("RPRT") { continue }
+            if let v = UInt64(t) { return v }
+        }
+        return nil
+    }
+
+    /// Hamlib mode token for a `RigMode`.
+    private static func hamlibMode(_ m: RigMode) -> String {
+        switch m {
+        case .lsb: "LSB"; case .usb: "USB"; case .cw: "CW"
+        case .fm: "FM"; case .am: "AM"; case .data: "PKTUSB"
+        }
+    }
 }

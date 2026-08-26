@@ -5,6 +5,10 @@
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>OrbitDeck connects to a Bluetooth Low Energy serial adapter to Doppler-tune your radio (CAT control). It is used only when you configure and connect a radio.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>OrbitDeck connects to your Icom radio over your local Wi-Fi network to Doppler-tune it (network CAT control). It is used only when you configure and connect a network radio.</string>
+    <string>OrbitDeck connects to your radio, rotator, or a rigctld/rotctld server over your local Wi-Fi network to control it. It is used only when you configure and connect a network device.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone) to record passes and decode SSTV and FT4. Audio is used only while you record or decode.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>OrbitDeck can save decoded SSTV images to your photo library when you choose to export them.</string>
 </dict>
 </plist>

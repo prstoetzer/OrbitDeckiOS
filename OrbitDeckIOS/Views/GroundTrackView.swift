@@ -144,17 +144,13 @@ struct GroundTrackView: View {
         )
     }
 
-    /// Compass bearing (0° = north) of the satellite's ground-track motion, from
-    /// its sub-point now vs ~20 s ahead. Drives the heading arrow marker.
+    /// Compass bearing (0° = north) of the satellite's ground-track motion.
+    /// Delegates to `OrbitPredictor.groundBearing`, which uses a period-adaptive
+    /// central difference so the arrow stays correct at HEO apogee (a fixed 20 s
+    /// forward step there spans sub-degree motion) and across the antimeridian.
     private func travelBearing(at date: Date) -> Double {
-        guard let a = livePoint(at: date),
-              let b = livePoint(at: date.addingTimeInterval(20)) else { return 0 }
-        let lat1 = a.coordinate.latitude * .pi / 180, lat2 = b.coordinate.latitude * .pi / 180
-        let dLon = (b.coordinate.longitude - a.coordinate.longitude) * .pi / 180
-        let y = sin(dLon) * cos(lat2)
-        let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
-        var bearing = atan2(y, x) * 180 / .pi
-        if bearing < 0 { bearing += 360 }
+        guard let sat = store.selectedSatellite,
+              let bearing = OrbitPredictor.groundBearing(sat, observer: store.preferences.observer, at: date) else { return 0 }
         return bearing
     }
 

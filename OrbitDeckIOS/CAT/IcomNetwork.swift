@@ -96,6 +96,55 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         }
     }
 
+    // MARK: Audio stream (EXPERIMENTAL — RS-BA1 audio, unverified)
+    //
+    // CardSat never opens the audio stream, so this has no validated reference; the
+    // packet layout is clean-roomed from the public kappanhang/wfview format
+    // (16-bit signed LE PCM at the negotiated 16 kHz, payload at offset 24). It
+    // reuses the same session (this stream does its own are-you-there bootstrap on
+    // basePort+2, which the radio associates with the session advertised in
+    // ConnInfo). Flagged for on-hardware verification against a real IC-9700/705.
+
+    private var audio: RSStream?
+    private var onAudioPCM: (([Int16]) -> Void)?
+
+    /// Sample rate negotiated in ConnInfo.
+    var audioSampleRate: Double { 16_000 }
+
+    /// Open the audio stream and deliver received PCM (16-bit signed) blocks.
+    func startAudio(onPCM: @escaping ([Int16]) -> Void) {
+        queue.async {
+            guard self.connected, self.audio == nil else { return }
+            self.onAudioPCM = onPCM
+            let a = RSStream(host: self.host, port: self.basePort + 2, queue: self.queue)
+            self.audio = a
+            a.onReady = { [weak a] in a?.bootstrap() }
+            a.onBootstrapped = { }                       // audio flows after bootstrap
+            a.onPacket = { [weak self] pkt in self?.handleAudio(pkt) }
+            a.onError = { _ in }
+            a.start()
+        }
+    }
+
+    func stopAudio() {
+        queue.async { self.audio?.close(); self.audio = nil; self.onAudioPCM = nil }
+    }
+
+    /// Send a block of PCM (16-bit signed) as a TX audio datagram.
+    func sendAudioPCM(_ pcm: [Int16]) {
+        queue.async { self.audio?.sendAudio(pcm) }
+    }
+
+    private func handleAudio(_ r: [UInt8]) {
+        // Audio data packets are the large ones on this dedicated stream; PCM begins
+        // at offset 24 (16-bit signed little-endian).
+        guard r.count >= 64 else { return }
+        var pcm = [Int16](); pcm.reserveCapacity((r.count - 24) / 2)
+        var i = 24
+        while i + 1 < r.count { pcm.append(Int16(bitPattern: UInt16(r[i]) | (UInt16(r[i + 1]) << 8))); i += 2 }
+        if !pcm.isEmpty { onAudioPCM?(pcm) }
+    }
+
     // MARK: State machine
 
     private func finishConnect(_ result: Result<Void, Error>) {
@@ -109,8 +158,8 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
 
     private func teardown() {
         reauthTimer?.cancel(); reauthTimer = nil
-        control?.close(); serial?.close()
-        control = nil; serial = nil
+        control?.close(); serial?.close(); audio?.close()
+        control = nil; serial = nil; audio = nil; onAudioPCM = nil
         connected = false; authOK = false
         // Resolve a still-pending connect (disconnect during the handshake). Safe
         // because finishConnect() nils connectCont before it calls teardown.
@@ -429,6 +478,25 @@ final class RSStream: @unchecked Sendable {
         // (the radio does not send a distinct open reply).
         onOpen()
     }
+
+    /// Send a TX audio datagram (EXPERIMENTAL). Layout: [0:2] total length (LE),
+    /// [6:8] tracked seq (LE), [8:12] localSID / [12:16] remoteSID (BE), [16]=0x80,
+    /// [18:20] audio seq (BE), [22:24] sample count (BE), [24:] 16-bit LE PCM.
+    func sendAudio(_ pcm: [Int16]) {
+        let total = 24 + pcm.count * 2
+        var p = [UInt8](repeating: 0, count: total)
+        p[0] = UInt8(total & 0xFF); p[1] = UInt8((total >> 8) & 0xFF)
+        let seq = nextTracked(); p[6] = UInt8(seq & 0xFF); p[7] = UInt8((seq >> 8) & 0xFF)
+        writeBE(&p, 8, localSID); writeBE(&p, 12, remoteSID)
+        p[16] = 0x80
+        _audioSeq &+= 1
+        p[18] = UInt8((_audioSeq >> 8) & 0xFF); p[19] = UInt8(_audioSeq & 0xFF)
+        p[22] = UInt8((pcm.count >> 8) & 0xFF); p[23] = UInt8(pcm.count & 0xFF)
+        var idx = 24
+        for s in pcm { let u = UInt16(bitPattern: s); p[idx] = UInt8(u & 0xFF); p[idx + 1] = UInt8((u >> 8) & 0xFF); idx += 2 }
+        store(p, seq: seq); rawSend(p)
+    }
+    private var _audioSeq: UInt16 = 0
 
     func sendCIV(_ frame: [UInt8]) {
         let n = frame.count

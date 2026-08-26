@@ -240,12 +240,16 @@ struct GlobeView: View {
         context.fill(Path(ellipseIn: CGRect(x: surface.x - 1.5, y: surface.y - 1.5, width: 3, height: 3)),
                      with: .color(color.opacity(0.5)))
 
+        // Direction of travel from the period-adaptive ground bearing, projected as
+        // a fixed 0.5° geodesic step from the sub-point. This never collapses to a
+        // sub-pixel delta at HEO apogee the way a fixed 60 s look-ahead did.
         var angle: Double?
-        if let ahead = try? OrbitPredictor.look(satellite, observer: store.preferences.observer, at: date.addingTimeInterval(60)),
-           let aheadSurface = project(lat: ahead.subLatitude, lon: ahead.subLongitude, center: center, c: c, r: r) {
-            let aheadScale = 1 + altitudeFraction(ahead.altitudeKm)
-            let ag = CGPoint(x: c.x + (aheadSurface.x - c.x) * aheadScale, y: c.y + (aheadSurface.y - c.y) * aheadScale)
-            if hypot(ag.x - glyph.x, ag.y - glyph.y) > 0.5 { angle = atan2(ag.y - glyph.y, ag.x - glyph.x) }
+        if let bearing = OrbitPredictor.groundBearing(satellite, observer: store.preferences.observer, at: date) {
+            let step = destination(lat: look.subLatitude, lon: look.subLongitude, distanceDeg: 0.5, bearingDeg: bearing)
+            if let aheadSurface = project(lat: step.0, lon: step.1, center: center, c: c, r: r) {
+                let ag = CGPoint(x: c.x + (aheadSurface.x - c.x) * scale, y: c.y + (aheadSurface.y - c.y) * scale)
+                if hypot(ag.x - glyph.x, ag.y - glyph.y) > 0.3 { angle = atan2(ag.y - glyph.y, ag.x - glyph.x) }
+            }
         }
         if let angle {
             drawHeadingArrow(&context, at: glyph, angle: angle, color: color, size: size * 0.5)
