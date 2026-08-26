@@ -12,6 +12,18 @@ import Combine
 //  `AVAudioSession.routeChangeNotification` so plugging/unplugging updates live.
 // ===========================================================================
 
+/// Tracks whether any digital-audio operation (FT4 RX/TX, SSTV decode, pass
+/// recording) is active. When active, notification *alert sounds* are suppressed
+/// (see `NotificationRouter`): an alert beep would be transmitted over the air on
+/// FT4, or would corrupt an SSTV decode / recording. All callers are `@MainActor`,
+/// so the counter is only touched on the main thread.
+enum AudioActivity {
+    private nonisolated(unsafe) static var count = 0
+    static var isActive: Bool { count > 0 }
+    static func begin() { count += 1 }
+    static func end() { count = max(0, count - 1) }
+}
+
 @MainActor
 final class AudioHub: ObservableObject {
     /// A USB audio interface is connected (input port present).

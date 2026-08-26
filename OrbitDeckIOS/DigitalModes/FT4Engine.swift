@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 // ===========================================================================
 //  FT4Engine.swift — full-duplex FT4 over an AudioSource, using ft8_lib (MIT)
@@ -24,6 +25,8 @@ struct FT4DecodedMessage: Identifiable, Sendable {
     let snr: Int          // estimated signal report (dB) — sent as our report to this station
     let freqHz: Double
     let atSlot: Int
+    /// UTC start of the slot this decode came from.
+    var slotDate: Date { Date(timeIntervalSince1970: Double(atSlot) * kFT4SlotSeconds) }
 }
 
 @MainActor
@@ -32,7 +35,14 @@ final class FT4Engine: ObservableObject {
     @Published private(set) var decodes: [FT4DecodedMessage] = []
     @Published private(set) var status = "Idle"
     @Published private(set) var isTransmitting = false
+    @Published private(set) var txLevel: Float = 0     // live TX output level (0…1)
+    @Published private(set) var rxLevel: Float = 0     // live RX input level (0…1)
+    @Published private(set) var waterfall: UIImage?    // scrolling spectrum waterfall
     @Published var errorText = ""
+
+    // Audio levels (linear multipliers) applied to the shared source.
+    @Published var inputGain: Float = 1 { didSet { source?.inputGain = inputGain } }
+    @Published var outputGain: Float = 1 { didSet { source?.outputGain = outputGain } }
 
     // Operator-set TX state.
     @Published var txEnabled = false
@@ -79,6 +89,16 @@ final class FT4Engine: ObservableObject {
     private nonisolated(unsafe) var txIndex = 0
     private nonisolated(unsafe) let txLock = NSLock()
 
+    // Spectrum waterfall + RX level (computed on `analysisQueue`).
+    private let analysisQueue = DispatchQueue(label: "org.orbitdeck.ft4.spec")
+    private nonisolated(unsafe) var analysisTimer: DispatchSourceTimer?
+    private nonisolated(unsafe) let specLock = NSLock()
+    private nonisolated(unsafe) var specWindow: [Float] = []
+    private nonisolated(unsafe) var rxPeak: Float = 0
+    private nonisolated(unsafe) let analyzer = SpectrumAnalyzer(n: 2048)
+    private nonisolated(unsafe) var waterMagRows: [[Float]] = []   // newest last
+    private let waterHeight = 90
+
     func attach(rig: RigController, qso: QSOStore) { self.rig = rig; self.qso = qso }
 
     // MARK: Lifecycle
@@ -96,26 +116,35 @@ final class FT4Engine: ObservableObject {
             txMessage = myGrid.isEmpty ? "CQ \(myCall)" : "CQ \(myCall) \(String(myGrid.prefix(4)))"
         }
         pttOverCAT = rig?.pttSupported ?? false
+        source.inputGain = inputGain
+        source.outputGain = outputGain
         source.onError = { [weak self] m in self?.errorText = m }
         do {
             try source.start(onFrames: { [weak self] frames in
                 guard let self else { return }
                 self.lock.lock(); self.rxBuffer.append(contentsOf: frames); self.lock.unlock()
+                self.ingestAnalysis(frames)
             })
         } catch { errorText = error.localizedDescription; self.source = nil; return }
         isRunning = true; status = "Listening…"
+        AudioActivity.begin()
         scheduleSlotTimer()
+        scheduleAnalysisTimer()
     }
 
     func stop() {
         guard isRunning else { return }
         slotTimer?.cancel(); slotTimer = nil
+        analysisTimer?.cancel(); analysisTimer = nil
         source?.stopPlayback()
         source?.stop()
         source = nil
         if isTransmitting { Task { await rig?.setPTT(false) } }
         isTransmitting = false
         isRunning = false
+        AudioActivity.end()
+        specLock.lock(); specWindow.removeAll(keepingCapacity: true); rxPeak = 0; specLock.unlock()
+        rxLevel = 0
         status = "Idle"
     }
 
@@ -132,6 +161,83 @@ final class FT4Engine: ObservableObject {
         slotTimer = t
     }
 
+    // MARK: Spectrum + level metering
+
+    /// Accumulate the running spectrum window and RX peak (on the audio thread).
+    private nonisolated func ingestAnalysis(_ frames: [Float]) {
+        var peak: Float = 0
+        for s in frames { let a = abs(s); if a > peak { peak = a } }
+        specLock.lock()
+        specWindow.append(contentsOf: frames)
+        if specWindow.count > 4096 { specWindow.removeFirst(specWindow.count - 4096) }
+        if peak > rxPeak { rxPeak = peak }
+        specLock.unlock()
+    }
+
+    private nonisolated func scheduleAnalysisTimer() {
+        let t = DispatchSource.makeTimerSource(queue: analysisQueue)
+        t.schedule(deadline: .now() + 0.15, repeating: 0.15)
+        t.setEventHandler { [weak self] in self?.analyze() }
+        t.resume()
+        analysisTimer = t
+    }
+
+    /// Compute one spectrum row + peak (on `analysisQueue`), publish to the UI.
+    private nonisolated func analyze() {
+        specLock.lock()
+        let win = specWindow
+        let peak = rxPeak; rxPeak = 0
+        specLock.unlock()
+        let rate = sampleRate
+
+        var image: UIImage?
+        if win.count >= analyzer.n {
+            let db = analyzer.magnitudesDB(win)
+            if !db.isEmpty {
+                let binHz = rate / Double(analyzer.n)
+                let maxBin = max(1, min(db.count, Int(3000.0 / binHz)))
+                image = appendWaterfall(Array(db[0..<maxBin]))
+            }
+        }
+        Task { @MainActor in
+            self.rxLevel = peak
+            if let image { self.waterfall = image }
+        }
+    }
+
+    /// Push a new magnitude row and render the scrolling waterfall (newest at bottom).
+    private nonisolated func appendWaterfall(_ row: [Float]) -> UIImage? {
+        waterMagRows.append(row)
+        if waterMagRows.count > waterHeight { waterMagRows.removeFirst(waterMagRows.count - waterHeight) }
+        let w = row.count, h = waterMagRows.count
+        guard w > 0, h > 0 else { return nil }
+        // Normalize across the visible rows so faint signals still show.
+        var lo = Float.greatestFiniteMagnitude, hi = -Float.greatestFiniteMagnitude
+        for r in waterMagRows { for v in r { if v < lo { lo = v }; if v > hi { hi = v } } }
+        let range = max(1, hi - lo)
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        for (y, r) in waterMagRows.enumerated() {
+            let count = min(w, r.count)
+            for x in 0..<count {
+                let c = Heatmap.color((r[x] - lo) / range)
+                let o = (y * w + x) * 4
+                rgba[o] = c.r; rgba[o + 1] = c.g; rgba[o + 2] = c.b; rgba[o + 3] = 255
+            }
+        }
+        return Self.imageFromRGBA(rgba, width: w, height: h)
+    }
+
+    nonisolated static func imageFromRGBA(_ bytes: [UInt8], width: Int, height: Int) -> UIImage? {
+        guard width > 0, height > 0, bytes.count == width * height * 4 else { return nil }
+        var data = bytes
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(data: &data, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: width * 4, space: cs, bitmapInfo: info),
+              let cg = ctx.makeImage() else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
     /// Runs on `slotQueue` at each 7.5 s boundary: decode the slot that just ended,
     /// then start a TX if it's our turn.
     private nonisolated func onSlotBoundary() {
@@ -139,7 +245,9 @@ final class FT4Engine: ObservableObject {
         lock.lock(); let slot = rxBuffer; rxBuffer.removeAll(keepingCapacity: true); let rate = sampleRate; lock.unlock()
 
         let endedSlotIndex = Int((Date().timeIntervalSince1970 / kFT4SlotSeconds).rounded()) - 1
-        let found = slot.count > Int(rate * 3.0) ? FT4Engine.decodeSlot(slot, rate: rate) : []
+        let haveAudio = slot.count > Int(rate * 3.0)
+        let result = haveAudio ? FT4Engine.decodeSlot(slot, rate: rate) : FT4Engine.SlotResult()
+        let found = result.messages
         let startingSlot = endedSlotIndex + 1
 
         Task { @MainActor in
@@ -147,12 +255,18 @@ final class FT4Engine: ObservableObject {
             // frame was transmitted).
             if self.finalizeNext { self.finalizeNext = false; self.endSequence() }
 
-            if !found.isEmpty {
-                for f in found {
-                    self.decodes.append(FT4DecodedMessage(text: f.text, snr: f.snr, freqHz: f.freq, atSlot: endedSlotIndex))
+            for f in found {
+                self.decodes.append(FT4DecodedMessage(text: f.text, snr: f.snr, freqHz: f.freq, atSlot: endedSlotIndex))
+            }
+            if self.decodes.count > 100 { self.decodes.removeFirst(self.decodes.count - 100) }
+            // Always report what the decoder saw this slot — distinguishes "no audio"
+            // from "signal but no sync candidates" from "candidates but no decode".
+            if !self.isTransmitting {
+                if !haveAudio {
+                    self.status = "No RX audio this slot"
+                } else {
+                    self.status = "\(found.count) decoded · \(result.candidates) cand · \(result.blocks) blk"
                 }
-                if self.decodes.count > 100 { self.decodes.removeFirst(self.decodes.count - 100) }
-                self.status = "Decoded \(found.count) this slot"
             }
 
             // Auto-sequencer updates txMessage/txEnabled before the TX decision.
@@ -169,7 +283,7 @@ final class FT4Engine: ObservableObject {
     /// Message field parse: `CQ`, or `<to> <de> <extra>`.
     struct FT4Fields { let isCQ: Bool; let to: String; let de: String; let extra: String }
 
-    static func parse(_ text: String) -> FT4Fields? {
+    nonisolated static func parse(_ text: String) -> FT4Fields? {
         let t = text.split(separator: " ").map { $0.uppercased() }
         guard !t.isEmpty else { return nil }
         if t[0] == "CQ" {
@@ -192,17 +306,25 @@ final class FT4Engine: ObservableObject {
         seqStatus = "Calling CQ"
     }
 
-    /// Answer a decoded CQ (starts the exchange with that station).
-    func answerCQ(_ d: FT4DecodedMessage) {
-        guard let f = FT4Engine.parse(d.text), f.isCQ, !myCallSeq.isEmpty else { return }
-        workedCall = f.de; workedGrid = FT4Engine.isGrid(f.extra) ? f.extra : ""; reportIn = nil; logged = false
+    /// Start working a decoded station (tap any decode). Answers a CQ, or calls a
+    /// station heard in a directed message; the auto-sequencer takes it from there.
+    func work(_ d: FT4DecodedMessage) {
+        guard let f = FT4Engine.parse(d.text), !myCallSeq.isEmpty else { return }
+        let their = f.isCQ ? f.de : (f.de.isEmpty ? f.to : f.de)
+        guard !their.isEmpty else { return }
+        workedCall = their; workedGrid = FT4Engine.isGrid(f.extra) ? f.extra : ""; reportIn = nil; logged = false
         reportOut = d.snr        // our report to them = their decoded SNR
-        // Reply with our grid (or a report if we have no grid).
         let mine = myGridSeq.isEmpty ? FT4Engine.reportString(reportOut) : myGridSeq
-        txMessage = "\(workedCall) \(myCallSeq) \(mine)"
+        txMessage = "\(their) \(myCallSeq) \(mine)"
         autoSequence = true; txEnabled = true
         txOnEvenSlots = (d.atSlot % 2 != 0)     // transmit opposite to their slot
-        seqStatus = "Answering \(workedCall)"
+        seqStatus = "Working \(their)"
+    }
+
+    /// Whether a decode is addressed to us (for highlighting).
+    func isToMe(_ text: String) -> Bool {
+        guard let f = FT4Engine.parse(text), !f.isCQ else { return false }
+        return f.to == myCallSeq && !myCallSeq.isEmpty
     }
 
     /// Advance the exchange based on messages addressed to us this slot.
@@ -268,14 +390,29 @@ final class FT4Engine: ObservableObject {
         guard let source, !isTransmitting else { return }
         guard let tones = FT4Engine.encodeTones(txMessage) else { errorText = "Could not encode \"\(txMessage)\"."; return }
         let tx = FT4Engine.synthesize(tones: tones, rate: source.sampleRate, f0: txAudioFreq)
-        txLock.lock(); txBuffer = tx; txIndex = 0; txDone = false; txLock.unlock()
+        txLock.lock(); txBuffer = tx; txIndex = 0; txDone = false; txPeak = 0; txLock.unlock()
         isTransmitting = true
-        status = "Transmitting"
+        status = "Transmitting: \(txMessage)"
+        // Live TX meter (reads the peak the render callback actually emitted) so the
+        // operator can confirm audio is going out even without monitoring the rig.
+        Task { @MainActor in
+            while self.isTransmitting {
+                let p = self.txLock.withLock { () -> Float in let v = self.txPeak; self.txPeak = 0; return v }
+                self.txLevel = p
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            self.txLevel = 0
+        }
+        // Transmission is a fixed length; end it on a timer so PTT always unkeys and
+        // the UI clears even if the audio output node never pulls the buffer dry.
+        let txDuration = Double(tx.count) / source.sampleRate + 0.4
         Task {
             await rig?.setPTT(true)
             do {
                 try source.startPlayback(pull: { [weak self] count in self?.pullTX(count) ?? [] })
-            } catch { errorText = error.localizedDescription; await endTransmit() }
+            } catch { errorText = error.localizedDescription; await endTransmit(); return }
+            try? await Task.sleep(nanoseconds: UInt64(txDuration * 1_000_000_000))
+            await endTransmit()
         }
     }
 
@@ -295,10 +432,13 @@ final class FT4Engine: ObservableObject {
         let n = min(count, remaining)
         let out = Array(txBuffer[txIndex..<(txIndex + n)])
         txIndex += n
+        var p: Float = 0; for s in out { let a = abs(s); if a > p { p = a } }
+        if p > txPeak { txPeak = p }
         txLock.unlock()
         return out
     }
     private nonisolated(unsafe) var txDone = false
+    private nonisolated(unsafe) var txPeak: Float = 0
 
     private func endTransmit() async {
         guard isTransmitting else { return }
@@ -310,15 +450,22 @@ final class FT4Engine: ObservableObject {
 
     // MARK: ft8_lib interop (nonisolated — off the main actor)
 
-    /// Decode one slot of audio into (text, score, freq).
-    nonisolated static func decodeSlot(_ samples: [Float], rate: Double) -> [(text: String, snr: Int, freq: Double)] {
+    /// One slot's decode plus diagnostics so the UI can show why a slot was empty.
+    struct SlotResult: Sendable {
+        var messages: [(text: String, snr: Int, freq: Double)] = []
+        var blocks = 0        // waterfall blocks accumulated (≈156 for a full slot)
+        var candidates = 0    // sync candidates found
+    }
+
+    /// Decode one slot of audio into messages (+ diagnostics).
+    nonisolated static func decodeSlot(_ samples: [Float], rate: Double) -> SlotResult {
         var cfg = monitor_config_t(f_min: 100, f_max: 3600, sample_rate: Int32(rate),
                                    time_osr: 2, freq_osr: 2, protocol: FTX_PROTOCOL_FT4)
         var mon = monitor_t()
         monitor_init(&mon, &cfg)
         defer { monitor_free(&mon) }
         let block = Int(mon.block_size)
-        guard block > 0 else { return [] }
+        guard block > 0 else { return SlotResult() }
 
         samples.withUnsafeBufferPointer { buf in
             guard let base = buf.baseAddress else { return }
@@ -326,23 +473,29 @@ final class FT4Engine: ObservableObject {
             while i + block <= buf.count { monitor_process(&mon, base + i); i += block }
         }
 
-        let maxC = 140
+        let maxC = 200
         var cands = [ftx_candidate_t](repeating: ftx_candidate_t(), count: maxC)
-        let n = ftx_find_candidates(&mon.wf, Int32(maxC), &cands, 10)
+        // Lower min-score than the CLI default so marginal candidates still reach the
+        // LDPC decoder (the transponder/HF path is noisier than a clean WAV).
+        let n = ftx_find_candidates(&mon.wf, Int32(maxC), &cands, 8)
 
-        var out: [(String, Int, Double)] = []
+        var result = SlotResult(blocks: Int(mon.wf.num_blocks), candidates: Int(n))
         var seen = Set<UInt16>()
         for idx in 0..<Int(n) {
             var msg = ftx_message_t()
             var st = ftx_decode_status_t()
-            let ok = ftx_decode_candidate(&mon.wf, &cands[idx], 20, &msg, &st)
+            let ok = ftx_decode_candidate(&mon.wf, &cands[idx], 25, &msg, &st)
             guard ok, !seen.contains(msg.hash) else { continue }
             seen.insert(msg.hash)
             var text = [CChar](repeating: 0, count: 64)
-            _ = ftx_message_decode(&msg, nil, &text, nil)
-            out.append((String(cString: text), snr(fromScore: Int(cands[idx].score)), Double(st.freq)))
+            // ftx_message_decode dereferences `offsets` unconditionally — passing
+            // nil (as before) null-derefs and crashes on the first real decode.
+            var offsets = ftx_message_offsets_t()
+            _ = ftx_message_decode(&msg, nil, &text, &offsets)
+            let s = String(cString: text)
+            if !s.isEmpty { result.messages.append((s, snr(fromScore: Int(cands[idx].score)), Double(st.freq))) }
         }
-        return out
+        return result
     }
 
     /// Approximate signal report (dB) from a candidate's sync score. ft8_lib does

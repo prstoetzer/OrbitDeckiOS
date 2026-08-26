@@ -19,6 +19,8 @@ final class IcomAudioSource: AudioSource, @unchecked Sendable {
     private var pullHandler: ((Int) -> [Float])?
     private var txTimer: DispatchSourceTimer?
     var onError: ((String) -> Void)?
+    var inputGain: Float = 1
+    var outputGain: Float = 1
 
     init(transport: IcomNetworkTransport) {
         self.transport = transport
@@ -28,7 +30,10 @@ final class IcomAudioSource: AudioSource, @unchecked Sendable {
     var isAvailable: Bool { transport.isConnected }
 
     func start(onFrames: @escaping ([Float]) -> Void) throws {
-        transport.startAudio { pcm in onFrames(pcm.map { Float($0) / 32768.0 }) }
+        transport.startAudio { [weak self] pcm in
+            let g = self?.inputGain ?? 1
+            onFrames(pcm.map { Float($0) / 32768.0 * g })
+        }
     }
 
     func stop() { transport.stopAudio() }
@@ -43,7 +48,8 @@ final class IcomAudioSource: AudioSource, @unchecked Sendable {
             guard let self, let pull = self.pullHandler else { return }
             let frames = pull(n)
             guard !frames.isEmpty else { return }
-            let pcm = frames.map { Int16(max(-32768, min(32767, $0 * 32767))) }
+            let g = self.outputGain
+            let pcm = frames.map { Int16(max(-32768, min(32767, $0 * g * 32767))) }
             self.transport.sendAudioPCM(pcm)
         }
         t.resume()

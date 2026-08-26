@@ -14,7 +14,9 @@ final class NotificationRouter: NSObject, ObservableObject, @preconcurrency UNUs
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound])
+        // Suppress the alert *sound* while a digital-audio op is running (FT4, SSTV,
+        // recording) — a beep would be transmitted on FT4 or corrupt a decode.
+        completionHandler(AudioActivity.isActive ? [.banner] : [.banner, .sound])
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,

@@ -1,4 +1,5 @@
 import Foundation
+import Accelerate
 
 // ===========================================================================
 //  AudioDSP.swift — small, pure DSP helpers shared by SSTV and FT4
@@ -98,4 +99,83 @@ final class AudioRingBuffer {
     }
 
     var available: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+/// Real-FFT magnitude analyzer (Accelerate/vDSP) for the FT4 spectrum waterfall.
+/// Used only from a single background queue, so `@unchecked Sendable` is safe.
+final class SpectrumAnalyzer: @unchecked Sendable {
+    let n: Int
+    private let half: Int
+    private let log2n: vDSP_Length
+    private let setup: FFTSetup
+    private var window: [Float]
+
+    init(n: Int = 2048) {
+        self.n = n
+        self.half = n / 2
+        self.log2n = vDSP_Length(log2(Double(n)))
+        self.setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
+        window = [Float](repeating: 0, count: n)
+        vDSP_hann_window(&window, vDSP_Length(n), Int32(vDSP_HANN_NORM))
+    }
+    deinit { vDSP_destroy_fftsetup(setup) }
+
+    /// Per-bin magnitude in dB for the most recent `n` samples of `input`
+    /// (returns `half` bins spanning DC…Nyquist). Empty if too little data.
+    func magnitudesDB(_ input: [Float]) -> [Float] {
+        guard input.count >= n else { return [] }
+        let start = input.count - n
+        var windowed = [Float](repeating: 0, count: n)
+        input.withUnsafeBufferPointer { src in
+            vDSP_vmul(src.baseAddress! + start, 1, window, 1, &windowed, 1, vDSP_Length(n))
+        }
+        var real = [Float](repeating: 0, count: half)
+        var imag = [Float](repeating: 0, count: half)
+        var mags = [Float](repeating: 0, count: half)
+        real.withUnsafeMutableBufferPointer { r in
+            imag.withUnsafeMutableBufferPointer { i in
+                var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
+                windowed.withUnsafeBufferPointer { w in
+                    w.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: half) { c in
+                        vDSP_ctoz(c, 2, &split, 1, vDSP_Length(half))
+                    }
+                }
+                vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                vDSP_zvmags(&split, 1, &mags, 1, vDSP_Length(half))
+            }
+        }
+        // Power → dB (10·log10), with a small floor to avoid log(0).
+        var floorv: Float = 1e-9
+        vDSP_vsadd(mags, 1, &floorv, &mags, 1, vDSP_Length(half))
+        var out = [Float](repeating: 0, count: half)
+        var count = Int32(half)
+        vvlog10f(&out, mags, &count)
+        var ten: Float = 10
+        vDSP_vsmul(out, 1, &ten, &out, 1, vDSP_Length(half))
+        return out
+    }
+}
+
+/// Maps a normalized magnitude (0…1) to a blue→cyan→green→yellow→red heatmap,
+/// the conventional waterfall palette. Returns premultiplied RGBA components.
+enum Heatmap {
+    static func color(_ v: Float) -> (r: UInt8, g: UInt8, b: UInt8) {
+        let x = max(0, min(1, v))
+        // Five-stop gradient.
+        let stops: [(Float, Float, Float)] = [
+            (0.0, 0.0, 0.25),  // deep blue
+            (0.0, 0.5, 1.0),   // cyan-blue
+            (0.0, 0.9, 0.3),   // green
+            (1.0, 0.9, 0.0),   // yellow
+            (1.0, 0.1, 0.0)    // red
+        ]
+        let seg = x * Float(stops.count - 1)
+        let i = min(stops.count - 2, Int(seg))
+        let f = seg - Float(i)
+        let a = stops[i], b = stops[i + 1]
+        let r = (a.0 + (b.0 - a.0) * f) * 255
+        let g = (a.1 + (b.1 - a.1) * f) * 255
+        let bl = (a.2 + (b.2 - a.2) * f) * 255
+        return (UInt8(max(0, min(255, r))), UInt8(max(0, min(255, g))), UInt8(max(0, min(255, bl))))
+    }
 }

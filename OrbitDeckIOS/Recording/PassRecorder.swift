@@ -71,6 +71,7 @@ final class PassRecorder: ObservableObject {
         }
 
         isRecording = true
+        AudioActivity.begin()
         startMeter()
     }
 
@@ -78,6 +79,7 @@ final class PassRecorder: ObservableObject {
         guard isRecording else { return }
         source?.stop()
         source = nil
+        AudioActivity.end()
         meterTimer?.cancel(); meterTimer = nil
         let duration = elapsed
         let sat = self.sat, filename = self.filename, start = startDate ?? Date()

@@ -21,6 +21,11 @@ protocol AudioSource: AnyObject {
     /// main thread, so start-time failures are reported here rather than thrown.
     var onError: ((String) -> Void)? { get set }
 
+    /// Linear gain applied to captured (RX) frames before delivery. Default 1.0.
+    var inputGain: Float { get set }
+    /// Linear gain applied to played-back (TX) samples. Default 1.0.
+    var outputGain: Float { get set }
+
     /// Begin capturing. `onFrames` receives blocks of mono Float PCM at
     /// `sampleRate`. The callback may arrive on a real-time audio thread, so
     /// consumers must hop to their own queue for heavy work.

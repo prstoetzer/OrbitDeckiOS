@@ -33,6 +33,10 @@ final class USBAudioSource: AudioSource, @unchecked Sendable {
     /// Optional error sink (set by the caller); invoked on the main queue.
     var onError: ((String) -> Void)?
 
+    /// Linear RX/TX gains (read on the audio thread; plain Float is atomic enough).
+    var inputGain: Float = 1
+    var outputGain: Float = 1
+
     init(targetRate: Double = 48_000) {
         self.targetRate = targetRate
         self.sampleRate = targetRate
@@ -64,15 +68,32 @@ final class USBAudioSource: AudioSource, @unchecked Sendable {
             let input = engine.inputNode
             let inFormat = input.inputFormat(forBus: 0)
             guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else { report("No audio input available."); return }
-            monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: targetRate,
-                                       channels: 1, interleaved: false)
-            // Remove any prior tap, then tap with the bus's OWN format (nil) — passing
-            // a mismatched format is a common AVAudioEngine crash. The converter is
-            // built lazily from the actual buffer format in handleInput.
+            guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: targetRate,
+                                           channels: 1, interleaved: false) else { report("Unsupported audio format."); return }
+            monoFormat = mono
+            // Capture: tap with the bus's OWN format (nil); converter built lazily.
             input.removeTap(onBus: 0)
             input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
                 self?.handleInput(buffer)
             }
+            // Output/TX: attach a source node up front so the OUTPUT graph is live
+            // and its render callback fires continuously (it outputs silence until a
+            // pull handler is set for transmit). Building it after the engine is
+            // running left the output chain inactive → no TX audio.
+            let node = AVAudioSourceNode(format: mono) { [weak self] _, _, frameCount, ablPtr -> OSStatus in
+                let abl = UnsafeMutableAudioBufferListPointer(ablPtr)
+                let n = Int(frameCount)
+                let samples = self?.pullHandler?(n) ?? []
+                let g = self?.outputGain ?? 1
+                for buffer in abl {
+                    guard let base = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                    for i in 0..<n { base[i] = i < samples.count ? samples[i] * g : 0 }
+                }
+                return noErr
+            }
+            sourceNode = node
+            engine.attach(node)
+            engine.connect(node, to: engine.mainMixerNode, format: mono)
             engine.prepare()
             try engine.start()
             capturing = true
@@ -84,8 +105,10 @@ final class USBAudioSource: AudioSource, @unchecked Sendable {
     func stop() {
         q.async { [weak self] in
             guard let self else { return }
+            self.pullHandler = nil
             if self.capturing { self.engine.inputNode.removeTap(onBus: 0); self.capturing = false }
-            if self.sourceNode == nil { self.engine.stop() }
+            if let node = self.sourceNode { self.engine.detach(node); self.sourceNode = nil }
+            self.engine.stop()
             self.frameHandler = nil
             self.converter = nil
             try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
@@ -110,66 +133,32 @@ final class USBAudioSource: AudioSource, @unchecked Sendable {
         }
         guard err == nil, let ch = out.floatChannelData, out.frameLength > 0 else { return }
         let n = Int(out.frameLength)
-        handler(Array(UnsafeBufferPointer(start: ch[0], count: n)))
+        let g = inputGain
+        var samples = Array(UnsafeBufferPointer(start: ch[0], count: n))
+        if g != 1 { for i in 0..<n { samples[i] *= g } }
+        handler(samples)
     }
 
     // MARK: Playback (TX, full duplex)
 
     func startPlayback(pull: @escaping (Int) -> [Float]) throws {
+        // The output source node is already attached and rendering (silence). TX is
+        // simply feeding it samples — no graph change, so nothing to crash or stall.
         pullHandler = pull
-        q.async { [weak self] in
-            guard let self else { return }
-            guard let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: self.targetRate,
-                                          channels: 1, interleaved: false) else { self.report("Unsupported audio format."); return }
-            guard self.sourceNode == nil else { return }   // already set up
-            do {
-                try self.configureSession()
-                let node = AVAudioSourceNode(format: fmt) { [weak self] _, _, frameCount, ablPtr -> OSStatus in
-                    let abl = UnsafeMutableAudioBufferListPointer(ablPtr)
-                    let n = Int(frameCount)
-                    let samples = self?.pullHandler?(n) ?? []
-                    for buffer in abl {
-                        guard let base = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
-                        for i in 0..<n { base[i] = i < samples.count ? samples[i] : 0 }
-                    }
-                    return noErr
-                }
-                self.sourceNode = node
-                // Mutating a running engine's graph can crash; pause around the change.
-                let wasRunning = self.engine.isRunning
-                if wasRunning { self.engine.pause() }
-                self.engine.attach(node)
-                self.engine.connect(node, to: self.engine.mainMixerNode, format: fmt)
-                self.engine.prepare()
-                try self.engine.start()
-            } catch {
-                self.report("Could not start transmit audio: \(error.localizedDescription)")
-            }
-        }
     }
 
     func stopPlayback() {
-        q.async { [weak self] in
-            guard let self else { return }
-            self.pullHandler = nil
-            if let node = self.sourceNode {
-                let wasRunning = self.engine.isRunning
-                if wasRunning, self.capturing { self.engine.pause() }
-                self.engine.detach(node)
-                self.sourceNode = nil
-                if self.capturing, wasRunning { self.engine.prepare(); try? self.engine.start() }
-            }
-            if !self.capturing { self.engine.stop() }
-        }
+        pullHandler = nil
     }
 
     // MARK: Session
 
     private func configureSession() throws {
         let session = AVAudioSession.sharedInstance()
-        // Minimal options: keep both capture and playback on the USB interface
-        // (no .defaultToSpeaker, which would force TX out the built-in speaker).
-        try session.setCategory(.playAndRecord, mode: .measurement)
+        // .default (not .measurement) so output isn't attenuated; keep both capture
+        // and playback on the USB interface. TX audio goes OUT the interface to the
+        // radio, so monitor the interface, not the phone.
+        try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
         if let usb = session.availableInputs?.first(where: { $0.portType == .usbAudio }) {
             try? session.setPreferredInput(usb)
         }
