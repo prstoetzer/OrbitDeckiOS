@@ -27,6 +27,12 @@ final class AudioHub: ObservableObject {
 
     func attach(_ rig: RigController) {
         self.rig = rig
+        // Put the session in a record-capable category (without activating it) so
+        // `availableInputs` enumerates a USB audio *input* even before we record.
+        // `.mixWithOthers` avoids interrupting any other audio; no mic prompt occurs
+        // until we actually capture.
+        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .measurement,
+                                                         options: [.mixWithOthers, .allowBluetoothA2DP, .defaultToSpeaker])
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -40,11 +46,16 @@ final class AudioHub: ObservableObject {
     }
 
     /// Recompute availability. Called on route changes and when rig state changes.
+    /// A USB audio interface may present as an input, an output (system audio is
+    /// routed to it), or an available input — check all three so a bidirectional
+    /// adapter is detected even when we're not recording.
     func refresh() {
         let s = AVAudioSession.sharedInstance()
-        let inRoute = s.currentRoute.inputs.contains { $0.portType == .usbAudio }
+        let route = s.currentRoute
+        let inRoute = route.inputs.contains { $0.portType == .usbAudio }
+        let outRoute = route.outputs.contains { $0.portType == .usbAudio }
         let inAvail = (s.availableInputs ?? []).contains { $0.portType == .usbAudio }
-        usbConnected = inRoute || inAvail
+        usbConnected = inRoute || outRoute || inAvail
         // Icom network audio is available when a configured radio uses the RS-BA1
         // network transport and is connected (EXPERIMENTAL path).
         icomAudioReady = rig?.icomAudioTransport != nil

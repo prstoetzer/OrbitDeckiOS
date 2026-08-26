@@ -1,6 +1,6 @@
-# OrbitDeck iOS/iPadOS 0.9.14 — logging, LoTW, SSTV, full-duplex FT4, rigctl
+# OrbitDeck iOS/iPadOS 0.9.14 (1) — logging, LoTW, SSTV, full-duplex FT4, rigctl
 
-Build 1. This release remains below 1.0. It follows 0.9.13.
+Version **0.9.14 (1)**. This release remains below 1.0. It follows 0.9.13.
 
 ## Summary
 

@@ -182,8 +182,25 @@ h3 { font-size: 19px; margin: 26px 0 8px; }
 .site-footer a { color: var(--muted); }
 .site-footer a:hover { color: var(--text); }
 
+@media (max-width: 860px) {
+    /* Let the top menu wrap instead of overflowing: brand on its own row,
+       links flowing onto the next line(s). */
+    .nav {
+        flex-wrap: wrap;
+        height: auto;
+        gap: 8px 16px;
+        padding: 10px 16px;
+    }
+    .nav .brand { flex-basis: 100%; margin-right: 0; margin-bottom: 2px; }
+    .site-header { position: static; }   /* avoid a tall sticky bar eating the screen */
+}
+
 @media (max-width: 720px) {
     .doc { grid-template-columns: 1fr; }
     .toc { position: static; }
-    .nav { gap: 14px; }
+    .doc-body h2 { scroll-margin-top: 12px; }
+    /* Wide tables (radio lists, file manifests) scroll horizontally instead of
+       forcing the page wider than the viewport. */
+    .doc-body table, .prose table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .container { padding-left: 16px; padding-right: 16px; }
 }
