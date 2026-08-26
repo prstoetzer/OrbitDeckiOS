@@ -11,10 +11,15 @@ import SwiftUI
 struct HomeRecordingCard: View {
     @EnvironmentObject private var audio: AudioHub
     @EnvironmentObject private var recorder: PassRecorder
+    @AppStorage(FeatureVisibility.recorderKey) private var visibility = FeatureVisibility.auto
     let satellite: SatelliteRecord
 
+    private var visible: Bool {
+        switch visibility { case .auto: audio.audioAvailable; case .always: true; case .off: false }
+    }
+
     var body: some View {
-        if audio.audioAvailable {
+        if visible {
             SectionCard("Pass recording") {
                 if !recorder.errorText.isEmpty {
                     Text(recorder.errorText).font(.caption).foregroundStyle(ODTheme.warning)
@@ -42,7 +47,7 @@ struct HomeRecordingCard: View {
     private func toggle() {
         if recorder.isRecording {
             recorder.stop()
-        } else if let source = audio.makeSource() {
+        } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
             recorder.start(source: source, satellite: satellite.name)
         } else {
             recorder.errorText = "No audio interface available."

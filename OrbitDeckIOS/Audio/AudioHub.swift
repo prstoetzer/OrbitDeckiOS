@@ -24,6 +24,26 @@ enum AudioActivity {
     static func end() { count = max(0, count - 1) }
 }
 
+/// Per-feature visibility for the audio-driven Home cards (pass recording, SSTV,
+/// FT4). `auto` shows the card only when an audio interface is present (the default);
+/// `always` shows it even without one (using the built-in mic); `off` hides it even
+/// when an interface is connected — e.g. a voice-only op who wants only the recorder.
+enum FeatureVisibility: String, CaseIterable, Identifiable {
+    case auto, always, off
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .auto: "Auto (with audio device)"
+        case .always: "Always show"
+        case .off: "Hidden"
+        }
+    }
+    /// UserDefaults keys (also read by the cards via @AppStorage).
+    static let recorderKey = "feature.recorder"
+    static let sstvKey = "feature.sstv"
+    static let ft4Key = "feature.ft4"
+}
+
 @MainActor
 final class AudioHub: ObservableObject {
     /// A USB audio interface is connected (input port present).
@@ -68,9 +88,13 @@ final class AudioHub: ObservableObject {
     }
 
     /// The active audio source, preferring a USB interface, else Icom network audio.
-    func makeSource() -> AudioSource? {
+    /// With `allowMicFallback`, falls back to the built-in microphone when neither is
+    /// present (a feature was set to "Always show") — lets SSTV/recording work by
+    /// acoustically coupling the phone to a receiver's speaker.
+    func makeSource(allowMicFallback: Bool = false) -> AudioSource? {
         if usbConnected { return USBAudioSource() }
         if let t = rig?.icomAudioTransport { return IcomAudioSource(transport: t) }
+        if allowMicFallback { return USBAudioSource() }   // default input = built-in mic
         return nil
     }
 }

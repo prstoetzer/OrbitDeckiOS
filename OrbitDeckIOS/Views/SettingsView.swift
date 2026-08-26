@@ -9,6 +9,9 @@ struct SettingsView: View {
     @State private var gridEntry = ""
     @State private var gridMessage: String?
     @AppStorage("orbitdeck.keepScreenAwakeHome") private var keepScreenAwakeHome = false
+    @AppStorage(FeatureVisibility.recorderKey) private var featureRecorder = FeatureVisibility.auto
+    @AppStorage(FeatureVisibility.sstvKey) private var featureSSTV = FeatureVisibility.auto
+    @AppStorage(FeatureVisibility.ft4Key) private var featureFT4 = FeatureVisibility.auto
     @AppStorage("orbitdeck.spacetrack.identity") private var spaceTrackIdentity = ""
     @State private var spaceTrackPassword = ""
     @State private var spaceTrackLoaded = false
@@ -174,6 +177,20 @@ struct SettingsView: View {
                     Label("Antenna rotator", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
                 }
                 Text("Point an az/el rotator at the selected satellite over a BLE serial adapter (GS-232, Easycomm, SPID) or a network connection (rotctld, PstRotator). Control is on the Home screen once a rotator is configured.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
+            Section("Audio features") {
+                Picker(selection: $featureRecorder) {
+                    ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
+                } label: { Label("Pass recording", systemImage: "waveform.badge.mic") }
+                Picker(selection: $featureSSTV) {
+                    ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
+                } label: { Label("SSTV decode", systemImage: "photo") }
+                Picker(selection: $featureFT4) {
+                    ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
+                } label: { Label("FT4", systemImage: "dot.radiowaves.left.and.right") }
+                Text("These Home cards normally appear only when a USB or network audio interface is connected. Set one to \u{201C}Always show\u{201D} to use it without an interface (audio comes from the built-in microphone — hold the phone near your receiver), or \u{201C}Hidden\u{201D} to keep it off the Home screen even with an interface plugged in.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 

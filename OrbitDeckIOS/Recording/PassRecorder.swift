@@ -3,12 +3,13 @@ import AVFoundation
 import Combine
 
 // ===========================================================================
-//  PassRecorder.swift — record received pass audio to a WAV file
+//  PassRecorder.swift — record received pass audio to a compressed file
 //
 //  Consumes an `AudioSource` (USB or, later, Icom network audio) and streams the
-//  mono Float blocks to a 16-bit PCM WAV via AVAudioFile on a background queue —
-//  no whole-clip RAM buffer. Each clip is tagged with the satellite + UTC start
-//  and registered with the QSOStore so it appears on the Log screen.
+//  mono Float blocks to a compressed AAC .m4a via AVAudioFile on a background queue
+//  — no whole-clip RAM buffer. AAC is ~1/15 the size of 16-bit PCM WAV (a 10-min
+//  pass is a few MB instead of ~60 MB) and plays everywhere. Each clip is tagged
+//  with the satellite + UTC start and registered with the QSOStore for the Log.
 // ===========================================================================
 
 @MainActor
@@ -39,17 +40,17 @@ final class PassRecorder: ObservableObject {
         self.source = source
         self.sat = satellite
         self.startDate = Date()
-        filename = "\(safe(satellite))_\(stamp(Date())).wav"
+        filename = "\(safe(satellite))_\(stamp(Date())).m4a"
         let url = QSOStore.recordingsDir.appendingPathComponent(filename)
         let rate = source.sampleRate
 
+        // Compressed AAC mono — small files, plenty of fidelity for pass audio.
         let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: rate,
             AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false
+            AVEncoderBitRateKey: 64_000,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
         do {
             let f = try AVAudioFile(forWriting: url, settings: settings)
@@ -121,7 +122,7 @@ final class PassRecorder: ObservableObject {
             guard let self, let start = self.startDate else { return }
             self.elapsed = Date().timeIntervalSince(start)
             self.peakLock.lock(); let p = self.peak; self.peak = 0; self.peakLock.unlock()
-            self.level = p
+            self.level = max(p, self.level * 0.75)   // fast attack, slow release
         }
         t.resume()
         meterTimer = t

@@ -19,12 +19,15 @@ import UIKit
 /// FT4 slot period (seconds). File-scope so the nonisolated slot handler can use it.
 private let kFT4SlotSeconds = 7.5
 
+enum FT4MsgKind: Sendable { case received, sent }
+
 struct FT4DecodedMessage: Identifiable, Sendable {
     let id = UUID()
     let text: String
     let snr: Int          // estimated signal report (dB) — sent as our report to this station
     let freqHz: Double
     let atSlot: Int
+    var kind: FT4MsgKind = .received
     /// UTC start of the slot this decode came from.
     var slotDate: Date { Date(timeIntervalSince1970: Double(atSlot) * kFT4SlotSeconds) }
 }
@@ -95,9 +98,9 @@ final class FT4Engine: ObservableObject {
     private nonisolated(unsafe) let specLock = NSLock()
     private nonisolated(unsafe) var specWindow: [Float] = []
     private nonisolated(unsafe) var rxPeak: Float = 0
-    private nonisolated(unsafe) let analyzer = SpectrumAnalyzer(n: 2048)
+    private nonisolated(unsafe) let analyzer = SpectrumAnalyzer(n: 4096)
     private nonisolated(unsafe) var waterMagRows: [[Float]] = []   // newest last
-    private let waterHeight = 90
+    private let waterHeight = 120
 
     func attach(rig: RigController, qso: QSOStore) { self.rig = rig; self.qso = qso }
 
@@ -169,14 +172,14 @@ final class FT4Engine: ObservableObject {
         for s in frames { let a = abs(s); if a > peak { peak = a } }
         specLock.lock()
         specWindow.append(contentsOf: frames)
-        if specWindow.count > 4096 { specWindow.removeFirst(specWindow.count - 4096) }
+        if specWindow.count > 8192 { specWindow.removeFirst(specWindow.count - 8192) }
         if peak > rxPeak { rxPeak = peak }
         specLock.unlock()
     }
 
     private nonisolated func scheduleAnalysisTimer() {
         let t = DispatchSource.makeTimerSource(queue: analysisQueue)
-        t.schedule(deadline: .now() + 0.15, repeating: 0.15)
+        t.schedule(deadline: .now() + 0.1, repeating: 0.1)
         t.setEventHandler { [weak self] in self?.analyze() }
         t.resume()
         analysisTimer = t
@@ -200,7 +203,8 @@ final class FT4Engine: ObservableObject {
             }
         }
         Task { @MainActor in
-            self.rxLevel = peak
+            // Fast attack, slow release so the meter reads like a VU meter (no flash).
+            self.rxLevel = max(peak, self.rxLevel * 0.75)
             if let image { self.waterfall = image }
         }
     }
@@ -211,10 +215,11 @@ final class FT4Engine: ObservableObject {
         if waterMagRows.count > waterHeight { waterMagRows.removeFirst(waterMagRows.count - waterHeight) }
         let w = row.count, h = waterMagRows.count
         guard w > 0, h > 0 else { return nil }
-        // Normalize across the visible rows so faint signals still show.
-        var lo = Float.greatestFiniteMagnitude, hi = -Float.greatestFiniteMagnitude
-        for r in waterMagRows { for v in r { if v < lo { lo = v }; if v > hi { hi = v } } }
-        let range = max(1, hi - lo)
+        // Anchor the palette to the noise floor with a FIXED dynamic range (like
+        // WSJT-X): the floor stays dark navy and only real signals light up.
+        var lo = Float.greatestFiniteMagnitude
+        for r in waterMagRows { for v in r where v < lo { lo = v } }
+        let range: Float = 45   // dB shown from noise floor to white
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         for (y, r) in waterMagRows.enumerated() {
             let count = min(w, r.count)
@@ -327,6 +332,12 @@ final class FT4Engine: ObservableObject {
         return f.to == myCallSeq && !myCallSeq.isEmpty
     }
 
+    /// Whether a decode was sent BY us (our own signal heard via full duplex).
+    func isFromMe(_ text: String) -> Bool {
+        guard !myCallSeq.isEmpty, let f = FT4Engine.parse(text) else { return false }
+        return f.de == myCallSeq
+    }
+
     /// Advance the exchange based on messages addressed to us this slot.
     private func advance(_ found: [(text: String, snr: Int, freq: Double)], endedSlot: Int) {
         guard !myCallSeq.isEmpty else { return }
@@ -393,12 +404,17 @@ final class FT4Engine: ObservableObject {
         txLock.lock(); txBuffer = tx; txIndex = 0; txDone = false; txPeak = 0; txLock.unlock()
         isTransmitting = true
         status = "Transmitting: \(txMessage)"
+        // Log our own transmission so it shows in the activity panel even when the
+        // full-duplex receiver doesn't decode it back.
+        let txSlot = Int((Date().timeIntervalSince1970 / kFT4SlotSeconds).rounded())
+        decodes.append(FT4DecodedMessage(text: txMessage, snr: 0, freqHz: txAudioFreq, atSlot: txSlot, kind: .sent))
+        if decodes.count > 100 { decodes.removeFirst(decodes.count - 100) }
         // Live TX meter (reads the peak the render callback actually emitted) so the
         // operator can confirm audio is going out even without monitoring the rig.
         Task { @MainActor in
             while self.isTransmitting {
                 let p = self.txLock.withLock { () -> Float in let v = self.txPeak; self.txPeak = 0; return v }
-                self.txLevel = p
+                self.txLevel = max(p, self.txLevel * 0.75)
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             self.txLevel = 0
@@ -493,7 +509,13 @@ final class FT4Engine: ObservableObject {
             var offsets = ftx_message_offsets_t()
             _ = ftx_message_decode(&msg, nil, &text, &offsets)
             let s = String(cString: text)
-            if !s.isEmpty { result.messages.append((s, snr(fromScore: Int(cands[idx].score)), Double(st.freq))) }
+            // ftx_decode_candidate leaves status.freq at 0 — compute the audio
+            // frequency from the candidate bin: Hz = (min_bin + freq_offset +
+            // freq_sub/freq_osr) / symbol_period.
+            let hz = (Double(mon.min_bin) + Double(cands[idx].freq_offset)
+                      + Double(cands[idx].freq_sub) / Double(max(1, mon.wf.freq_osr)))
+                     / Double(mon.symbol_period)
+            if !s.isEmpty { result.messages.append((s, snr(fromScore: Int(cands[idx].score)), hz)) }
         }
         return result
     }

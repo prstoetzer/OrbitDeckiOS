@@ -41,17 +41,29 @@
 
             <div class="doc-body">
                 <h2 id="audio">Audio interfaces</h2>
-                <p>The recording, SSTV and FT4 cards appear on Home only when audio is available: a <strong>class-compliant USB audio interface</strong> (via USB-C or the camera adapter), or an <strong>Icom network-audio</strong> radio (RS-BA1) that is configured and connected. Connect your radio's receive audio to the interface's input; for FT4, connect the interface's output to the radio's audio-in.</p>
+                <p>The recording, SSTV and FT4 cards appear on Home when audio is available: a <strong>class-compliant USB audio interface</strong> (via USB-C or the camera adapter), or an <strong>Icom network-audio</strong> radio (RS-BA1) that is configured and connected. Connect your radio's receive audio to the interface's input; for FT4, connect the interface's output to the radio's audio-in.</p>
                 <div class="note">iOS treats a USB audio input as a microphone, so the first time you record or decode, iOS asks for microphone permission.</div>
 
+                <h3>Choosing which cards appear</h3>
+                <p>In <strong>Settings &rarr; Audio features</strong> each of the three cards (Pass recording, SSTV, FT4) has an independent setting:</p>
+                <ul>
+                    <li><strong>Auto</strong> (default) — the card appears only when an audio interface is connected.</li>
+                    <li><strong>Always show</strong> — the card appears even without an interface, using the phone's <strong>built-in microphone</strong> (hold the phone near your receiver's speaker to decode/record acoustically).</li>
+                    <li><strong>Hidden</strong> — the card never appears, even with an interface plugged in. Handy if you only operate voice and want just the pass recorder without the SSTV/FT4 cards.</li>
+                </ul>
+
+                <h3>Input &amp; output levels</h3>
+                <p>The SSTV and FT4 cards show a live <strong>input-level meter</strong> with a gain slider (and FT4 adds an <strong>output/TX</strong> level). Set the input so the meter rides in the green — too low buries the signal in noise, too high (red) clips and hurts decoding.</p>
+
                 <h2 id="recording">Pass recording</h2>
-                <p>The Home <strong>Pass recording</strong> card streams the received audio to a WAV file tagged with the satellite and UTC time. Recordings are listed on the <a href="logging.html#recordings">Log screen</a> with playback and share. Recording runs while OrbitDeck is in the foreground.</p>
+                <p>The Home <strong>Pass recording</strong> card streams the received audio to a compressed <strong>AAC <code>.m4a</code></strong> file tagged with the satellite and UTC time — roughly a fifteenth the size of uncompressed WAV, so a full pass is a few MB. Recordings are listed on the <a href="logging.html#recordings">Log screen</a> with playback and share. Recording runs while OrbitDeck is in the foreground.</p>
 
                 <h2 id="sstv">SSTV</h2>
-                <p>The Home <strong>SSTV</strong> card decodes the video subcarrier live, auto-detecting the mode from the VIS header. Supported modes include Robot 36/72, Scottie S1/S2/DX, Martin M1/M2, Wraase SC2-180 and the PD series. Decoded images are saved to the dedicated <strong>SSTV Images</strong> screen (Operating Tools), where you can view them full-screen, share, or export to your iOS photo library.</p>
+                <p>The Home <strong>SSTV</strong> card decodes the video subcarrier live, auto-detecting the mode from the VIS header (or you can force a mode). Supported modes include Robot 36/72, Scottie S1/S2/DX, Martin M1/M2, Wraase SC2-180 and the full PD series (PD 50/90/120/160/180/240/290). The decoder tracks the horizontal sync pulse on every line so the picture stays aligned across long modes.</p>
+                <p>Live <strong>calibration</strong> controls let you clean up a picture as it builds — <em>slant</em> (clock correction), <em>tuning</em> (receiver-offset), <em>H-shift</em> (horizontal position), and <em>contrast</em>/<em>saturation</em>. Each adjustment re-renders the current image instantly. Decoded images are saved to the dedicated <strong>SSTV Images</strong> screen (Operating Tools), where you can view them full-screen, share, delete (single or multi-select), or export to your iOS photo library.</p>
 
                 <h2 id="ft4">Full-duplex FT4</h2>
-                <p>On a linear transponder you can hear your own downlink while transmitting, so OrbitDeck runs FT4 <strong>full duplex</strong>: it decodes the downlink and transmits the uplink at the same time, on alternating 7.5-second slots. Enable transmit, set your message (e.g. <code>CQ N8HM FM18</code>), choose even/odd slots, and OrbitDeck synthesizes the uplink tones and (with CAT) keys the radio automatically. FT4/FT8 encode and decode use the open-source, MIT-licensed <a href="https://github.com/kgoba/ft8_lib" rel="noopener">ft8_lib</a>.</p>
+                <p>On a linear transponder you can hear your own downlink while transmitting, so OrbitDeck runs FT4 <strong>full duplex</strong>: it decodes the downlink and transmits the uplink at the same time, on alternating 7.5-second slots. The card shows a live <strong>spectrum waterfall</strong> (with a TX-frequency marker), a scrolling WSJT-X-style <strong>decode panel</strong> (your own transmissions and any decode of your own signal are color-coded), and a countdown to the next slot. Tap <strong>Call CQ</strong> to start calling, or tap a decoded station to answer it — the auto-sequencer runs the exchange and logs the QSO. Set your <strong>TX audio frequency</strong> to drop your signal into a clear spot on the waterfall. FT4/FT8 encode and decode use the open-source, MIT-licensed <a href="https://github.com/kgoba/ft8_lib" rel="noopener">ft8_lib</a>.</p>
                 <div class="note">
                     <strong>FT4 runs at nearly 100% duty cycle.</strong> On a shared linear transponder, reduce power out of respect for other operators — the app shows this reminder on the FT4 card.
                 </div>
@@ -60,7 +72,7 @@
                 <p>When a CAT radio is connected, OrbitDeck keys transmit over CAT automatically — CI-V, Yaesu, Kenwood, <a href="catcontrol.html">rigctld</a>, and Icom network. If your radio has no CAT PTT, use <strong>VOX</strong> or key manually: the FT4 card shows a prominent <em>TRANSMIT NOW</em> indicator at the start of each of your slots so you key in time.</p>
 
                 <h2 id="status">Maturity &amp; testing</h2>
-                <p>These features are new in 0.9.14. SSTV timing uses the standard nominal model and may need slant/tuning refinement on real signals; FT4 and the <strong>Icom network-audio path are experimental</strong> and best validated on your own radio. Pass recording over USB audio is the most straightforward path. Feedback from on-air use is welcome.</p>
+                <p>These features are new in 0.9.14. SSTV and FT4 decode from a USB audio interface have been validated on-air; the SSTV calibration controls help with marginal or slanted pictures. The <strong>Icom network-audio path is experimental</strong> and best validated on your own radio. Feedback from on-air use is welcome.</p>
 
                 <h2 id="privacy">Permissions &amp; privacy</h2>
                 <p>Audio is captured only while you record or decode, and stays on your device (SSTV images are saved to the app; you choose when to export to Photos). See the <a href="privacy.html">privacy policy</a>.</p>

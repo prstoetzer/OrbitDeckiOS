@@ -22,6 +22,7 @@ struct AudioLevelBar: View {
                 Capsule().fill(ODTheme.panel)
                 Capsule().fill(barColor)
                     .frame(width: g.size.width * CGFloat(min(1, max(0, level))))
+                    .animation(.easeOut(duration: 0.18), value: level)
             }
         }
         .frame(height: 6)
@@ -51,7 +52,9 @@ struct FineSlider<V: BinaryFloatingPoint>: View where V.Stride: BinaryFloatingPo
     }
 }
 
-/// A labeled gain slider + live level meter, with a low-signal / clipping notice.
+/// A labeled gain slider + live level meter. The level source is smoothed (fast
+/// attack / slow release) and the bar turns amber/red near clipping, so there's no
+/// separate notice line — a line that popped in and out was distracting.
 struct AudioLevelControl: View {
     let title: String
     @Binding var gain: Float
@@ -68,18 +71,8 @@ struct AudioLevelControl: View {
                 Text(String(format: "%.2f×", gain)).font(.caption2.monospacedDigit())
             }
             FineSlider(value: $gain, range: range, step: step)
-            if showLevel {
-                AudioLevelBar(level: level)
-                if let note = notice {
-                    Text(note).font(.caption2).foregroundStyle(level > 0.95 ? ODTheme.warning : ODTheme.muted)
-                }
-            }
+            if showLevel { AudioLevelBar(level: level) }
         }
-    }
-    private var notice: String? {
-        if level > 0.98 { return "Clipping — reduce gain" }
-        if level > 0 && level < 0.05 { return "Signal very low — increase gain" }
-        return nil
     }
 }
 
@@ -89,10 +82,15 @@ struct HomeFT4Card: View {
     @EnvironmentObject private var store: OrbitStore
     @EnvironmentObject private var rig: RigController
     @EnvironmentObject private var qso: QSOStore
+    @AppStorage(FeatureVisibility.ft4Key) private var visibility = FeatureVisibility.auto
     let satellite: SatelliteRecord
 
+    private var visible: Bool {
+        switch visibility { case .auto: audio.audioAvailable; case .always: true; case .off: false }
+    }
+
     var body: some View {
-        if audio.audioAvailable {
+        if visible {
             SectionCard("FT4 (full duplex)") {
                 cautionBanner
                 if !ft4.errorText.isEmpty {
@@ -192,21 +190,28 @@ struct HomeFT4Card: View {
     private static let utc: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; f.timeZone = TimeZone(identifier: "UTC"); return f
     }()
-    private static let utcShort: DateFormatter = {
-        let f = DateFormatter(); f.dateFormat = "mm:ss"; f.timeZone = TimeZone(identifier: "UTC"); return f
-    }()
 
-    /// Scrolling spectrum waterfall (newest at the bottom), with a frequency axis.
+    /// Spectrum waterfall (0–3 kHz) with a live TX-frequency marker.
     @ViewBuilder private var waterfall: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if let img = ft4.waterfall {
-                Image(uiImage: img).resizable().interpolation(.none)
-                    .frame(height: 90).frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            } else {
-                RoundedRectangle(cornerRadius: 6).fill(ODTheme.panel).frame(height: 90)
-                    .overlay(Text("Waterfall").font(.caption2).foregroundStyle(ODTheme.muted))
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    if let img = ft4.waterfall {
+                        Image(uiImage: img).resizable()
+                            .frame(width: geo.size.width, height: 130)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    } else {
+                        RoundedRectangle(cornerRadius: 6).fill(ODTheme.panel)
+                            .overlay(Text("Waterfall").font(.caption2).foregroundStyle(ODTheme.muted))
+                    }
+                    // TX frequency marker (0–3 kHz spans the full width).
+                    let x = geo.size.width * CGFloat(min(1, max(0, ft4.txAudioFreq / 3000)))
+                    Rectangle().fill(.orange).frame(width: 2, height: 130).offset(x: x - 1)
+                    Text("TX").font(.system(size: 9, weight: .bold)).foregroundStyle(.orange)
+                        .offset(x: min(geo.size.width - 18, max(0, x - 6)), y: 2)
+                }
             }
+            .frame(height: 130)
             HStack {
                 Text("0").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
                 Spacer(); Text("1.5 kHz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
@@ -225,16 +230,59 @@ struct HomeFT4Card: View {
         }
     }
 
-    /// Decode list — one tappable row per station, message prominent, metadata below.
+    /// WSJT-X-style band-activity panel: a framed, fixed-height, self-scrolling
+    /// monospaced list so the card doesn't grow without bound. Newest at the bottom.
     private var decodeTable: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Divider().opacity(0.4)
-            Text("Band activity — tap a station to work it")
-                .font(.caption2).foregroundStyle(ODTheme.muted).padding(.vertical, 2)
-            ForEach(ft4.decodes.suffix(12).reversed()) { d in
-                decodeRow(d)
-                Divider().opacity(0.25)
+            // Title bar
+            HStack {
+                Label("Band Activity", systemImage: "waveform.badge.magnifyingglass")
+                    .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
+                Spacer()
+                legendDot(ODTheme.good, "CQ"); legendDot(ODTheme.accent, "you")
+                legendDot(.orange, "TX"); legendDot(.cyan, "self")
             }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Color.white.opacity(0.06))
+
+            Divider().overlay(ODTheme.muted.opacity(0.3))
+
+            ScrollView {
+                let items = Array(ft4.decodes.suffix(60))
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, d in
+                        // Separate transmit periods with a faint rule (like WSJT-X).
+                        if idx > 0 && items[idx - 1].atSlot != d.atSlot {
+                            Divider().overlay(ODTheme.muted.opacity(0.35))
+                        }
+                        decodeRow(d)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+            }
+            .frame(height: 200)
+            .defaultScrollAnchor(.bottom)
+
+            Divider().overlay(ODTheme.muted.opacity(0.3))
+            Text("Tap a station to work it").font(.system(size: 10)).foregroundStyle(ODTheme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(LinearGradient(colors: [Color.black.opacity(0.9), Color(white: 0.06)],
+                                     startPoint: .top, endPoint: .bottom))
+        )
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ODTheme.muted.opacity(0.35), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+    }
+
+    private func legendDot(_ c: Color, _ label: String) -> some View {
+        HStack(spacing: 2) {
+            Circle().fill(c).frame(width: 6, height: 6)
+            Text(label).font(.system(size: 9)).foregroundStyle(ODTheme.muted)
         }
     }
 
@@ -242,41 +290,65 @@ struct HomeFT4Card: View {
         let f = FT4Engine.parse(d.text)
         let toMe = ft4.isToMe(d.text)
         let isCQ = f?.isCQ == true
-        let color: Color = toMe ? ODTheme.accent : (isCQ ? ODTheme.good : .primary)
-        return Button { ft4.work(d) } label: {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(d.text)
-                        .font(.callout.monospaced().weight(toMe || isCQ ? .semibold : .regular))
-                        .foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.7)
-                    Text("\(Self.utcShort.string(from: d.slotDate))  ·  \(d.snr) dB  ·  \(Int(d.freqHz)) Hz")
-                        .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
-                }
-                Spacer(minLength: 4)
-                if isCQ || toMe {
-                    Image(systemName: "arrowshape.turn.up.left.circle.fill")
-                        .font(.title3).foregroundStyle(ODTheme.accent)
-                }
+        let color: Color
+        if d.kind == .sent { color = .orange }                 // my transmitted message
+        else if ft4.isFromMe(d.text) { color = .cyan }         // my own signal heard via full duplex
+        else if toMe { color = ODTheme.accent }                // someone calling me
+        else if isCQ { color = ODTheme.good }                  // CQ
+        else { color = .white }
+        // WSJT-X row: time · dB · freq · message, monospaced and aligned.
+        let dt = d.kind == .sent ? " TX" : String(format: "%3d", d.snr)
+        return Button { if d.kind != .sent { ft4.work(d) } } label: {
+            HStack(spacing: 8) {
+                Text(Self.utc.string(from: d.slotDate)).foregroundStyle(color.opacity(0.7))
+                Text(dt).foregroundStyle(color.opacity(0.9))
+                Text(String(format: "%4d", Int(d.freqHz))).foregroundStyle(color.opacity(0.7))
+                Text(d.text).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.7)
+                Spacer(minLength: 0)
             }
-            .padding(.vertical, 6)
+            .font(.system(size: 13, weight: (toMe || isCQ) ? .semibold : .regular).monospaced())
+            .padding(.vertical, 3)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
 
     private var txControls: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Transmit").font(.subheadline.weight(.semibold))
+
+            // TX audio frequency — where in the passband you transmit (matches the
+            // orange marker on the waterfall). Pick a clear spot.
+            HStack {
+                Text("TX freq").font(.caption2).foregroundStyle(ODTheme.muted)
+                Spacer()
+                Text("\(Int(ft4.txAudioFreq)) Hz").font(.caption2.monospacedDigit())
+            }
+            FineSlider(value: $ft4.txAudioFreq, range: 300...2700, step: 10)
+
             Toggle("Enable transmit", isOn: $ft4.txEnabled)
             Toggle("Auto-sequence QSO", isOn: $ft4.autoSequence)
+
+            // Prominent primary action: call CQ. Enables TX + auto-seq automatically.
+            Button {
+                ft4.callCQ()
+                if !ft4.isRunning { toggleRun() }
+            } label: {
+                Label("Call CQ", systemImage: "megaphone.fill").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(qso.config.myCall.isEmpty)
+
+            if qso.config.myCall.isEmpty {
+                Text("Set your callsign in Log settings to transmit.")
+                    .font(.caption2).foregroundStyle(ODTheme.warning)
+            }
+            if !ft4.seqStatus.isEmpty {
+                Text(ft4.seqStatus).font(.caption).foregroundStyle(ODTheme.accent)
+            }
+
             if ft4.autoSequence {
-                HStack {
-                    Button("Call CQ") { ft4.callCQ() }.buttonStyle(.bordered)
-                    Spacer()
-                    if !ft4.seqStatus.isEmpty {
-                        Text(ft4.seqStatus).font(.caption).foregroundStyle(ODTheme.accent)
-                    }
-                }
-                Text("Tap Reply on a decoded CQ, or Call CQ. The report you send is taken from the other station's decoded SNR automatically; the exchange (grid → report → RR73) and logging run on their own. Watch the TX indicator to key if you have no CAT PTT.")
+                Text("Call CQ above, or tap a decoded station to answer it. The exchange (grid → report → RR73) and logging run automatically; your report is set from their decoded SNR.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             } else {
                 TextField("TX message (e.g. CQ N8HM FM18)", text: $ft4.txMessage)
@@ -293,7 +365,7 @@ struct HomeFT4Card: View {
     private func toggleRun() {
         if ft4.isRunning {
             ft4.stop()
-        } else if let source = audio.makeSource() {
+        } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
             ft4.start(source: source, myCall: qso.config.myCall, myGrid: store.operatorGrid6)
         } else {
             ft4.errorText = "No audio interface available."

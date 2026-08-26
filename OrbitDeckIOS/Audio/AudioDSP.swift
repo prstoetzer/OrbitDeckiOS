@@ -156,18 +156,19 @@ final class SpectrumAnalyzer: @unchecked Sendable {
     }
 }
 
-/// Maps a normalized magnitude (0…1) to a blue→cyan→green→yellow→red heatmap,
-/// the conventional waterfall palette. Returns premultiplied RGBA components.
+/// Maps a normalized magnitude (0…1) to the WSJT-X-style waterfall palette:
+/// dark navy noise floor → blue → teal → green → yellow → orange → white peaks.
 enum Heatmap {
     static func color(_ v: Float) -> (r: UInt8, g: UInt8, b: UInt8) {
         let x = max(0, min(1, v))
-        // Five-stop gradient.
         let stops: [(Float, Float, Float)] = [
-            (0.0, 0.0, 0.25),  // deep blue
-            (0.0, 0.5, 1.0),   // cyan-blue
-            (0.0, 0.9, 0.3),   // green
-            (1.0, 0.9, 0.0),   // yellow
-            (1.0, 0.1, 0.0)    // red
+            (0.03, 0.03, 0.25),  // dark navy (noise floor)
+            (0.00, 0.25, 0.70),  // blue
+            (0.00, 0.63, 0.71),  // teal
+            (0.00, 0.71, 0.24),  // green
+            (0.86, 0.86, 0.00),  // yellow
+            (0.94, 0.35, 0.00),  // orange-red
+            (1.00, 1.00, 1.00)   // white (strong peaks)
         ]
         let seg = x * Float(stops.count - 1)
         let i = min(stops.count - 2, Int(seg))

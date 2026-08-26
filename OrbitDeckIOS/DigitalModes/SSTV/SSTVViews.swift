@@ -12,10 +12,15 @@ import UIKit
 struct HomeSSTVCard: View {
     @EnvironmentObject private var audio: AudioHub
     @EnvironmentObject private var decoder: SSTVDecoder
+    @AppStorage(FeatureVisibility.sstvKey) private var visibility = FeatureVisibility.auto
     let satellite: SatelliteRecord
 
+    private var visible: Bool {
+        switch visibility { case .auto: audio.audioAvailable; case .always: true; case .off: false }
+    }
+
     var body: some View {
-        if audio.audioAvailable {
+        if visible {
             SectionCard("SSTV") {
                 if !decoder.errorText.isEmpty {
                     Text(decoder.errorText).font(.caption).foregroundStyle(ODTheme.warning)
@@ -74,15 +79,36 @@ struct HomeSSTVCard: View {
                     .font(.caption2.monospacedDigit())
             }
             FineSlider(value: $decoder.tuningHz, range: -400...400, step: 5)
-            Button("Reset calibration") { decoder.slant = 0; decoder.tuningHz = 0 }
-                .font(.caption2).buttonStyle(.borderless)
+            HStack {
+                Text("H-shift").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 62, alignment: .leading)
+                Spacer()
+                Text(String(format: "%+.1f ms", decoder.hShiftMs)).font(.caption2.monospacedDigit())
+            }
+            FineSlider(value: $decoder.hShiftMs, range: -60...60, step: 0.5)
+            HStack {
+                Text("Contrast").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 62, alignment: .leading)
+                Spacer()
+                Text(String(format: "%.2f×", decoder.contrast)).font(.caption2.monospacedDigit())
+            }
+            FineSlider(value: $decoder.contrast, range: 0.5...2.5, step: 0.05)
+            HStack {
+                Text("Saturation").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 62, alignment: .leading)
+                Spacer()
+                Text(String(format: "%.2f×", decoder.saturation)).font(.caption2.monospacedDigit())
+            }
+            FineSlider(value: $decoder.saturation, range: 0...2.5, step: 0.05)
+            Button("Reset calibration") {
+                decoder.slant = 0; decoder.tuningHz = 0; decoder.hShiftMs = 0
+                decoder.contrast = 1; decoder.saturation = 1
+            }
+            .font(.caption2).buttonStyle(.borderless)
         }
     }
 
     private func toggle() {
         if decoder.isListening {
             decoder.stop()
-        } else if let source = audio.makeSource() {
+        } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
             decoder.start(source: source, satellite: satellite.name)
         } else {
             decoder.errorText = "No audio interface available."

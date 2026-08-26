@@ -37,8 +37,24 @@ final class SSTVDecoder: ObservableObject {
     @Published var tuningHz: Double = 0 {
         didSet { lock.lock(); tuningMirror = tuningHz; needsRedecode = true; lock.unlock(); work.async { [weak self] in self?.pump() } }
     }
+    /// Contrast (luminance gain around mid-gray) and color saturation — cosmetic
+    /// post-processing applied during decode; changing either re-decodes live.
+    @Published var contrast: Double = 1 {
+        didSet { lock.lock(); contrastMirror = contrast; needsRedecode = true; lock.unlock(); work.async { [weak self] in self?.pump() } }
+    }
+    @Published var saturation: Double = 1 {
+        didSet { lock.lock(); saturationMirror = saturation; needsRedecode = true; lock.unlock(); work.async { [weak self] in self?.pump() } }
+    }
+    /// Horizontal image shift (ms): nudges where each line's pixels are sampled to
+    /// correct a left/right offset. Positive shifts the picture left.
+    @Published var hShiftMs: Double = 0 {
+        didSet { lock.lock(); hShiftMirror = hShiftMs; needsRedecode = true; lock.unlock(); work.async { [weak self] in self?.pump() } }
+    }
     private nonisolated(unsafe) var slantMirror: Double = 0
     private nonisolated(unsafe) var tuningMirror: Double = 0
+    private nonisolated(unsafe) var contrastMirror: Double = 1
+    private nonisolated(unsafe) var saturationMirror: Double = 1
+    private nonisolated(unsafe) var hShiftMirror: Double = 0
     private nonisolated(unsafe) var needsRedecode = false
 
     /// Input gain (linear) applied to captured audio. SSTV is FM, so this doesn't
@@ -49,6 +65,9 @@ final class SSTVDecoder: ObservableObject {
     /// Live input level (0…1) for the level meter.
     @Published private(set) var inputLevel: Float = 0
     private nonisolated(unsafe) var inPeak: Float = 0
+    private nonisolated(unsafe) var levelSmoothed: Float = 0
+    private nonisolated(unsafe) var levelTimer: DispatchSourceTimer?
+    private let levelQueue = DispatchQueue(label: "org.orbitdeck.sstv.level")
 
     private weak var qso: QSOStore?
     private var source: AudioSource?
@@ -56,7 +75,7 @@ final class SSTVDecoder: ObservableObject {
 
     // Streaming state (touched on `work` and the audio thread; guarded by `lock`).
     private nonisolated(unsafe) var rate: Double = 48_000
-    private nonisolated(unsafe) var freq: [Double] = []      // instantaneous frequency stream
+    private nonisolated(unsafe) var freq: [Float] = []       // instantaneous frequency stream (Float: half the RAM of the retained image buffer, ample precision for 1200–2300 Hz)
     private nonisolated(unsafe) var sampleBase = 0           // abs index of freq[0]
     private nonisolated(unsafe) var demod = StreamingDemod(rate: 48_000)
     private nonisolated(unsafe) var forcedMode: SSTVMode?
@@ -92,7 +111,8 @@ final class SSTVDecoder: ObservableObject {
         demod = StreamingDemod(rate: source.sampleRate)
         phase = .searching; mode = nil; imageStart = 0; currentLine = 0; rgba = []; lastPublishedLine = -1
         r36Cr = []; r36Cb = []
-        slantMirror = slant; tuningMirror = tuningHz; needsRedecode = false
+        slantMirror = slant; tuningMirror = tuningHz
+        contrastMirror = contrast; saturationMirror = saturation; hShiftMirror = hShiftMs; needsRedecode = false
         forcedMode = forced
         lock.unlock()
         source.inputGain = inputGain
@@ -102,20 +122,31 @@ final class SSTVDecoder: ObservableObject {
         } catch { errorText = error.localizedDescription; self.source = nil; return }
         isListening = true
         AudioActivity.begin()
-        // Live input-level meter (peak, ~10 Hz).
-        Task { @MainActor in
-            while self.isListening {
-                let p = self.lock.withLock { () -> Float in let v = self.inPeak; self.inPeak = 0; return v }
-                self.inputLevel = p
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-            self.inputLevel = 0
+        scheduleLevelTimer()
+    }
+
+    /// Steady input-level meter on a GCD timer (like FT4). A MainActor Task.sleep
+    /// loop gets starved by the frequent image-publish Tasks during decode, which
+    /// made the meter jitter/flash; a dedicated timer stays smooth.
+    private nonisolated func scheduleLevelTimer() {
+        let t = DispatchSource.makeTimerSource(queue: levelQueue)
+        t.schedule(deadline: .now() + 0.1, repeating: 0.1)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            let p = self.lock.withLock { () -> Float in let v = self.inPeak; self.inPeak = 0; return v }
+            self.levelSmoothed = max(p, self.levelSmoothed * 0.75)   // fast attack, slow release
+            let v = self.levelSmoothed
+            Task { @MainActor in self.inputLevel = v }
         }
+        t.resume()
+        levelTimer = t
     }
 
     func stop() {
         guard isListening else { return }
         source?.stop(); source = nil
+        levelTimer?.cancel(); levelTimer = nil
+        levelSmoothed = 0; inputLevel = 0
         isListening = false
         AudioActivity.end()
         lock.lock(); let decoded = !rgba.isEmpty && currentLine > 0; lock.unlock()
@@ -206,9 +237,11 @@ final class SSTVDecoder: ObservableObject {
             // Nominal start from the previous line + one line period (tracks drift);
             // the first line starts at the detected image start.
             let nominal = (currentLine == 0) ? Double(imageStart) : lastLineStart + lineSamples
-            // Search window: wide on the first line (VIS timing is coarse), narrow
-            // afterwards since we only need to absorb per-line clock drift.
-            let searchW = (currentLine == 0) ? 0.030 * effRate : 0.005 * effRate
+            // Search window: wide on the first line (VIS timing is coarse), narrower
+            // afterwards. Scale with line length — a long mode (PD) drifts more per
+            // line than a short one (Robot), so a fixed window loses lock on PD.
+            let searchW = (currentLine == 0) ? max(0.030 * effRate, lineSamples * 0.04)
+                                             : max(0.006 * effRate, lineSamples * 0.02)
             let available = sampleBase + freq.count
             // Need enough samples to both search for the sync and decode the line.
             guard Double(available) >= nominal + searchW + lineSamples else { lock.unlock(); return }
@@ -220,6 +253,7 @@ final class SSTVDecoder: ObservableObject {
 
             let offset = Int(start) - sampleBase
             decodeLine(into: &rgba, mode: m, freqOffset: offset, effRate: effRate, tuning: tuning,
+                       contrast: contrastMirror, saturation: saturationMirror, hShift: hShiftMirror,
                        transmittedLine: currentLine)
             currentLine += 1
             // Safety cap: keep memory bounded on very long modes by trimming samples
@@ -252,7 +286,7 @@ final class SSTVDecoder: ObservableObject {
         let syncSamples = max(2, Int(syncMs / 1000.0 * effRate))
         let W = Int(window)
         guard W > 0 else { return nominal }
-        let step = max(1, syncSamples / 8)
+        let step = max(1, syncSamples / 40)
         var bestMean = Double.greatestFiniteMagnitude
         var bestOff = 0
         var off = -W
@@ -262,7 +296,7 @@ final class SSTVDecoder: ObservableObject {
                 var sum = 0.0
                 var k = s
                 let end = s + syncSamples
-                while k < end { sum += freq[k]; k += 1 }
+                while k < end { sum += Double(freq[k]); k += 1 }
                 let mean = sum / Double(syncSamples)
                 if mean < bestMean { bestMean = mean; bestOff = off }
             }
@@ -302,20 +336,30 @@ final class SSTVDecoder: ObservableObject {
     // MARK: Line decode
 
     private nonisolated func decodeLine(into rgb: inout [UInt8], mode m: SSTVMode, freqOffset: Int,
-                                       effRate: Double, tuning: Double, transmittedLine tl: Int) {
+                                       effRate: Double, tuning: Double, contrast: Double, saturation: Double,
+                                       hShift: Double, transmittedLine tl: Int) {
         let w = m.width, h = m.height
+        // Cosmetic post-processing: contrast stretches luminance around mid-gray;
+        // saturation scales chroma deviation from neutral.
+        func cst(_ v: Double) -> Double { (v - 0.5) * contrast + 0.5 }
+        func sat(_ v: Double) -> Double { (v - 0.5) * saturation + 0.5 }
+        func csRGB(_ r: Double, _ g: Double, _ b: Double) -> (Double, Double, Double) {
+            let rr = cst(r), gg = cst(g), bb = cst(b)
+            let luma = 0.299 * rr + 0.587 * gg + 0.114 * bb
+            return (luma + (rr - luma) * saturation, luma + (gg - luma) * saturation, luma + (bb - luma) * saturation)
+        }
         // Average the instantaneous frequency across each pixel's whole sample window
         // (not a single point) — this is the main noise reduction. Black = 1500 Hz,
         // white = 2300 Hz; `tuning` shifts the mapping for an off-frequency receiver.
         func sampleValue(segOffsetMs: Double, segMs: Double, px: Int) -> Double {
-            let t0 = segOffsetMs + Double(px) / Double(w) * segMs
-            let t1 = segOffsetMs + Double(px + 1) / Double(w) * segMs
+            let t0 = segOffsetMs + Double(px) / Double(w) * segMs + hShift
+            let t1 = segOffsetMs + Double(px + 1) / Double(w) * segMs + hShift
             var i0 = freqOffset + Int(t0 / 1000.0 * effRate)
             var i1 = freqOffset + Int(t1 / 1000.0 * effRate)
             if i1 <= i0 { i1 = i0 + 1 }
             i0 = max(0, i0); i1 = min(freq.count, i1)
             guard i1 > i0 else { return 0 }
-            var s = 0.0; for k in i0..<i1 { s += freq[k] }
+            var s = 0.0; for k in i0..<i1 { s += Double(freq[k]) }
             let f = s / Double(i1 - i0)
             return max(0, min(1, (f - 1500.0 - tuning) / 800.0))
         }
@@ -340,16 +384,17 @@ final class SSTVDecoder: ObservableObject {
         case .perLine:
             if m.colorSpace == .rgb {
                 let rC = chan[.r], gC = chan[.g], bC = chan[.b]
-                for x in 0..<w { put(tl, x, rC?[x] ?? 0, gC?[x] ?? 0, bC?[x] ?? 0) }
+                for x in 0..<w { let (rr, g, b) = csRGB(rC?[x] ?? 0, gC?[x] ?? 0, bC?[x] ?? 0); put(tl, x, rr, g, b) }
             } else {
                 let y0 = chan[.y0], cb = chan[.cb], cr = chan[.cr]
-                for x in 0..<w { let (rr, g, b) = Self.ycbcr(y0?[x] ?? 0, cb?[x] ?? 0.5, cr?[x] ?? 0.5); put(tl, x, rr, g, b) }
+                for x in 0..<w { let (rr, g, b) = Self.ycbcr(cst(y0?[x] ?? 0), sat(cb?[x] ?? 0.5), sat(cr?[x] ?? 0.5)); put(tl, x, rr, g, b) }
             }
         case .pdDouble:
             let y0 = chan[.y0], y1 = chan[.y1], cb = chan[.cb], cr = chan[.cr]
             for x in 0..<w {
-                let (r0, g0, b0) = Self.ycbcr(y0?[x] ?? 0, cb?[x] ?? 0.5, cr?[x] ?? 0.5); put(tl*2, x, r0, g0, b0)
-                let (r1, g1, b1) = Self.ycbcr(y1?[x] ?? 0, cb?[x] ?? 0.5, cr?[x] ?? 0.5); put(tl*2+1, x, r1, g1, b1)
+                let cbx = sat(cb?[x] ?? 0.5), crx = sat(cr?[x] ?? 0.5)
+                let (r0, g0, b0) = Self.ycbcr(cst(y0?[x] ?? 0), cbx, crx); put(tl*2, x, r0, g0, b0)
+                let (r1, g1, b1) = Self.ycbcr(cst(y1?[x] ?? 0), cbx, crx); put(tl*2+1, x, r1, g1, b1)
             }
         case .robot36:
             // One Y line + one chroma component this line (R-Y on even, B-Y on odd);
@@ -360,7 +405,7 @@ final class SSTVDecoder: ObservableObject {
             for x in 0..<w {
                 let cr = x < r36Cr.count ? r36Cr[x] : 0.5
                 let cb = x < r36Cb.count ? r36Cb[x] : 0.5
-                let (rr, g, b) = Self.ycbcr(y0[x], cb, cr); put(tl, x, rr, g, b)
+                let (rr, g, b) = Self.ycbcr(cst(y0[x]), sat(cb), sat(cr)); put(tl, x, rr, g, b)
             }
         }
     }
@@ -370,13 +415,13 @@ final class SSTVDecoder: ObservableObject {
     /// Find the image start. Auto mode reads the VIS header; manual mode looks for a
     /// 1900 Hz leader + 1200 Hz start and uses the forced mode. Indices are relative
     /// to `f`.
-    nonisolated static func findStart(_ f: [Double], rate: Double, forced: SSTVMode?) -> (vis: Int, startIndex: Int)? {
+    nonisolated static func findStart(_ f: [Float], rate: Double, forced: SSTVMode?) -> (vis: Int, startIndex: Int)? {
         let bit = Int(rate * 0.030)
         let leader = Int(rate * 0.100)
         guard f.count > leader + 12 * bit else { return nil }
         func avg(_ a: Int, _ b: Int) -> Double {
             let lo = max(0, a), hi = min(f.count, b); guard hi > lo else { return 0 }
-            var s = 0.0; for k in lo..<hi { s += f[k] }; return s / Double(hi - lo)
+            var s = 0.0; for k in lo..<hi { s += Double(f[k]) }; return s / Double(hi - lo)
         }
         var n = leader
         while n + 12 * bit < f.count {
@@ -413,27 +458,45 @@ final class SSTVDecoder: ObservableObject {
 }
 
 /// Stateful quadrature FM discriminator for streaming demodulation (1900 Hz center).
+///
+/// Mixes the video subcarrier to baseband, then runs I/Q through a CASCADED
+/// one-pole lowpass. A single weak pole (the previous design) left the mixer sum
+/// image (~1900+f, i.e. 3.4–4.2 kHz) and a wide noise band in the signal, which
+/// biased the arctan frequency estimate toward the 1900 Hz center — the cause of
+/// the noisy, washed-out picture. Three poles at ~900 Hz roll the image/noise off
+/// ~34 dB while still passing the ±400 Hz video deviation.
 struct StreamingDemod {
     let rate: Double
     private let w: Double
-    private var n = 0
-    private var fi = 0.0, fq = 0.0
+    private var phase = 0.0
     private var prevI = 0.0, prevQ = 0.0
-    private let a = 0.15
+    private let a: Double
+    private let stages = 3
+    private var fi: [Double]
+    private var fq: [Double]
 
-    init(rate: Double) { self.rate = rate; self.w = 2.0 * Double.pi * 1900.0 / rate }
+    init(rate: Double) {
+        self.rate = rate
+        self.w = 2.0 * Double.pi * 1900.0 / rate
+        // Per-pole cutoff ≈ 900 Hz (one-pole: a = 1 − e^(−2π·fc/fs)).
+        self.a = 1.0 - exp(-2.0 * Double.pi * 900.0 / rate)
+        self.fi = [Double](repeating: 0, count: stages)
+        self.fq = [Double](repeating: 0, count: stages)
+    }
 
-    mutating func process(_ x: [Float]) -> [Double] {
-        var out = [Double](); out.reserveCapacity(x.count)
+    mutating func process(_ x: [Float]) -> [Float] {
+        var out = [Float](); out.reserveCapacity(x.count)
+        let twoPi = 2.0 * Double.pi
         for s in x {
-            let ph = w * Double(n); n += 1
-            var i = Double(s) * cos(ph)
-            var q = -Double(s) * sin(ph)
-            fi += a * (i - fi); i = fi
-            fq += a * (q - fq); q = fq
+            let c = cos(phase), sn = sin(phase)
+            phase += w; if phase > twoPi { phase -= twoPi }
+            var i = Double(s) * c
+            var q = -Double(s) * sn
+            for k in 0..<stages { fi[k] += a * (i - fi[k]); i = fi[k] }
+            for k in 0..<stages { fq[k] += a * (q - fq[k]); q = fq[k] }
             let dphi = atan2(q * prevI - i * prevQ, i * prevI + q * prevQ)
             prevI = i; prevQ = q
-            out.append(1900.0 + dphi * rate / (2.0 * Double.pi))
+            out.append(Float(1900.0 + dphi * rate / twoPi))
         }
         return out
     }
