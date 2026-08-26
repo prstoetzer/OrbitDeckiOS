@@ -18,6 +18,11 @@
 		2E1437DD303DCFC70001B31F /* RigController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D7303DCFC60001B31F /* RigController.swift */; };
 		2E1437DE303DCFC70001B31F /* RigTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D8303DCFC60001B31F /* RigTypes.swift */; };
 		2E1437DF303DCFC70001B31F /* CATViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D5303DCFC60001B31F /* CATViews.swift */; };
+		2E1437E6303E8A010001B31F /* RotatorNetwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437E2303E8A010001B31F /* RotatorNetwork.swift */; };
+		2E1437E7303E8A010001B31F /* RotatorCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437E0303E8A010001B31F /* RotatorCodec.swift */; };
+		2E1437E8303E8A010001B31F /* RotatorViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437E4303E8A010001B31F /* RotatorViews.swift */; };
+		2E1437E9303E8A010001B31F /* RotatorController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437E1303E8A010001B31F /* RotatorController.swift */; };
+		2E1437EA303E8A010001B31F /* RotatorTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437E3303E8A010001B31F /* RotatorTypes.swift */; };
 		2E75B92E303228E000338037 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */; };
 		2E946B4130308C7600960A39 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2E946B4030308C7600960A39 /* Assets.xcassets */; };
 		64DDAC67D6894708F4CDE021 /* Views/PassesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8FF6BE81A9340A8D932821F /* Views/PassesView.swift */; };
@@ -81,6 +86,11 @@
 		2E1437D6303DCFC60001B31F /* IcomNetwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IcomNetwork.swift; sourceTree = "<group>"; };
 		2E1437D7303DCFC60001B31F /* RigController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RigController.swift; sourceTree = "<group>"; };
 		2E1437D8303DCFC60001B31F /* RigTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RigTypes.swift; sourceTree = "<group>"; };
+		2E1437E0303E8A010001B31F /* RotatorCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RotatorCodec.swift; sourceTree = "<group>"; };
+		2E1437E1303E8A010001B31F /* RotatorController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RotatorController.swift; sourceTree = "<group>"; };
+		2E1437E2303E8A010001B31F /* RotatorNetwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RotatorNetwork.swift; sourceTree = "<group>"; };
+		2E1437E3303E8A010001B31F /* RotatorTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RotatorTypes.swift; sourceTree = "<group>"; };
+		2E1437E4303E8A010001B31F /* RotatorViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RotatorViews.swift; sourceTree = "<group>"; };
 		2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		2E75B92F3037404300338037 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2E946B4030308C7600960A39 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -156,6 +166,18 @@
 			path = CAT;
 			sourceTree = "<group>";
 		};
+		2E1437E5303E8A010001B31F /* Rotator */ = {
+			isa = PBXGroup;
+			children = (
+				2E1437E0303E8A010001B31F /* RotatorCodec.swift */,
+				2E1437E1303E8A010001B31F /* RotatorController.swift */,
+				2E1437E2303E8A010001B31F /* RotatorNetwork.swift */,
+				2E1437E3303E8A010001B31F /* RotatorTypes.swift */,
+				2E1437E4303E8A010001B31F /* RotatorViews.swift */,
+			);
+			path = Rotator;
+			sourceTree = "<group>";
+		};
 		615B463D1028E4E24B674CF7 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -168,6 +190,7 @@
 		8309DD304D804F9D7F6302F5 /* OrbitDeckIOS */ = {
 			isa = PBXGroup;
 			children = (
+				2E1437E5303E8A010001B31F /* Rotator */,
 				2E1437D9303DCFC60001B31F /* CAT */,
 				2E75B92F3037404300338037 /* Info.plist */,
 				5D53E08BB4B7DAA62B0595EE /* AppTheme.swift */,
@@ -360,6 +383,11 @@
 				A07A00010000000000000011 /* Services/AO7Service.swift in Sources */,
 				E09600010000000000000011 /* Services/XLSXExportService.swift in Sources */,
 				E05000010000000000000011 /* Services/ExportService.swift in Sources */,
+				2E1437E6303E8A010001B31F /* RotatorNetwork.swift in Sources */,
+				2E1437E7303E8A010001B31F /* RotatorCodec.swift in Sources */,
+				2E1437E8303E8A010001B31F /* RotatorViews.swift in Sources */,
+				2E1437E9303E8A010001B31F /* RotatorController.swift in Sources */,
+				2E1437EA303E8A010001B31F /* RotatorTypes.swift in Sources */,
 				2E1437DA303DCFC70001B31F /* CATCodec.swift in Sources */,
 				2E1437DB303DCFC70001B31F /* CATTransport.swift in Sources */,
 				2E1437DC303DCFC70001B31F /* IcomNetwork.swift in Sources */,
@@ -572,7 +600,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OrbitDeckIOS/Info.plist;
@@ -588,7 +616,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.9.12;
+				MARKETING_VERSION = 0.9.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.prstoetzer.OrbitDeckIOS;
 				PRODUCT_NAME = OrbitDeck;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -605,7 +633,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OrbitDeckIOS/Info.plist;
@@ -621,7 +649,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.9.12;
+				MARKETING_VERSION = 0.9.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.prstoetzer.OrbitDeckIOS;
 				PRODUCT_NAME = OrbitDeck;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

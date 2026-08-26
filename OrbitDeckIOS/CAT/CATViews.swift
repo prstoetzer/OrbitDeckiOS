@@ -291,6 +291,37 @@ struct BLEPickerView: View {
 
 // MARK: - Home control card
 
+/// Shared one-line status header used by the rig and rotator Home cards: a
+/// connection dot, a status line (+ optional subtitle), and the connect/disconnect
+/// control — keeping both cards visually consistent.
+struct ControlStatusHeader: View {
+    let title: String
+    let subtitle: String?
+    let dot: Color
+    let connected: Bool
+    let connecting: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(dot).frame(width: 10, height: 10)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.subheadline.weight(.semibold))
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle).font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
+                }
+            }
+            Spacer()
+            if connecting {
+                ProgressView().controlSize(.small)
+            } else {
+                Button(connected ? "Disconnect" : "Connect", action: onToggle)
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+}
+
 /// Live CAT control on the Home screen, shown when a radio is configured.
 struct HomeRigControlCard: View {
     @EnvironmentObject private var store: OrbitStore
@@ -307,25 +338,12 @@ struct HomeRigControlCard: View {
     var body: some View {
         if rig.config.isConfigured {
             SectionCard("Rig control (CAT)") {
-                HStack {
-                    Spacer()
-                    if rig.connecting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button(rig.connected ? "Disconnect" : "Connect") {
-                            rig.connected ? rig.disconnect() : rig.connect()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-                // Per-radio status, matching the actual connection type; a two-radio
-                // station shows both. Falls back to a single idle line when idle.
-                if rig.statuses.isEmpty {
-                    HStack {
-                        Circle().fill(ODTheme.muted).frame(width: 10, height: 10)
-                        Text(rig.statusText).font(.caption).foregroundStyle(ODTheme.muted)
-                    }
-                } else {
+                ControlStatusHeader(title: statusTitle, subtitle: statusSubtitle, dot: dotColor,
+                                    connected: rig.connected, connecting: rig.connecting,
+                                    onToggle: { rig.connected ? rig.disconnect() : rig.connect() })
+                // Per-radio rows only for a two-radio station, where each link's
+                // state is distinct. A single radio is fully described by the header.
+                if rig.config.twoRadios {
                     ForEach(rig.statuses) { s in
                         HStack(alignment: .top, spacing: 8) {
                             Circle().fill(s.connected ? ODTheme.good : (s.error != nil ? ODTheme.warning : ODTheme.muted))
@@ -340,10 +358,11 @@ struct HomeRigControlCard: View {
                         }
                     }
                 }
-                if rig.statuses.isEmpty, !rig.errorText.isEmpty {
+                if !rig.connected, !rig.errorText.isEmpty {
                     Text(rig.errorText).font(.caption).foregroundStyle(ODTheme.warning)
                 }
                 if rig.connected {
+                    Divider().opacity(0.4)
                     MetricRow("Downlink", ODFormat.frequency(rig.downlinkDialHz), valueColor: ODTheme.good)
                     if rig.uplinkDialHz > 0 {
                         MetricRow("Uplink", ODFormat.frequency(rig.uplinkDialHz), valueColor: ODTheme.warning)
@@ -370,5 +389,22 @@ struct HomeRigControlCard: View {
                 if abs(passbandOffsetHz - v) > 0.5 { passbandOffsetHz = v }
             }
         }
+    }
+
+    private var statusTitle: String {
+        rig.connecting ? "Connecting…" : (rig.connected ? "Connected" : "Not connected")
+    }
+
+    /// One-line description of the configured link(s), shown under the status.
+    private var statusSubtitle: String? {
+        if rig.config.twoRadios { return "Two radios" }
+        guard let slot = rig.config.slots.first, let spec = slot.spec else { return nil }
+        return "\(spec.name) · \(slot.transport.label)"
+    }
+
+    private var dotColor: Color {
+        if rig.connected { return ODTheme.good }
+        if rig.connecting { return ODTheme.accent }
+        return rig.errorText.isEmpty ? ODTheme.muted : ODTheme.warning
     }
 }

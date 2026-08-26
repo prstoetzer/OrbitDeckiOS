@@ -15,6 +15,7 @@
             <a class="navlink" href="documentation.html">Documentation</a>
             <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
             <a class="navlink" href="catcontrol.html">Rig Control</a>
+            <a class="navlink" href="rotator.html">Rotator</a>
             <a class="navlink" href="source.html" aria-current="page">Source</a>
             <a class="navlink" href="privacy.html">Privacy</a>
         </nav>
@@ -46,6 +47,7 @@
                 <a href="#dxcc">DXCC &amp; geocoding</a>
                 <a href="#services">Data services</a>
                 <a href="#catcontrol">Rig control (CAT)</a>
+                <a href="#rotator">Rotator control</a>
                 <a href="#location">Location</a>
                 <a href="#exports">Exports</a>
                 <a href="#notify">Notifications</a>
@@ -60,7 +62,7 @@
             <div class="doc-body">
                 <h2 id="overview">Overview</h2>
                 <p>OrbitDeck is a native SwiftUI application for iPhone and iPad (iOS/iPadOS 17+) that computes satellite passes, Doppler, look angles, footprints, link budgets, and a large set of orbital-analysis and operating tools entirely on-device from live orbital elements. It is a companion to the OrbitDeck desktop app and CardSat by Paul Stoetzer, N8HM.</p>
-                <p>The architecture is deliberately layered and framework-light: one observable <strong>store</strong> holds all state, pure <strong>engine</strong> types do the math, thin <strong>service</strong> types fetch data and talk to the system, and SwiftUI <strong>views</strong> render it. There is no external app framework, no database, and exactly one third-party library (the propagation core). Roughly 25,000 lines of app code — Views ~12k, Engine ~9k, Services ~3.5k, Models ~1k — plus the vendored propagator.</p>
+                <p>The architecture is deliberately layered and framework-light: one observable <strong>store</strong> holds all state, pure <strong>engine</strong> types do the math, thin <strong>service</strong> types fetch data and talk to the system, and SwiftUI <strong>views</strong> render it. There is no external app framework, no database, and exactly one third-party library (the propagation core). Roughly 30,000 lines of app code — Views ~12.5k, Engine ~9.3k, Services ~3.5k, rig &amp; rotator control ~3.2k, Models ~1k — plus the vendored propagator.</p>
 
                 <h2 id="stack">Tech stack</h2>
                 <table>
@@ -214,6 +216,19 @@
                     iOS supports only Bluetooth&nbsp;LE here — generic Bluetooth Classic (SPP) adapters require MFi and cannot be opened. The RS-BA1 network path is implemented to the reverse-engineered spec and verified against real hardware where possible.
                 </div>
 
+                <h2 id="rotator">Rotator control</h2>
+                <p>The <code>Rotator/</code> group steers an az/el antenna rotator to follow the selected satellite. It mirrors the CAT design — data model, codecs, transports, an orchestrator and UI — and reuses CAT's BLE transport and network primitives:</p>
+                <ul>
+                    <li><strong><code>RotatorTypes.swift</code></strong> — the <code>RotatorProtocolKind</code> enum (GS-232A/B, Easycomm&nbsp;I/II/III, SPID Rot2Prog, rotctld, PstRotator, with network/TCP/default-port traits), the <code>RotAzRange</code> axis convention (0–360 / &minus;180…+180 / 0–450° overlap), and the persisted <code>RotatorConfig</code> — the full set of CardSat options that apply on iOS (protocol, transport endpoint, pre-position lead, 450° lookahead, alignment offsets, deadband, magnetic correction, park az/el, flip, minimum elevation, update rate). It uses the same <strong>tolerant custom <code>Codable</code></strong> as the CAT config, in its own UserDefaults key.</li>
+                    <li><strong><code>RotatorCodec.swift</code></strong> — pure, stateless command builders and position parsers ported byte-for-byte from CardSat's <code>rotator.cpp</code>: GS-232 (<code>W&nbsp;aaa&nbsp;eee</code>), Easycomm I integer / II&amp;III decimal (<code>AZ&hellip;&nbsp;EL&hellip;</code>), the SPID Rot2Prog 13-byte binary frame, rotctld (<code>P&nbsp;az&nbsp;el</code> / <code>p</code> / <code>S</code>), and PstRotator's documented <code>&lt;PST&gt;&lt;TRACK&gt;az&nbsp;el&lt;/TRACK&gt;&lt;/PST&gt;</code> UDP command. Each protocol applies its own final clamp exactly as CardSat does.</li>
+                    <li><strong><code>RotatorNetwork.swift</code></strong> — <code>RotatorNetworkTransport</code>, a <code>Network.framework</code> client conforming to CAT's <code>CATTransport</code> so the controller reuses the same plumbing. It does TCP for rotctld and UDP for PstRotator, binding the local source port to dest+1 for PstRotator as CardSat does, and awaits the send completion so a real socket error surfaces on the Home card instead of being silently dropped. Serial rotators reuse CAT's <code>BLESerialTransport</code>.</li>
+                    <li><strong><code>RotatorController.swift</code></strong> — a <code>@MainActor ObservableObject</code> running the pointing loop on a <code>DispatchSource</code> timer (same GCD-timing discipline as the rig controller). Each tick computes the live look angle, then branches to <em>track</em> (applying alignment offsets, flip for overhead passes, the 450° overlap pre-commit and axis normalization, and optional magnetic-declination correction), <em>pre-position</em> to the AOS bearing within the lead window, or <em>park</em>. A deadband suppresses needless moves; on the fire-and-forget UDP path a short keep-alive resends to self-heal a dropped datagram, while reliable transports send only on real movement.</li>
+                    <li><strong><code>RotatorViews.swift</code></strong> — the Rotator configuration screen (presented as a sheet from Settings, like the CAT screen) with protocol, connection, pointing, alignment and park sections, and the Home <strong>Rotator</strong> card (connect/disconnect, commanded az/el, mode and transmit status). The card shares a <code>ControlStatusHeader</code> with the rig card for a consistent look.</li>
+                </ul>
+                <div class="note">
+                    The network protocols are validated end-to-end — PstRotator's UDP command against the documented spec, and rotctld against Hamlib's dummy backend (<code>rotctld -m 1</code>). The serial protocols (GS-232, Easycomm, SPID) are byte-faithful to CardSat and await on-hardware confirmation, as with the CAT serial radios.
+                </div>
+
                 <h2 id="location">Location</h2>
                 <p><code>LocationProvider</code> is a <code>@MainActor ObservableObject</code> wrapper over <code>CLLocationManager</code> that serves two independent consumers: the <strong>compass</strong> (which needs location fixes so Core Location can resolve <em>true</em> heading from magnetic) and the <strong>observer follow</strong>. <code>startHeading</code>/<code>stopHeading</code> and <code>startFollowing</code>/<code>stopFollowing</code> track those consumers separately so releasing one doesn't cut updates the other still needs; <code>setPrecise</code> switches between a battery-friendly ~100&nbsp;m accuracy with a 50&nbsp;m distance filter and full best-accuracy with no filter (used by the Grid Finder). It also offers opt-in reverse geocoding: with <code>geocodeEnabled</code> set, each fix is geocoded (throttled to ~1&nbsp;km) and published as <code>entity</code>, which the Grid Finder reads. The shared "current location" follow that drives observer-relative screens is coalesced to ~1&nbsp;Hz in <code>RootView</code> so live screens don't re-render faster than once per second.</p>
 
@@ -250,7 +265,7 @@
                 <p>Where to find each screen:</p>
                 <table>
                     <tr><th>File</th><th>Screens</th></tr>
-                    <tr><td><code>HomeView.swift</code></td><td>Home (live track with the memoized arc, transponder/Doppler cards with passband + calibration sliders, the CAT rig-control card, one-tap AMSAT status reporting, fleet dashboard) and the Grid Finder (VUCC compass dials + proximity map).</td></tr>
+                    <tr><td><code>HomeView.swift</code></td><td>Home (live track with the memoized arc, transponder/Doppler cards with passband + calibration sliders, the CAT rig-control and rotator cards, one-tap AMSAT status reporting, fleet dashboard) and the Grid Finder (VUCC compass dials + proximity map).</td></tr>
                     <tr><td><code>GroundTrackView.swift</code></td><td>Ground Track — a MapKit map with the sub-point path, a live heading marker, and the geodesic footprint drawn as an explicit 0&deg;-elevation boundary polygon (walked by bearing from the sub-point) instead of a projected <code>MapCircle</code>.</td></tr>
                     <tr><td><code>PassesView.swift</code></td><td>Next Passes (quality-scored list, pass-detail sheet) and the Daily Schedule (per-satellite streaming, day grouping, pin-to-now).</td></tr>
                     <tr><td><code>TrackView</code>, <code>SkyRadarView</code>, <code>OrbitalAnalysisView</code>, <code>IlluminationView</code>, <code>PassDetailView</code>, <code>TenDayView</code>, <code>RadioView</code>, <code>SatellitesView</code>, <code>SettingsView</code></td><td>The standalone screens (real-time polar plot; all-sky radar; orbital analysis; illumination; pass detail; pass progression; the Radio/Doppler screen; the catalog; and Settings/About/Calibrations).</td></tr>
@@ -258,6 +273,7 @@
                     <tr><td><code>AdvancedFeatureViews.swift</code></td><td>OSCARLOCATOR Sim (live/QTH projections, A/B reference-orbit comparison), Reference Orbits, and Exports.</td></tr>
                     <tr><td><code>DeepParityViews.swift</code>, <code>UtilityFeatureViews.swift</code></td><td>Tools, the scientific and graphing calculators, Tiny BASIC, Learn, References, and the 3D globe.</td></tr>
                     <tr><td><code>CAT/CATViews.swift</code></td><td>Rig Control (CAT) configuration sheet and the Home rig-control card. Engine, transports and codecs live alongside it in the <code>CAT/</code> group (see <a href="#catcontrol">Rig control</a>).</td></tr>
+                    <tr><td><code>Rotator/RotatorViews.swift</code></td><td>Rotator control configuration sheet and the Home rotator card. Codec, transport and controller live alongside it in the <code>Rotator/</code> group (see <a href="#rotator">Rotator control</a>).</td></tr>
                 </table>
 
                 <h2 id="build">Building &amp; contributing</h2>

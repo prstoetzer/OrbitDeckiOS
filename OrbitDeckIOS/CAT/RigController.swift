@@ -151,7 +151,7 @@ final class RigController: ObservableObject {
     func disconnect() {
         timer?.cancel(); timer = nil
         statuses.removeAll()
-        Task { await teardown(); connected = false; statusText = "Disconnected." }
+        Task { await teardown(); connected = false; statusText = "Not connected." }
     }
 
     private func teardown() async {

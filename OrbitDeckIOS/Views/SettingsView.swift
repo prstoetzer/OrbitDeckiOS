@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var hamsatApiKey = ""
     @State private var hamsatLoaded = false
     @State private var showRigControl = false
+    @State private var showRotatorControl = false
 
     var body: some View {
         Form {
@@ -166,6 +167,16 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
+            Section("Rotator control") {
+                Button {
+                    showRotatorControl = true
+                } label: {
+                    Label("Antenna rotator", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                }
+                Text("Point an az/el rotator at the selected satellite over a BLE serial adapter (GS-232, Easycomm, SPID) or a network connection (rotctld, PstRotator). Control is on the Home screen once a rotator is configured.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
             Section("Space-Track") {
                 TextField("Space-Track identity / email", text: $spaceTrackIdentity)
                     .textContentType(.username)
@@ -280,6 +291,16 @@ struct SettingsView: View {
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Done") { showRigControl = false }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showRotatorControl) {
+            NavigationStack {
+                RotatorSettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showRotatorControl = false }
                         }
                     }
             }

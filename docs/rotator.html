@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rotator Control — OrbitDeck for iOS</title>
+    <meta name="description" content="OrbitDeck for iOS can steer an az/el antenna rotator through a satellite pass — GS-232, Easycomm, SPID, rotctld and PstRotator — over a BLE serial adapter or a network connection: protocols, transports, alignment and pointing options.">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav">
+            <a class="brand" href="index.html"><span class="dot"></span>OrbitDeck</a>
+            <a class="navlink" href="index.html">Home</a>
+            <a class="navlink" href="documentation.html">Documentation</a>
+            <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
+            <a class="navlink" href="catcontrol.html">Rig Control</a>
+            <a class="navlink" href="rotator.html" aria-current="page">Rotator</a>
+            <a class="navlink" href="source.html">Source</a>
+            <a class="navlink" href="privacy.html">Privacy</a>
+        </nav>
+    </header>
+
+    <section class="container">
+        <h1>Rotator Control</h1>
+        <p class="section-intro">OrbitDeck can steer an az/el antenna rotator to follow a satellite across the sky — no PC or extra software — over a Bluetooth&nbsp;LE serial adapter or a network connection to a rotator daemon. You configure the rotator in Settings and control it from the Home screen, alongside rig control.</p>
+
+        <div class="doc">
+            <aside class="toc">
+                <h4>Contents</h4>
+                <a href="#overview">Overview</a>
+                <a href="#protocols">Protocols</a>
+                <a href="#interfaces">Connections &amp; adapters</a>
+                <a href="#setup">Setting it up</a>
+                <a href="#control">Controlling on Home</a>
+                <a href="#pointing">Pointing options</a>
+                <a href="#alignment">Alignment &amp; park</a>
+                <a href="#flip">Flip &amp; azimuth ranges</a>
+                <a href="#privacy">Permissions &amp; privacy</a>
+                <a href="#troubleshooting">Troubleshooting</a>
+            </aside>
+
+            <div class="doc-body">
+                <h2 id="overview">Overview</h2>
+                <p>Rotator control aims your antenna at the selected satellite for the whole pass. OrbitDeck computes the live azimuth and elevation from the orbit and your station — the same look angles the Home and Sky Radar screens show — and sends them to the rotator on a steady loop. Before acquisition it can pre-position to the AOS bearing; after loss of signal, or when you disconnect, it parks the antenna at a bearing you choose.</p>
+                <div class="note">
+                    Rotator control works only while OrbitDeck is in the foreground — iOS suspends Bluetooth and networking for backgrounded apps. Turn on <strong>Keep screen awake on Home</strong> (Settings &rarr; Display) to leave it running during a pass.
+                </div>
+
+                <h2 id="protocols">Protocols</h2>
+                <p>OrbitDeck speaks the rotator protocols in the CardSat reference set that are usable on iOS, byte-for-byte:</p>
+                <ul>
+                    <li><strong>Yaesu GS-232A/B</strong> — the ubiquitous ASCII protocol (<code>W&nbsp;aaa&nbsp;eee</code> to point) used by Yaesu GS-232 controllers and the many clones and Arduino projects that emulate it. Serial.</li>
+                    <li><strong>Easycomm I / II / III</strong> — the open ASCII standard used by many home-built and open-source controllers (<code>AZ&hellip;&nbsp;EL&hellip;</code>). Easycomm&nbsp;III is accepted with the same grammar as&nbsp;II (velocity fields are not used). Serial.</li>
+                    <li><strong>SPID Rot2Prog</strong> — the binary frame protocol of SPID Elektronik controllers (Rot2Prog, MD-01/02). Serial.</li>
+                    <li><strong>rotctld (Hamlib NET rotctl)</strong> — the Hamlib network rotator daemon over <strong>TCP</strong> (default port&nbsp;<strong>4533</strong>). Because <code>rotctld</code> can drive virtually every rotator Hamlib supports, this is the most flexible option — run <code>rotctld</code> on a computer near the rotator and point OrbitDeck at it. Network.</li>
+                    <li><strong>PstRotator</strong> — the popular Windows rotator program's <strong>UDP</strong> control input (default port&nbsp;<strong>12000</strong>). OrbitDeck pushes the tracking bearing to PstRotator, which drives your actual rotator. Network.</li>
+                </ul>
+                <div class="note">
+                    <code>rotctld</code> is the recommended path for a rotator that OrbitDeck doesn't speak natively: Hamlib's driver list covers Yaesu, SPID, Green Heron, Prosistel, M2, EA4TX and dozens more, and OrbitDeck only needs the TCP address.
+                </div>
+
+                <h2 id="interfaces">Connections &amp; adapters</h2>
+                <p>How OrbitDeck reaches the rotator depends on the protocol:</p>
+                <ul>
+                    <li><strong>BLE serial adapter</strong> (GS-232, Easycomm, SPID) — a Bluetooth&nbsp;<em>Low Energy</em> UART adapter (Nordic UART Service or a generic write+notify pair) wired to the rotator controller's serial port. This is the same class of adapter used for wired rig control; see the <a href="catcontrol.html#adapters">adapters that work</a> on the Rig Control page.</li>
+                    <li><strong>Network</strong> (rotctld, PstRotator) — a plain TCP or UDP connection over your local Wi-Fi to the computer running the daemon. Enter its IP address and port.</li>
+                </ul>
+                <div class="note">
+                    <strong>Bluetooth Classic (SPP) adapters are not supported on iOS.</strong> Apple restricts Bluetooth Classic to MFi-certified accessories, so HC-05/HC-06-style serial adapters cannot be opened by a normal app. Use a BLE UART adapter for serial rotators, or reach the rotator over the network with <code>rotctld</code>.
+                </div>
+
+                <h2 id="setup">Setting it up</h2>
+                <ol>
+                    <li>Open <strong>Settings &rarr; Rotator control</strong> and turn on <strong>Enable rotator control</strong>.</li>
+                    <li>Choose the <strong>protocol</strong>. Network protocols reveal a Host and Port; serial protocols reveal the BLE adapter picker and serial rate.</li>
+                    <li>For a network rotator, enter the daemon's <strong>host</strong> (IP) and <strong>port</strong> — the default fills in automatically (4533 for rotctld, 12000 for PstRotator). For a serial rotator, tap <strong>BLE adapter</strong> and pick your adapter from the scan.</li>
+                    <li>Set the pointing, alignment and park options as needed, then tap <strong>Done</strong>.</li>
+                </ol>
+
+                <h2 id="control">Controlling on Home</h2>
+                <p>With a rotator configured, a <strong>Rotator</strong> card appears on Home. Tap <strong>Connect</strong>; the status dot turns green and the card shows the commanded <strong>azimuth</strong> (with compass point) and <strong>elevation</strong>, plus the current mode — <em>Tracking</em>, <em>Pre-positioning</em> or <em>Parked</em>. A small transmit line confirms each command was sent. The rotator follows whichever satellite is selected on Home. Tap <strong>Disconnect</strong> to stop; OrbitDeck sends the antenna to its park position on the way out.</p>
+
+                <h2 id="pointing">Pointing options</h2>
+                <ul>
+                    <li><strong>Minimum elevation</strong> — only track above this elevation; below it the antenna waits or parks. Set to&nbsp;0 to track the whole visible pass.</li>
+                    <li><strong>Pre-position lead</strong> — how many seconds before AOS to aim at the rise bearing so the antenna is already there when the satellite appears (0 disables pre-positioning).</li>
+                    <li><strong>Deadband</strong> — the smallest change in commanded bearing that triggers a new move, so the rotator isn't nudged needlessly during slow stretches.</li>
+                    <li><strong>Update rate</strong> — how often the pointing loop recomputes and sends the target.</li>
+                </ul>
+                <div class="note">On the network UDP path (PstRotator) OrbitDeck also refreshes the target on a short keep-alive so a dropped datagram self-heals. On reliable transports (rotctld over TCP, and BLE serial) it sends only when the target actually moves past the deadband, so an unchanged position is never re-issued.</div>
+
+                <h2 id="alignment">Alignment &amp; park</h2>
+                <ul>
+                    <li><strong>Azimuth / elevation offset</strong> — a fixed correction added to every command to compensate for a mast or controller that isn't perfectly aligned.</li>
+                    <li><strong>Magnetic correction</strong> — if your controller is set up to magnetic north rather than true north, OrbitDeck subtracts the local magnetic declination so the antenna still points at the true bearing.</li>
+                    <li><strong>Park azimuth / elevation</strong> — where the antenna goes on loss of signal, between passes, and when you disconnect.</li>
+                </ul>
+
+                <h2 id="flip">Flip &amp; azimuth ranges</h2>
+                <p>OrbitDeck matches the axis convention of your rotator and handles high, near-overhead passes cleanly:</p>
+                <ul>
+                    <li><strong>Azimuth range</strong> — <strong>0–360°</strong> (0&nbsp;=&nbsp;North, the usual case), <strong>&minus;180…+180°</strong> (centered on North), or <strong>0–450°</strong> with a 90° overlap to avoid a cable-wrap at North. In 450° mode OrbitDeck looks a few seconds ahead and pre-commits to the upper turn when a North crossing is imminent, so it doesn't spin all the way around mid-pass.</li>
+                    <li><strong>Flip mode</strong> — for an el rotator that reaches past 90°, OrbitDeck can flip an overhead pass (azimuth&nbsp;+180°, elevation&nbsp;180&minus;el) so the antenna tips over the top instead of whipping 180° in azimuth as the satellite transits the zenith. It samples each pass and only flips the ones that would otherwise cross the azimuth seam.</li>
+                </ul>
+
+                <h2 id="privacy">Permissions &amp; privacy</h2>
+                <p>The first time you connect, iOS asks for <strong>Bluetooth</strong> (serial rotators) and/or <strong>Local Network</strong> (network rotators) permission. These connections go directly from your device to your rotator or its host computer over Bluetooth&nbsp;LE or your local Wi-Fi; nothing is sent to the developer. See the <a href="privacy.html">privacy policy</a>.</p>
+
+                <h2 id="troubleshooting">Troubleshooting</h2>
+                <ul>
+                    <li><strong>Adapter not found</strong> — make sure the BLE adapter is powered, in range, and not already connected to another app; confirm Bluetooth permission was granted. Unnamed adapters still appear in the list (sorted by signal strength).</li>
+                    <li><strong>Network connects but nothing moves</strong> — confirm the host IP and port, that the daemon is running and reachable on your subnet, and that iOS <strong>Local Network</strong> permission was granted (if denied, the connection can look ready while packets are silently dropped). For PstRotator, match the <strong>UDP Control Port</strong> (Communication&nbsp;&rarr;&nbsp;UDP&nbsp;Control&nbsp;Port, default&nbsp;12000).</li>
+                    <li><strong>Antenna points the wrong way by a fixed amount</strong> — set the azimuth/elevation offset, or enable magnetic correction if your controller is referenced to magnetic north.</li>
+                    <li><strong>Rotator spins around at North</strong> — choose the 0–450° overlap range if your rotator supports it, or the &minus;180…+180° range, to match its axis.</li>
+                    <li><strong>It waits instead of tracking a low pass</strong> — lower the minimum-elevation setting.</li>
+                    <li><strong>Verifying without hardware</strong> — run <code>rotctld -m 1 -T 0.0.0.0 -t 4533 -vvvvv</code> (Hamlib's dummy rotator) on a Mac/PC and point OrbitDeck at it; the verbose log shows each <code>P&nbsp;&lt;az&gt;&nbsp;&lt;el&gt;</code> command arriving.</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <footer class="site-footer">
+        <div class="container">
+            <span>&copy; 2026 Paul Stoetzer, N8HM</span>
+            <span>
+                <a href="index.html">Home</a> &nbsp;·&nbsp;
+                <a href="documentation.html">Documentation</a> &nbsp;·&nbsp;
+                <a href="https://www.amsat.org" rel="noopener">Support AMSAT</a>
+            </span>
+        </div>
+    </footer>
+</body>
+</html>
