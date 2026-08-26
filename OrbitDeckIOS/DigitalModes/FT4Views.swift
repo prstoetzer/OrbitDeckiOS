@@ -42,6 +42,19 @@ struct HomeFT4Card: View {
                 Divider().opacity(0.4)
                 txControls
             }
+            .onAppear { setupLogging() }
+        }
+    }
+
+    /// Log auto-sequenced QSOs with the current satellite/transponder context.
+    private func setupLogging() {
+        ft4.onQSOComplete = { [weak store, weak rig, weak qso] call, grid, rSent, rRcvd in
+            guard let store, let rig, let qso else { return }
+            let sat = store.selectedSatellite
+            var q = QSORecord.prefilled(satellite: sat, transponder: sat.flatMap { rig.transponder(for: $0) },
+                                        myGrid: store.operatorGrid6, myCall: qso.config.myCall, defaultRst: "-10")
+            q.mode = "FT4"; q.call = call; q.grid = grid; q.rstSent = rSent; q.rstRcvd = rRcvd
+            qso.add(q)
         }
     }
 
@@ -75,10 +88,12 @@ struct HomeFT4Card: View {
         HStack {
             VStack(alignment: .leading, spacing: 1) {
                 Text(d.text).font(.callout.monospaced())
-                Text("score \(d.score) · \(Int(d.freqHz)) Hz").font(.caption2).foregroundStyle(ODTheme.muted)
+                Text("SNR \(d.snr) dB · \(Int(d.freqHz)) Hz").font(.caption2).foregroundStyle(ODTheme.muted)
             }
             Spacer()
-            if qso.config.enabled {
+            if ft4.autoSequence, FT4Engine.parse(d.text)?.isCQ == true {
+                Button("Reply") { ft4.answerCQ(d) }.buttonStyle(.bordered).controlSize(.small)
+            } else if qso.config.enabled {
                 Button { logDecode(d) } label: { Image(systemName: "plus.circle") }
                     .buttonStyle(.borderless)
             }
@@ -88,9 +103,22 @@ struct HomeFT4Card: View {
     private var txControls: some View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle("Enable transmit", isOn: $ft4.txEnabled)
-            TextField("TX message (e.g. CQ N8HM FM18)", text: $ft4.txMessage)
-                .textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.odField)
-            Toggle("Transmit on even slots", isOn: $ft4.txOnEvenSlots)
+            Toggle("Auto-sequence QSO", isOn: $ft4.autoSequence)
+            if ft4.autoSequence {
+                HStack {
+                    Button("Call CQ") { ft4.callCQ() }.buttonStyle(.bordered)
+                    Spacer()
+                    if !ft4.seqStatus.isEmpty {
+                        Text(ft4.seqStatus).font(.caption).foregroundStyle(ODTheme.accent)
+                    }
+                }
+                Text("Tap Reply on a decoded CQ, or Call CQ. The report you send is taken from the other station's decoded SNR automatically; the exchange (grid → report → RR73) and logging run on their own. Watch the TX indicator to key if you have no CAT PTT.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            } else {
+                TextField("TX message (e.g. CQ N8HM FM18)", text: $ft4.txMessage)
+                    .textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.odField)
+                Toggle("Transmit on even slots", isOn: $ft4.txOnEvenSlots)
+            }
             if !ft4.pttOverCAT {
                 Text("This radio has no CAT PTT — use VOX or key manually when the TX indicator shows. Configure a CAT radio (CI-V / Yaesu / Kenwood / rigctld / Icom network) for automatic keying.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)

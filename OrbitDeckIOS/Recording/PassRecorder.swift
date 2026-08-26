@@ -61,6 +61,7 @@ final class PassRecorder: ObservableObject {
             return
         }
 
+        source.onError = { [weak self] m in self?.errorText = m; self?.stop() }
         do {
             try source.start(onFrames: { [weak self] frames in self?.write(frames) })
         } catch {

@@ -27,12 +27,6 @@ final class AudioHub: ObservableObject {
 
     func attach(_ rig: RigController) {
         self.rig = rig
-        // Put the session in a record-capable category (without activating it) so
-        // `availableInputs` enumerates a USB audio *input* even before we record.
-        // `.mixWithOthers` avoids interrupting any other audio; no mic prompt occurs
-        // until we actually capture.
-        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .measurement,
-                                                         options: [.mixWithOthers, .allowBluetoothA2DP, .defaultToSpeaker])
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in

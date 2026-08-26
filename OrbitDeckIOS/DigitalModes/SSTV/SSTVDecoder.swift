@@ -29,7 +29,7 @@ final class SSTVDecoder: ObservableObject {
     private nonisolated(unsafe) var rate: Double = 48_000
     private nonisolated(unsafe) var samples: [Float] = []
     private nonisolated(unsafe) let lock = NSLock()
-    private var timer: DispatchSourceTimer?
+    private nonisolated(unsafe) var timer: DispatchSourceTimer?
     private nonisolated(unsafe) var satName = ""
 
     func attach(_ qso: QSOStore) { self.qso = qso }
@@ -39,6 +39,7 @@ final class SSTVDecoder: ObservableObject {
         errorText = ""; image = nil; modeName = ""; status = "Listening…"
         self.source = source; self.rate = source.sampleRate; self.satName = satellite
         lock.lock(); samples.removeAll(keepingCapacity: true); lock.unlock()
+        source.onError = { [weak self] m in self?.errorText = m }
         do {
             try source.start(onFrames: { [weak self] frames in
                 guard let self else { return }
@@ -54,13 +55,14 @@ final class SSTVDecoder: ObservableObject {
         source?.stop(); source = nil
         timer?.cancel(); timer = nil
         isListening = false
-        decodeOnce(final: true)
-        status = image == nil ? "No image decoded" : "Decoded \(modeName)"
+        status = "Finishing…"
+        // Final decode off the main thread; it builds the image and updates status.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.decodeOnce(final: true) }
     }
 
     // MARK: Decode loop
 
-    private func startDecodeTimer() {
+    private nonisolated func startDecodeTimer() {
         let t = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
         t.schedule(deadline: .now() + 2, repeating: 2)
         t.setEventHandler { [weak self] in self?.decodeOnce(final: false) }
@@ -73,9 +75,11 @@ final class SSTVDecoder: ObservableObject {
         guard buf.count > Int(r * 0.5) else { return }
         let freq = Self.demodulate(buf, rate: r)
         guard let vis = Self.findVIS(freq, rate: r), let mode = SSTVModes.mode(forVIS: vis.code) else { return }
-        let img = Self.decodeImage(freq: freq, rate: r, mode: mode, start: vis.imageStart)
+        let pixels = Self.decodeImage(freq: freq, rate: r, mode: mode, start: vis.imageStart)
         Task { @MainActor in
             self.modeName = mode.name
+            // Build the UIImage here on the main actor (never on the decode queue).
+            let img = pixels.flatMap { Self.imageFromRGBA($0.rgba, width: $0.w, height: $0.h) }
             if let img { self.image = img; self.status = "Decoding \(mode.name)…" }
             if final, let img { self.save(img, mode: mode.name) }
         }
@@ -147,7 +151,10 @@ final class SSTVDecoder: ObservableObject {
     }
 
     /// Decode the image by walking the mode's segments.
-    nonisolated static func decodeImage(freq: [Double], rate: Double, mode: SSTVMode, start: Int) -> UIImage? {
+    /// Decode to raw RGBA pixels (no UIKit) so the caller can build the UIImage on
+    /// the main actor — creating CGImage/UIImage off the main thread trips a
+    /// framework main-queue assertion on device.
+    nonisolated static func decodeImage(freq: [Double], rate: Double, mode: SSTVMode, start: Int) -> (rgba: [UInt8], w: Int, h: Int)? {
         let w = mode.width, h = mode.height
         var rgb = [UInt8](repeating: 0, count: w * h * 4)
         let lineSamples = mode.lineMs / 1000.0 * rate
@@ -175,7 +182,7 @@ final class SSTVDecoder: ObservableObject {
             }
             writeLine(&rgb, w: w, h: h, transmittedLine: tl, mode: mode, chan: chan)
         }
-        return imageFromRGBA(rgb, width: w, height: h)
+        return (rgb, w, h)
     }
 
     private nonisolated static func writeLine(_ rgb: inout [UInt8], w: Int, h: Int, transmittedLine tl: Int,
@@ -222,7 +229,8 @@ final class SSTVDecoder: ObservableObject {
         return (r, g, b)
     }
 
-    private nonisolated static func imageFromRGBA(_ bytes: [UInt8], width: Int, height: Int) -> UIImage? {
+    @MainActor
+    private static func imageFromRGBA(_ bytes: [UInt8], width: Int, height: Int) -> UIImage? {
         guard width > 0, height > 0 else { return nil }
         var data = bytes
         let cs = CGColorSpaceCreateDeviceRGB()

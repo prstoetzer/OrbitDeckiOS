@@ -17,6 +17,9 @@ protocol AudioSource: AnyObject {
     var sampleRate: Double { get }
     /// Whether the underlying device/stream is currently present.
     var isAvailable: Bool { get }
+    /// Optional async-error sink (invoked on the main queue). Setup runs off the
+    /// main thread, so start-time failures are reported here rather than thrown.
+    var onError: ((String) -> Void)? { get set }
 
     /// Begin capturing. `onFrames` receives blocks of mono Float PCM at
     /// `sampleRate`. The callback may arrive on a real-time audio thread, so

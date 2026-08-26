@@ -13,11 +13,12 @@ import Foundation
 //  on-hardware verification against a real IC-9700 / IC-705.
 // ===========================================================================
 
-final class IcomAudioSource: AudioSource {
+final class IcomAudioSource: AudioSource, @unchecked Sendable {
     private let transport: IcomNetworkTransport
     private(set) var sampleRate: Double
     private var pullHandler: ((Int) -> [Float])?
     private var txTimer: DispatchSourceTimer?
+    var onError: ((String) -> Void)?
 
     init(transport: IcomNetworkTransport) {
         self.transport = transport

@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AVFoundation
 
 // ===========================================================================
 //  LogViews.swift — Log screen, QSO editor, Log settings, Home quick-log card
@@ -106,6 +107,7 @@ struct LogScreen: View {
     @State private var exportURL: URL?
     @State private var status: String?
     @State private var working = false
+    @StateObject private var player = RecordingPlayer()
 
     var body: some View {
         List {
@@ -180,7 +182,11 @@ struct LogScreen: View {
 
     private func recordingRow(_ r: RecordingEntry) -> some View {
         HStack {
-            Image(systemName: "waveform")
+            Button { togglePlay(r) } label: {
+                Image(systemName: player.playingID == r.id ? "stop.circle.fill" : "play.circle.fill")
+                    .font(.title2).foregroundStyle(ODTheme.accent)
+            }
+            .buttonStyle(.borderless)
             VStack(alignment: .leading, spacing: 2) {
                 Text(r.sat.isEmpty ? "Recording" : r.sat).font(.subheadline.weight(.semibold))
                 Text("\(ODFormat.primaryClock(r.start)) · \(ODFormat.duration(r.duration))")
@@ -192,6 +198,11 @@ struct LogScreen: View {
             }
         }
         .swipeActions { Button(role: .destructive) { qso.deleteRecording(r) } label: { Label("Delete", systemImage: "trash") } }
+    }
+
+    private func togglePlay(_ r: RecordingEntry) {
+        let url = QSOStore.recordingsDir.appendingPathComponent(r.filename)
+        player.toggle(id: r.id, url: url)
     }
 
     private func exportADIF() {
@@ -408,3 +419,33 @@ struct ShareSheet: UIViewControllerRepresentable {
 }
 
 extension URL: Identifiable { public var id: String { absoluteString } }
+
+/// Simple one-at-a-time player for pass recordings on the Log screen.
+final class RecordingPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate, @unchecked Sendable {
+    @Published var playingID: UUID?
+    private var player: AVAudioPlayer?
+
+    func toggle(id: UUID, url: URL) {
+        if playingID == id { stop(); return }
+        stop()
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+            let p = try AVAudioPlayer(contentsOf: url)
+            p.delegate = self
+            p.play()
+            player = p
+            playingID = id
+        } catch {
+            playingID = nil
+        }
+    }
+
+    func stop() {
+        player?.stop(); player = nil; playingID = nil
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in self.playingID = nil }
+    }
+}
