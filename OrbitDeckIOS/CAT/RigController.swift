@@ -62,6 +62,9 @@ final class RigController: ObservableObject {
     private var isTicking = false
     private var lastSentRx: Int64 = 0
     private var lastSentTx: Int64 = 0
+    /// One-tick uplink deferral after a downlink move (CardSat's driveUplinkDeferred):
+    /// keeps the shared CI-V bus uncongested and avoids a MAIN excursion every tick.
+    private var uplinkDeferTicks = 0
     /// Identifies the current satellite/transponder/mode so mode + step are
     /// re-applied whenever any of them changes (not just at connect).
     private var lastEngageKey = ""
@@ -182,7 +185,11 @@ final class RigController: ObservableObject {
     private func engageOnce() async {
         for link in links {
             let addr = civAddr(link)
-            if link.spec.family == .yaesuFT736 { await sendRaw(link, CATCodec.yaesuCATOn); await pace(60) }
+            // CardSat's YaesuRig::begin() sends CAT-ON on connect for both the
+            // FT-847 (full-duplex) and the FT-736R. Mono FT-817-family legs don't.
+            if link.spec.family == .yaesuFT736 || (link.spec.family == .yaesuBinary && link.spec.fullDuplex) {
+                await sendRaw(link, CATCodec.yaesuCATOn); await pace(60)
+            }
             if link.spec.family == .kenwoodHandheld {
                 for f in CATCodec.khtSession() { await sendRaw(link, f); await pace(30) }
             }
@@ -201,16 +208,21 @@ final class RigController: ObservableObject {
     /// Apply mode (and, for the handheld, the fine-step) and uplink tone. Called at
     /// connect and again whenever the satellite, transponder, band or mode changes.
     private func applyModes(dlMode: RigMode, ulMode: RigMode, isFM: Bool) async {
+        let toneOn = config.tuning.uplinkToneHz > 0 && isFM
         for link in links {
             switch link.leg {
             case .both:
-                await sendModeCIVorOther(link, mode: dlMode, leg: .downlink)
+                // Uplink first (mode + uplink CTCSS on the MAIN band), downlink last —
+                // so a full-duplex CI-V rig is left band-selected on the DOWNLINK, the
+                // way CardSat does it. Otherwise the rig stays parked on MAIN.
                 await sendModeCIVorOther(link, mode: ulMode, leg: .uplink)
-            case .downlink: await sendModeCIVorOther(link, mode: dlMode, leg: .downlink)
-            case .uplink:   await sendModeCIVorOther(link, mode: ulMode, leg: .uplink)
-            }
-            if config.tuning.uplinkToneHz > 0, isFM {
-                await sendTone(link, on: true, toneHz: config.tuning.uplinkToneHz)
+                if toneOn { await sendTone(link, on: true, toneHz: config.tuning.uplinkToneHz) }
+                await sendModeCIVorOther(link, mode: dlMode, leg: .downlink)
+            case .downlink:
+                await sendModeCIVorOther(link, mode: dlMode, leg: .downlink)
+            case .uplink:
+                await sendModeCIVorOther(link, mode: ulMode, leg: .uplink)
+                if toneOn { await sendTone(link, on: true, toneHz: config.tuning.uplinkToneHz) }
             }
         }
     }
@@ -219,7 +231,7 @@ final class RigController: ObservableObject {
 
     private func startLoop() {
         timer?.cancel()
-        lastSentRx = 0; lastSentTx = 0; lastEngageKey = ""
+        lastSentRx = 0; lastSentTx = 0; lastEngageKey = ""; uplinkDeferTicks = 0
         // A GCD timer on the main queue — reliable here, unlike a MainActor
         // `while { await Task.sleep }` loop, which can peg the main thread and
         // freeze the UI on this device. The overlap guard skips a tick if the
@@ -254,13 +266,15 @@ final class RigController: ObservableObject {
         let key = "\(sat.id)|\(tp.id)|\(dlMode.rawValue)|\(ulMode.rawValue)"
         if key != lastEngageKey {
             lastEngageKey = key
-            lastSentRx = 0; lastSentTx = 0
+            lastSentRx = 0; lastSentTx = 0; uplinkDeferTicks = 0
             await applyModes(dlMode: dlMode, ulMode: ulMode, isFM: isFM)
         }
 
         // One True Rule: read the followed leg and fold an operator dial move into
-        // the passband offset. NO early return — the send loop below then re-commands
-        // both legs with the updated offset, so following never starves tuning.
+        // the passband offset. The followed leg then LEADS — we don't re-command it on
+        // the same tick (mark its last-sent as the observed value), so we don't fight
+        // the operator's dial; Doppler resumes on it next tick. The other leg is always
+        // re-commanded from the updated offset below, so following never starves tuning.
         if config.tuning.followRadio {
             let followLeg = config.tuning.followLeg
             let last = (followLeg == .downlink) ? lastSentRx : lastSentTx
@@ -271,6 +285,7 @@ final class RigController: ObservableObject {
                 if abs(delta) >= thresh, abs(delta) < 1_000_000 {
                     let d = Double(delta)
                     config.tuning.passbandOffsetHz += (followLeg == .downlink) ? d : (tp.invert ? -d : d)
+                    if followLeg == .downlink { lastSentRx = Int64(obs) } else { lastSentTx = Int64(obs) }
                 }
             }
         }
@@ -299,8 +314,29 @@ final class RigController: ObservableObject {
         for link in links {
             switch link.leg {
             case .both:
-                if abs(rxRig - lastSentRx) >= deadband { await sendFreq(link, leg: .downlink, hz: rxRig, mode: dlMode); lastSentRx = rxRig }
-                if uplink > 0, abs(txRig - lastSentTx) >= deadband { await sendFreq(link, leg: .uplink, hz: txRig, mode: ulMode); lastSentTx = txRig }
+                // Downlink first (CardSat driveDownlink), then uplink.
+                let followUplink = config.tuning.followRadio && config.tuning.followLeg == .uplink
+                let dlMoved = abs(rxRig - lastSentRx) >= deadband
+                if dlMoved { await sendFreq(link, leg: .downlink, hz: rxRig, mode: dlMode); lastSentRx = rxRig }
+                if uplink > 0, abs(txRig - lastSentTx) >= deadband {
+                    if followUplink {
+                        // OTR-uplink: write the uplink immediately (no defer) and LEAVE
+                        // band access on the uplink, so the followed-uplink read stays
+                        // valid and the operator's uplink VFO isn't yanked back to RX
+                        // each tick (CardSat driveUplinkOtr → rigSelectUplink).
+                        await sendFreq(link, leg: .uplink, hz: txRig, mode: ulMode); lastSentTx = txRig
+                    } else if dlMoved && uplinkDeferTicks == 0 {
+                        // Defer the uplink one tick after a downlink move so the shared
+                        // bus isn't congested (CardSat driveUplinkDeferred).
+                        uplinkDeferTicks = 1
+                    } else {
+                        uplinkDeferTicks = 0
+                        await sendFreq(link, leg: .uplink, hz: txRig, mode: ulMode); lastSentTx = txRig
+                        // Return band access to the downlink so the rig stays on RX
+                        // (matches CardSat's driveUplink → rigSelectDownlink).
+                        await reselectDownlink(link)
+                    }
+                }
             case .downlink:
                 if abs(rxRig - lastSentRx) >= deadband { await sendFreq(link, leg: .downlink, hz: rxRig, mode: dlMode); lastSentRx = rxRig }
             case .uplink:
@@ -365,6 +401,14 @@ final class RigController: ObservableObject {
     private func yaesuVFO(_ link: LiveLink, leg: RigRole) -> YaesuVFO {
         guard link.spec.fullDuplex, link.spec.family == .yaesuBinary else { return .plain }
         return leg == .uplink ? .satTX : .satRX
+    }
+
+    /// Leave a full-duplex CI-V rig band-selected on the downlink (SUB) so it stays
+    /// on receive after an uplink write. No-op for rigs without CI-V band access.
+    private func reselectDownlink(_ link: LiveLink) async {
+        guard link.spec.family == .civ, link.spec.fullDuplex,
+              let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: .downlink)) else { return }
+        await sendRaw(link, sel)
     }
 
     private func sendFreq(_ link: LiveLink, leg: RigRole, hz: Int64, mode: RigMode) async {

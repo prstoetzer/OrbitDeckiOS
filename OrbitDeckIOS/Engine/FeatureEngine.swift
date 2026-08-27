@@ -3381,7 +3381,12 @@ extension AmsatStatusService {
         let all = try await catalogNames()
         // Keep every API/operating name that resolves to this catalog entry
         // through the full matching ladder (AO-7 has one per transponder mode).
-        let matches = all.filter { SatelliteNameMatch.matchIndex(apiName: $0, in: [commonName]) != nil }
+        // De-duplicate: the AMSAT catalog can list a name more than once, which
+        // otherwise yields duplicate SwiftUI Picker IDs ("invalid selection").
+        var seen = Set<String>()
+        let matches = all.filter {
+            SatelliteNameMatch.matchIndex(apiName: $0, in: [commonName]) != nil && seen.insert($0).inserted
+        }
         return matches.sorted()
     }
 

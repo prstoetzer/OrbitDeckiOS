@@ -83,7 +83,7 @@ enum RadioCatalog {
         civ("IC-821", 0x4C, 9600, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: false),
         civ("IC-910", 0x60, 19200, selMain: [0x07,0xD1], selSub: [0x07,0xD0], sat: true,
             satCmd: 0x1A, satSub: 0x07, tone: true, toneSub: 0x43, modeFilter: false),
-        civ("IC-970", 0x2E, 9600, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: true,
+        civ("IC-970", 0x2E, 9600, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: false,
             satCmd: 0x16, satSub: 0x5A),
         civ("IC-9100", 0x7C, 19200, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: true,
             satCmd: 0x16, satSub: 0x5A, tone: true, toneSub: 0x42, assignBand: true),
