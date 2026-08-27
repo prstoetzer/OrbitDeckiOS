@@ -100,6 +100,7 @@ final class FT4Engine: ObservableObject {
     private nonisolated(unsafe) var rxPeak: Float = 0
     private nonisolated(unsafe) let analyzer = SpectrumAnalyzer(n: 4096)
     private nonisolated(unsafe) var waterMagRows: [[Float]] = []   // newest last
+    private nonisolated(unsafe) var waterFloor: Float = 0          // EMA of the noise floor (dB)
     private let waterHeight = 120
 
     func attach(rig: RigController, qso: QSOStore) { self.rig = rig; self.qso = qso }
@@ -131,6 +132,8 @@ final class FT4Engine: ObservableObject {
         } catch { errorText = error.localizedDescription; self.source = nil; return }
         isRunning = true; status = "Listening…"
         AudioActivity.begin()
+        // Fresh waterfall state (safe: the analysis timer isn't running yet).
+        waterMagRows.removeAll(keepingCapacity: true); waterFloor = 0
         scheduleSlotTimer()
         scheduleAnalysisTimer()
     }
@@ -215,11 +218,16 @@ final class FT4Engine: ObservableObject {
         if waterMagRows.count > waterHeight { waterMagRows.removeFirst(waterMagRows.count - waterHeight) }
         let w = row.count, h = waterMagRows.count
         guard w > 0, h > 0 else { return nil }
-        // Anchor the palette to the noise floor with a FIXED dynamic range (like
-        // WSJT-X): the floor stays dark navy and only real signals light up.
-        var lo = Float.greatestFiniteMagnitude
-        for r in waterMagRows { for v in r where v < lo { lo = v } }
-        let range: Float = 45   // dB shown from noise floor to white
+        // Noise floor = a low percentile of the CURRENT spectrum (signals occupy a
+        // minority of bins), EMA-smoothed. The old absolute-minimum let a single near-
+        // null bin sit ~50 dB below the real floor, so the noise itself mapped to the
+        // top of the palette (everything red). A percentile tracks the true floor and
+        // is gain-independent (the floor rises with the signal).
+        var sortedRow = row; sortedRow.sort()
+        let floorNow = sortedRow[min(sortedRow.count - 1, max(0, Int(Float(sortedRow.count) * 0.4)))]
+        waterFloor = waterFloor == 0 ? floorNow : waterFloor * 0.9 + floorNow * 0.1
+        let lo = waterFloor
+        let range: Float = 55   // dB from noise floor to white; only strong signals go red
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         for (y, r) in waterMagRows.enumerated() {
             let count = min(w, r.count)

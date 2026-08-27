@@ -156,27 +156,31 @@ final class SpectrumAnalyzer: @unchecked Sendable {
     }
 }
 
-/// Maps a normalized magnitude (0…1) to the WSJT-X-style waterfall palette:
-/// dark navy noise floor → blue → teal → green → yellow → orange → white peaks.
+/// Maps a normalized magnitude (0…1) to WSJT-X's **Default** waterfall palette,
+/// using the exact design anchors from WSJT-X `Palettes/Default.pal` (9 stops,
+/// linearly interpolated): black → blues → tan → yellow-greens → yellow → red.
 enum Heatmap {
+    // RGB (0–255) anchors, verbatim from WSJT-X Default.pal.
+    private static let stops: [(Float, Float, Float)] = [
+        (0, 0, 0),
+        (0, 6, 136),
+        (0, 19, 198),
+        (0, 32, 239),
+        (172, 167, 105),
+        (194, 198, 49),
+        (225, 228, 107),
+        (255, 255, 0),
+        (255, 51, 0)
+    ]
     static func color(_ v: Float) -> (r: UInt8, g: UInt8, b: UInt8) {
         let x = max(0, min(1, v))
-        let stops: [(Float, Float, Float)] = [
-            (0.03, 0.03, 0.25),  // dark navy (noise floor)
-            (0.00, 0.25, 0.70),  // blue
-            (0.00, 0.63, 0.71),  // teal
-            (0.00, 0.71, 0.24),  // green
-            (0.86, 0.86, 0.00),  // yellow
-            (0.94, 0.35, 0.00),  // orange-red
-            (1.00, 1.00, 1.00)   // white (strong peaks)
-        ]
         let seg = x * Float(stops.count - 1)
         let i = min(stops.count - 2, Int(seg))
         let f = seg - Float(i)
         let a = stops[i], b = stops[i + 1]
-        let r = (a.0 + (b.0 - a.0) * f) * 255
-        let g = (a.1 + (b.1 - a.1) * f) * 255
-        let bl = (a.2 + (b.2 - a.2) * f) * 255
+        let r = a.0 + (b.0 - a.0) * f
+        let g = a.1 + (b.1 - a.1) * f
+        let bl = a.2 + (b.2 - a.2) * f
         return (UInt8(max(0, min(255, r))), UInt8(max(0, min(255, g))), UInt8(max(0, min(255, bl))))
     }
 }

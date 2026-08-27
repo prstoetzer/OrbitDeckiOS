@@ -47,7 +47,11 @@ enum ADIF {
         r += field("CALL", q.call)
         r += field("QSO_DATE", date)
         r += field("TIME_ON", time)
-        r += field("MODE", q.mode)
+        // FT4/JS8 are SUBMODEs of MFSK in ADIF (FT8 is its own MODE). Emitting a bare
+        // MODE=FT4 is invalid ADIF and mis-imports into Cloudlog/Wavelog.
+        let (adifMode, adifSub) = Self.adifMode(q.mode)
+        r += field("MODE", adifMode)
+        if let adifSub { r += field("SUBMODE", adifSub) }
         if !q.sat.isEmpty { r += field("SAT_NAME", LoTWSatName.resolve(q.sat)) }
         r += field("PROP_MODE", "SAT")
         if ulM > 0 { r += field("FREQ", String(format: "%.4f", ulM)); r += field("BAND", band(mhz: ulM)) }
@@ -62,6 +66,16 @@ enum ADIF {
         if !q.notes.isEmpty { r += field("COMMENT", q.notes) }
         r += "<EOR>\n"
         return r
+    }
+
+    /// Canonical ADIF (MODE, SUBMODE?) for a stored mode string. FT4 and JS8 are
+    /// SUBMODEs of MFSK; FT8 is a top-level MODE; everything else passes through.
+    static func adifMode(_ mode: String) -> (String, String?) {
+        switch mode.uppercased() {
+        case "FT4": return ("MFSK", "FT4")
+        case "JS8": return ("MFSK", "JS8")
+        default:    return (mode, nil)
+        }
     }
 
     /// `<NAME:len>value` — the ADIF field primitive (length is byte count).
@@ -126,7 +140,10 @@ enum ADIF {
     private static func recordFrom(_ f: [String: String]) -> QSORecord {
         var q = QSORecord(utc: parseDateTime(date: f["qso_date"], time: f["time_on"]))
         q.call = f["call"] ?? ""
-        q.mode = f["mode"] ?? "SSB"
+        // Collapse MFSK + SUBMODE (FT4/JS8) back to the stored standalone mode.
+        let m = (f["mode"] ?? "SSB").uppercased()
+        let sub = (f["submode"] ?? "").uppercased()
+        q.mode = (m == "MFSK" && !sub.isEmpty) ? sub : m
         q.sat = f["sat_name"] ?? ""
         if let fr = f["freq"], let m = Double(fr) { q.ulHz = Int64((m * 1e6).rounded()) }
         if let fr = f["freq_rx"], let m = Double(fr) { q.dlHz = Int64((m * 1e6).rounded()) }
