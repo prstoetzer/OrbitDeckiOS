@@ -17,6 +17,8 @@ final class PassRecorder: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var level: Float = 0        // 0…1 peak meter
+    /// Recording input gain (linear); scales the captured audio into the file.
+    @Published var inputGain: Float = 1 { didSet { source?.inputGain = inputGain } }
     @Published var errorText = ""
 
     private weak var qso: QSOStore?
@@ -52,6 +54,7 @@ final class PassRecorder: ObservableObject {
             AVEncoderBitRateKey: 64_000,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
+        source.inputGain = inputGain
         do {
             let f = try AVAudioFile(forWriting: url, settings: settings)
             file = f

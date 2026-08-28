@@ -34,11 +34,8 @@ struct HomeRecordingCard: View {
                         .buttonStyle(.bordered)
                         .tint(recorder.isRecording ? ODTheme.warning : ODTheme.accent)
                 }
-                if recorder.isRecording {
-                    ProgressView(value: Double(min(1, recorder.level)))
-                        .tint(ODTheme.good)
-                }
-                Text("Records the received audio from your USB (or network) audio interface, tagged with the satellite and time. Works only in the foreground.")
+                AudioLevelControl(title: "Recording level", gain: $recorder.inputGain, level: recorder.level)
+                Text("Records the received audio from your USB (or network) audio interface, tagged with the satellite and time. Set the level so the meter rides in the green. Works only in the foreground.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
