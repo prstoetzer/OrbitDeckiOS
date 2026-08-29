@@ -57,6 +57,18 @@ struct SSTVImageEntry: Identifiable, Codable, Sendable, Equatable {
     var filename = ""            // file under Application Support/SSTV
 }
 
+/// One line of FT4 activity (a decode or our own transmission), persisted so the
+/// full pass traffic can be reviewed later on the Log screen.
+struct FT4TrafficEntry: Identifiable, Codable, Sendable, Equatable {
+    var id = UUID()
+    var date: Date               // UTC start of the slot
+    var sat = ""
+    var text = ""
+    var snr = 0
+    var freqHz = 0
+    var sent = false             // true = our transmission
+}
+
 /// Station-location fields LoTW needs beyond the per-QSO data (see LoTW.swift).
 /// US path: set `usState` (+ optional `usCounty` name). Non-US primary
 /// subdivision: set `subdivField` (e.g. "CA_PROVINCE") and `subdiv` (the code).

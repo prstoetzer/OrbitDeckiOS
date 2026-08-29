@@ -59,8 +59,10 @@ struct AudioLevelControl: View {
     let title: String
     @Binding var gain: Float
     let level: Float
-    var range: ClosedRange<Float> = 0.25...8
-    var step: Float = 0.05
+    // Up to 40× so low line-level sources (e.g. an IC-821 ACC/DATA jack, well below
+    // headphone level) can be brought up without an external preamp.
+    var range: ClosedRange<Float> = 0.25...40
+    var step: Float = 0.25
     var showLevel: Bool = true
 
     var body: some View {
@@ -83,6 +85,7 @@ struct HomeFT4Card: View {
     @EnvironmentObject private var rig: RigController
     @EnvironmentObject private var qso: QSOStore
     @AppStorage(FeatureVisibility.ft4Key) private var visibility = FeatureVisibility.auto
+    @State private var showSetup = false
     let satellite: SatelliteRecord
 
     private var visible: Bool {
@@ -103,18 +106,33 @@ struct HomeFT4Card: View {
                     Button(ft4.isRunning ? "Stop" : "Start") { toggleRun() }
                         .buttonStyle(.bordered)
                 }
+                SatelliteStatusLine(satellite: satellite)
+
+                nextTxPanel
 
                 if ft4.isRunning {
-                    slotClock
+                    // Slot clock only when the Next-TX panel isn't already showing the
+                    // countdown, to avoid duplicate timers.
+                    if !(ft4.txEnabled && !ft4.txMessage.isEmpty) { slotClock }
                     waterfall
-                    audioControls
                 }
                 if ft4.isTransmitting { txIndicator }
 
                 if !ft4.decodes.isEmpty { decodeTable }
 
                 Divider().opacity(0.4)
-                txControls
+                txControlsPrimary
+
+                // Secondary setup (TX frequency, manual message, audio levels) tucked
+                // behind a disclosure so the card stays uncluttered during operation.
+                DisclosureGroup("Setup & audio levels", isExpanded: $showSetup) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if ft4.isRunning { audioControls }
+                        txSetup
+                    }
+                    .padding(.top, 4)
+                }
+                .font(.subheadline).tint(ODTheme.accent)
             }
             .onAppear { setupLogging() }
         }
@@ -184,6 +202,44 @@ struct HomeFT4Card: View {
                 Spacer()
                 ProgressView(value: min(1, intoSlot / period)).frame(width: 90)
             }
+        }
+    }
+
+    /// Prominent "what will I send next" panel — appears the moment you tap a station
+    /// (or Call CQ), so you always know the queued message, the sequence state, and
+    /// when it goes out.
+    @ViewBuilder private var nextTxPanel: some View {
+        if ft4.txEnabled && !ft4.txMessage.isEmpty {
+            let tint: Color = ft4.isTransmitting ? ODTheme.warning : ODTheme.accent
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Label(ft4.isTransmitting ? "TRANSMITTING" : "NEXT TX",
+                          systemImage: ft4.isTransmitting ? "dot.radiowaves.left.and.right" : "arrowshape.turn.up.right.fill")
+                        .font(.caption2.weight(.bold)).foregroundStyle(tint)
+                    Spacer()
+                    if !ft4.seqStatus.isEmpty {
+                        Text(ft4.seqStatus).font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
+                    }
+                }
+                Text(ft4.txMessage)
+                    .font(.callout.monospaced().weight(.semibold)).lineLimit(1).minimumScaleFactor(0.6)
+                TimelineView(.periodic(from: .now, by: 0.25)) { context in
+                    let t = context.date.timeIntervalSince1970
+                    let period = 7.5
+                    let remaining = period - t.truncatingRemainder(dividingBy: period)
+                    let nextIsTx = ((Int(t / period) + 1) % 2 == 0) == ft4.txOnEvenSlots
+                    let secs = nextIsTx ? remaining : remaining + period
+                    Text(ft4.isTransmitting ? "On the air now"
+                         : String(format: "Sends in %.0fs · TX %@ Hz on %@ slots",
+                                   secs, "\(Int(ft4.txAudioFreq))", ft4.txOnEvenSlots ? "even" : "odd"))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tint.opacity(0.12))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(tint.opacity(0.5), lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -313,23 +369,14 @@ struct HomeFT4Card: View {
         .buttonStyle(.plain)
     }
 
-    private var txControls: some View {
+    /// The essentials, always visible: enable TX, auto-sequence, and the big Call CQ.
+    private var txControlsPrimary: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Transmit").font(.subheadline.weight(.semibold))
-
-            // TX audio frequency — where in the passband you transmit (matches the
-            // orange marker on the waterfall). Pick a clear spot.
-            HStack {
-                Text("TX freq").font(.caption2).foregroundStyle(ODTheme.muted)
+            HStack(spacing: 12) {
+                Toggle("Transmit", isOn: $ft4.txEnabled).fixedSize()
+                Toggle("Auto-seq", isOn: $ft4.autoSequence).fixedSize()
                 Spacer()
-                Text("\(Int(ft4.txAudioFreq)) Hz").font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $ft4.txAudioFreq, range: 300...2700, step: 10)
-
-            Toggle("Enable transmit", isOn: $ft4.txEnabled)
-            Toggle("Auto-sequence QSO", isOn: $ft4.autoSequence)
-
-            // Prominent primary action: call CQ. Enables TX + auto-seq automatically.
             Button {
                 ft4.callCQ()
                 if !ft4.isRunning { toggleRun() }
@@ -342,13 +389,25 @@ struct HomeFT4Card: View {
             if qso.config.myCall.isEmpty {
                 Text("Set your callsign in Log settings to transmit.")
                     .font(.caption2).foregroundStyle(ODTheme.warning)
-            }
-            if !ft4.seqStatus.isEmpty {
+            } else if !ft4.seqStatus.isEmpty && !(ft4.txEnabled && !ft4.txMessage.isEmpty) {
+                // Show the sequence status here only when the Next-TX panel isn't up.
                 Text(ft4.seqStatus).font(.caption).foregroundStyle(ODTheme.accent)
             }
+        }
+    }
+
+    /// Secondary transmit setup, shown inside the disclosure.
+    private var txSetup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("TX freq").font(.caption2).foregroundStyle(ODTheme.muted)
+                Spacer()
+                Text("\(Int(ft4.txAudioFreq)) Hz").font(.caption2.monospacedDigit())
+            }
+            FineSlider(value: $ft4.txAudioFreq, range: 300...2700, step: 10)
 
             if ft4.autoSequence {
-                Text("Call CQ above, or tap a decoded station to answer it. The exchange (grid → report → RR73) and logging run automatically; your report is set from their decoded SNR.")
+                Text("Call CQ, or tap a decoded station to answer it — the exchange (grid → report → RR73) and logging run automatically; your report is set from their decoded SNR.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             } else {
                 TextField("TX message (e.g. CQ N8HM FM18)", text: $ft4.txMessage)
@@ -356,7 +415,7 @@ struct HomeFT4Card: View {
                 Toggle("Transmit on even slots", isOn: $ft4.txOnEvenSlots)
             }
             if !ft4.pttOverCAT {
-                Text("This radio has no CAT PTT — use VOX or key manually when the TX indicator shows. Configure a CAT radio (CI-V / Yaesu / Kenwood / rigctld / Icom network) for automatic keying.")
+                Text("No CAT PTT — use VOX or key manually when the TX indicator shows. Configure a CAT radio (CI-V / Yaesu / Kenwood / rigctld / Icom network) for automatic keying.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
@@ -366,7 +425,7 @@ struct HomeFT4Card: View {
         if ft4.isRunning {
             ft4.stop()
         } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
-            ft4.start(source: source, myCall: qso.config.myCall, myGrid: store.operatorGrid6)
+            ft4.start(source: source, myCall: qso.config.myCall, myGrid: store.operatorGrid6, satellite: satellite.name)
         } else {
             ft4.errorText = "No audio interface available."
         }

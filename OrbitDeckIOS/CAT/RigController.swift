@@ -291,7 +291,12 @@ final class RigController: ObservableObject {
         }
 
         // Predictive lead + Doppler using the current (possibly just-updated) offset.
-        let when = Date().addingTimeInterval(Double(config.tuning.leadMs) / 1000.0)
+        // Aim the commanded frequency at the MIDDLE of the upcoming update interval
+        // (leadMs + updateMs/2), not "now". Otherwise the dial always trails the true
+        // Doppler by up to a half-interval — worst near TCA (high Doppler rate), where
+        // it smears FT4 within a slot. Centering halves the peak tracking error for free.
+        let leadSec = (Double(config.tuning.leadMs) + Double(config.tuning.updateMs) * 0.5) / 1000.0
+        let when = Date().addingTimeInterval(leadSec)
         guard let look = try? OrbitPredictor.look(sat, observer: observer, at: when) else { return }
         let offset = tp.isLinear ? Int64(config.tuning.passbandOffsetHz.rounded()) : 0
         let downlink = tp.downlinkCenter + offset

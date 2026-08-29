@@ -111,9 +111,9 @@ struct LogScreen: View {
 
     var body: some View {
         List {
-            if qso.qsos.isEmpty && qso.recordings.isEmpty {
+            if qso.qsos.isEmpty && qso.recordings.isEmpty && qso.ft4Traffic.isEmpty {
                 ContentUnavailableView("No log entries yet", systemImage: "book",
-                                       description: Text("Log a QSO from the Home card or the + button; pass recordings appear here too. (SSTV images have their own screen.)"))
+                                       description: Text("Log a QSO from the Home card or the + button; pass recordings and FT4 activity appear here too. (SSTV images have their own screen.)"))
             }
             if !qso.qsos.isEmpty {
                 Section("Contacts (\(qso.qsos.count))") {
@@ -126,6 +126,17 @@ struct LogScreen: View {
             if !qso.recordings.isEmpty {
                 Section("Pass recordings") {
                     ForEach(qso.recordings) { r in recordingRow(r) }
+                }
+            }
+            if !qso.ft4Traffic.isEmpty {
+                Section("FT4 activity") {
+                    NavigationLink { FT4TrafficScreen() } label: {
+                        HStack {
+                            Label("FT4 traffic log", systemImage: "waveform.badge.magnifyingglass")
+                            Spacer()
+                            Text("\(qso.ft4Traffic.count) lines").font(.caption).foregroundStyle(ODTheme.muted)
+                        }
+                    }
                 }
             }
         }
@@ -166,12 +177,18 @@ struct LogScreen: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(q.call.isEmpty ? "—" : q.call).font(.headline)
+                if !q.grid.isEmpty { Text(q.gridList.first ?? q.grid).font(.caption).foregroundStyle(ODTheme.muted) }
                 Spacer()
                 if q.uploaded.contains(.lotw) { badge("L", ODTheme.good) }
                 if q.uploaded.contains(.cloudlog) { badge("C", ODTheme.accent) }
             }
-            Text("\(q.sat) · \(q.mode) · \(ODFormat.primaryClock(q.utc))")
+            // Logs are UTC by convention — always, regardless of the local-time setting.
+            Text("\(q.sat) · \(q.mode) · \(ODFormat.utcStamp(q.utc))")
                 .font(.caption).foregroundStyle(ODTheme.muted)
+            if !q.rstSent.isEmpty || !q.rstRcvd.isEmpty {
+                Text("Sent \(q.rstSent.isEmpty ? "—" : q.rstSent) · Rcvd \(q.rstRcvd.isEmpty ? "—" : q.rstRcvd)")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
         }
     }
 
@@ -419,6 +436,77 @@ struct ShareSheet: UIViewControllerRepresentable {
 }
 
 extension URL: Identifiable { public var id: String { absoluteString } }
+
+// MARK: - FT4 activity log
+
+/// Full, persisted FT4 traffic (every decode + our transmissions), newest first,
+/// with text export and a clear action. Reached from the Log screen's FT4 section.
+struct FT4TrafficScreen: View {
+    @EnvironmentObject private var qso: QSOStore
+    @State private var confirmClear = false
+    @State private var shareURL: URL?
+
+    private static let utc: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm:ss"; f.timeZone = TimeZone(identifier: "UTC"); return f
+    }()
+
+    var body: some View {
+        Group {
+            if qso.ft4Traffic.isEmpty {
+                ContentUnavailableView("No FT4 activity", systemImage: "waveform",
+                                       description: Text("Run FT4 from the Home FT4 card — every decode and transmission is logged here."))
+            } else {
+                List {
+                    Section("\(qso.ft4Traffic.count) lines (UTC)") {
+                        ForEach(qso.ft4Traffic.reversed()) { e in row(e) }
+                    }
+                }
+            }
+        }
+        .navigationTitle("FT4 Activity")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !qso.ft4Traffic.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button { shareURL = exportText() } label: { Label("Share as text", systemImage: "square.and.arrow.up") }
+                        Button(role: .destructive) { confirmClear = true } label: { Label("Clear log", systemImage: "trash") }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                }
+            }
+        }
+        .confirmationDialog("Clear the entire FT4 activity log?", isPresented: $confirmClear, titleVisibility: .visible) {
+            Button("Clear", role: .destructive) { qso.clearFT4Traffic() }
+            Button("Cancel", role: .cancel) {}
+        }
+        .sheet(item: $shareURL) { ShareSheet(items: [$0]) }
+    }
+
+    private func row(_ e: FT4TrafficEntry) -> some View {
+        let color: Color = e.sent ? .orange : ((FT4Engine.parse(e.text)?.isCQ == true) ? ODTheme.good : .primary)
+        return HStack(spacing: 8) {
+            Text(Self.utc.string(from: e.date))
+                .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                .frame(width: 96, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(e.text).font(.callout.monospaced()).foregroundStyle(color).lineLimit(1)
+                Text("\(e.sat.isEmpty ? "" : e.sat + " · ")\(e.sent ? "TX" : "\(e.snr) dB") · \(e.freqHz) Hz")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+        }
+    }
+
+    private func exportText() -> URL? {
+        var s = "OrbitDeck FT4 activity log (UTC)\n"
+        for e in qso.ft4Traffic {
+            let dB = e.sent ? " TX" : String(format: "%3d", e.snr)
+            s += "\(Self.utc.string(from: e.date))  \(dB)  \(String(format: "%5d", e.freqHz)) Hz  \(e.sat)  \(e.text)\n"
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("FT4_activity.txt")
+        try? s.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+}
 
 /// Simple one-at-a-time player for pass recordings on the Log screen.
 final class RecordingPlayer: NSObject, ObservableObject, AVAudioPlayerDelegate, @unchecked Sendable {

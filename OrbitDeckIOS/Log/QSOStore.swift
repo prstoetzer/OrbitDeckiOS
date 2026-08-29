@@ -15,7 +15,11 @@ final class QSOStore: ObservableObject {
     @Published var qsos: [QSORecord] = []
     @Published var recordings: [RecordingEntry] = []
     @Published var sstvImages: [SSTVImageEntry] = []
+    @Published var ft4Traffic: [FT4TrafficEntry] = []
     @Published var config = LoggingConfig()
+
+    /// Cap on the persisted FT4 activity log (oldest lines drop off).
+    private static let ft4TrafficCap = 4000
 
     private static let configKey = "orbitdeck.loggingConfig"
 
@@ -31,6 +35,7 @@ final class QSOStore: ObservableObject {
         qsos = load([QSORecord].self, "QSOLog.json") ?? []
         recordings = load([RecordingEntry].self, "Recordings.json") ?? []
         sstvImages = load([SSTVImageEntry].self, "SSTVImages.json") ?? []
+        ft4Traffic = load([FT4TrafficEntry].self, "FT4Traffic.json") ?? []
     }
 
     func persistConfig() {
@@ -60,6 +65,16 @@ final class QSOStore: ObservableObject {
         try? FileManager.default.removeItem(at: Self.recordingsDir.appendingPathComponent(r.filename))
         save(recordings, "Recordings.json")
     }
+    /// Append a batch of FT4 activity lines (once per slot) and persist, oldest-first
+    /// with a cap. Batched so we write the JSON at most once per 7.5 s slot.
+    func addFT4Traffic(_ entries: [FT4TrafficEntry]) {
+        guard !entries.isEmpty else { return }
+        ft4Traffic.append(contentsOf: entries)
+        if ft4Traffic.count > Self.ft4TrafficCap { ft4Traffic.removeFirst(ft4Traffic.count - Self.ft4TrafficCap) }
+        save(ft4Traffic, "FT4Traffic.json")
+    }
+    func clearFT4Traffic() { ft4Traffic.removeAll(); save(ft4Traffic, "FT4Traffic.json") }
+
     func addSSTVImage(_ s: SSTVImageEntry) { sstvImages.insert(s, at: 0); save(sstvImages, "SSTVImages.json") }
     func deleteSSTVImage(_ s: SSTVImageEntry) {
         sstvImages.removeAll { $0.id == s.id }

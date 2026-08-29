@@ -280,8 +280,8 @@ struct CATTuning: Codable, Sendable, Equatable {
     var satMode = false              // command the rig's own satellite mode
     var assignBands = false          // send CI-V 07 D2 band assignment at engage
     var fmDeadbandHz = 300           // FM write deadband
-    var linearDeadbandHz = 50        // SSB/CW write deadband
-    var leadMs = 50                  // predictive-lead cap (0 = off)
+    var linearDeadbandHz = 20        // SSB/CW write deadband (tight for FT4/CW tracking)
+    var leadMs = 100                 // predictive-lead atop the auto interval-centering
     var calDownlinkHz = 0            // extra global downlink oscillator trim
     var calUplinkHz = 0              // extra global uplink oscillator trim
     var xvtrDownlinkHz: Int64 = 0    // downlink transverter LO (real - this = rig IF)

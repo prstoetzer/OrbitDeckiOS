@@ -91,6 +91,10 @@ enum ODFormat {
 
     static var utc: DateFormatter { useLocalTime ? localFull : utcFull }
     static var utcShort: DateFormatter { useLocalTime ? localShort : utcShortFixed }
+
+    /// Always-UTC date+time stamp, regardless of the local-time display preference —
+    /// the QSO log and ADIF are UTC by ham convention.
+    static func utcStamp(_ date: Date) -> String { utcFull.string(from: date) }
     static var utcDay: DateFormatter { useLocalTime ? localDay : utcDayFixed }
 
     /// Short "HH:mm ZZZ" clock in the operator's chosen zone (for pass lists).
@@ -574,5 +578,60 @@ struct LoadingOrError: View {
                 description: Text("Select a satellite or update the GP catalog.")
             )
         }
+    }
+}
+
+/// A compact one-line live look for a satellite: current elevation, azimuth (with
+/// compass), and a countdown to AOS (below the horizon) or LOS (in a pass). Used on
+/// the SSTV and FT4 cards so an operator can see the pass at a glance.
+struct SatelliteStatusLine: View {
+    @EnvironmentObject private var store: OrbitStore
+    let satellite: SatelliteRecord
+    @State private var pass: PredictedPass?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let now = context.date
+            let look = try? OrbitPredictor.look(satellite, observer: store.preferences.observer, at: now)
+            let up = (look?.elevation ?? -90) >= 0
+            HStack(spacing: 6) {
+                Image(systemName: up ? "dot.radiowaves.up.forward" : "arrow.up.forward")
+                    .font(.system(size: 9)).foregroundStyle(up ? ODTheme.good : ODTheme.muted)
+                if let look {
+                    Text("El \(ODFormat.angle(look.elevation, decimals: 0))")
+                    Text("·").foregroundStyle(ODTheme.muted.opacity(0.6))
+                    Text("Az \(ODFormat.angle(look.azimuth, decimals: 0)) \(ODFormat.compass(look.azimuth))")
+                }
+                Spacer(minLength: 4)
+                Text(countdown(now: now)).foregroundStyle(up ? ODTheme.warning : ODTheme.accent)
+            }
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(ODTheme.muted)
+        }
+        .task(id: satellite.id) {
+            // Recompute the pass once now, then again shortly after each LOS.
+            while !Task.isCancelled {
+                await recompute()
+                let sleep = pass.map { max(2, $0.los.timeIntervalSinceNow + 2) } ?? 300
+                try? await Task.sleep(nanoseconds: UInt64(min(max(sleep, 5), 600) * 1_000_000_000))
+            }
+        }
+    }
+
+    private func countdown(now: Date) -> String {
+        guard let p = pass else { return "" }
+        if now < p.aos { return "AOS \(ODFormat.duration(p.aos.timeIntervalSince(now)))" }
+        if now <= p.los { return "LOS \(ODFormat.duration(p.los.timeIntervalSince(now)))" }
+        return ""
+    }
+
+    @MainActor private func recompute() async {
+        let observer = store.preferences.observer
+        let sat = satellite
+        // minElevation 0 → the true horizon AOS/LOS window (not the pass-list filter).
+        let passes = try? await Task.detached(priority: .utility) {
+            try OrbitPredictor.predictPasses(sat, observer: observer, minElevation: 0, maxCount: 1)
+        }.value
+        pass = passes?.first
     }
 }

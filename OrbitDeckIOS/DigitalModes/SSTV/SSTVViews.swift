@@ -33,6 +33,7 @@ struct HomeSSTVCard: View {
                     Button(decoder.isListening ? "Stop" : "Decode") { toggle() }
                         .buttonStyle(.bordered)
                 }
+                SatelliteStatusLine(satellite: satellite)
                 if let img = decoder.image {
                     Image(uiImage: img).resizable().scaledToFit()
                         .frame(maxHeight: 240).cornerRadius(6)

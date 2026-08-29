@@ -70,7 +70,9 @@ final class FT4Engine: ObservableObject {
     private var workedGrid = ""
     private var reportIn: Int?
     private var logged = false
-    private var finalizeNext = false
+    /// When set, the sequence completes (stops auto-TX) once the current/queued
+    /// transmission finishes — used to send a single final 73 and then stop.
+    private var stopAfterThisTx = false
 
     /// True when the connected radio can be keyed over CAT; false ⇒ VOX/manual.
     @Published private(set) var pttOverCAT = false
@@ -78,6 +80,7 @@ final class FT4Engine: ObservableObject {
     private weak var rig: RigController?
     private weak var qso: QSOStore?
     private var source: AudioSource?
+    private var satName = ""      // for FT4 activity-log entries
 
     private let slotQueue = DispatchQueue(label: "org.orbitdeck.ft4.slot")
     private nonisolated(unsafe) var slotTimer: DispatchSourceTimer?
@@ -107,10 +110,11 @@ final class FT4Engine: ObservableObject {
 
     // MARK: Lifecycle
 
-    func start(source: AudioSource, myCall: String, myGrid: String) {
+    func start(source: AudioSource, myCall: String, myGrid: String, satellite: String = "") {
         guard !isRunning else { return }
         errorText = ""; decodes.removeAll()
         self.source = source
+        self.satName = satellite
         self.sampleRate = source.sampleRate
         lock.lock(); rxBuffer.removeAll(keepingCapacity: true); lock.unlock()
         myCallSeq = myCall.uppercased()
@@ -264,14 +268,17 @@ final class FT4Engine: ObservableObject {
         let startingSlot = endedSlotIndex + 1
 
         Task { @MainActor in
-            // Finalize a QSO that completed on the previous cycle (after its final
-            // frame was transmitted).
-            if self.finalizeNext { self.finalizeNext = false; self.endSequence() }
-
             for f in found {
                 self.decodes.append(FT4DecodedMessage(text: f.text, snr: f.snr, freqHz: f.freq, atSlot: endedSlotIndex))
             }
             if self.decodes.count > 100 { self.decodes.removeFirst(self.decodes.count - 100) }
+            // Persist the full activity log (reviewable later on the Log screen).
+            if !found.isEmpty {
+                let when = Date(timeIntervalSince1970: Double(endedSlotIndex) * kFT4SlotSeconds)
+                self.qso?.addFT4Traffic(found.map {
+                    FT4TrafficEntry(date: when, sat: self.satName, text: $0.text, snr: $0.snr, freqHz: Int($0.freq), sent: false)
+                })
+            }
             // Always report what the decoder saw this slot — distinguishes "no audio"
             // from "signal but no sync candidates" from "candidates but no decode".
             if !self.isTransmitting {
@@ -356,16 +363,24 @@ final class FT4Engine: ObservableObject {
             let extra = f.extra
 
             if extra == "RR73" || extra == "RRR" || extra == "73" {
-                logQSO(); seqStatus = "Logged \(workedCall)"; endSequence(); return
+                // They consider the QSO complete. Log it, send ONE courtesy 73, then
+                // stop — do NOT keep re-sending the report (that was the bug).
+                logQSO()
+                txMessage = "\(workedCall) \(myCallSeq) 73"
+                seqStatus = "Logged \(workedCall) — sending 73"
+                txEnabled = true
+                stopAfterThisTx = true
+                return
             }
             if FT4Engine.isReportToken(extra) {
                 reportIn = FT4Engine.parseReport(extra)
                 if extra.hasPrefix("R") {
-                    // They rogered our report — send RR73 and complete.
+                    // They rogered our report — send RR73 (keep sending until they
+                    // acknowledge with 73/RR73, which completes above). Log now.
                     txMessage = "\(workedCall) \(myCallSeq) RR73"; seqStatus = "Sending RR73 to \(workedCall)"
-                    logQSO(); finalizeNext = true
+                    logQSO()
                 } else {
-                    // They sent a report — roger it back.
+                    // They sent a report — roger it back with ours.
                     txMessage = "\(workedCall) \(myCallSeq) R\(FT4Engine.reportString(reportOut))"
                     seqStatus = "Rogered \(workedCall)"
                 }
@@ -388,8 +403,17 @@ final class FT4Engine: ObservableObject {
     }
 
     private func endSequence() {
-        workedCall = ""; workedGrid = ""; reportIn = nil; logged = false; finalizeNext = false
+        workedCall = ""; workedGrid = ""; reportIn = nil; logged = false; stopAfterThisTx = false
         if autoSequence { seqStatus = "" }
+    }
+
+    /// Called after the final 73 finishes transmitting: the QSO is logged, so stop
+    /// auto-transmitting and reset the sequence (the operator can start another).
+    private func completeSequence() {
+        let last = workedCall
+        workedCall = ""; workedGrid = ""; reportIn = nil; logged = false; stopAfterThisTx = false
+        txEnabled = false; txMessage = ""
+        seqStatus = last.isEmpty ? "" : "Logged \(last) ✓"
     }
 
     static func reportString(_ r: Int) -> String { String(format: "%+03d", r) }
@@ -417,6 +441,8 @@ final class FT4Engine: ObservableObject {
         let txSlot = Int((Date().timeIntervalSince1970 / kFT4SlotSeconds).rounded())
         decodes.append(FT4DecodedMessage(text: txMessage, snr: 0, freqHz: txAudioFreq, atSlot: txSlot, kind: .sent))
         if decodes.count > 100 { decodes.removeFirst(decodes.count - 100) }
+        qso?.addFT4Traffic([FT4TrafficEntry(date: Date(timeIntervalSince1970: Double(txSlot) * kFT4SlotSeconds),
+                                            sat: satName, text: txMessage, snr: 0, freqHz: Int(txAudioFreq), sent: true)])
         // Live TX meter (reads the peak the render callback actually emitted) so the
         // operator can confirm audio is going out even without monitoring the rig.
         Task { @MainActor in
@@ -470,6 +496,8 @@ final class FT4Engine: ObservableObject {
         await rig?.setPTT(false)
         isTransmitting = false
         status = isRunning ? "Listening…" : "Idle"
+        // If this was the final 73 of a completed QSO, stop auto-transmitting now.
+        if stopAfterThisTx { completeSequence() }
     }
 
     // MARK: ft8_lib interop (nonisolated — off the main actor)
@@ -503,6 +531,10 @@ final class FT4Engine: ObservableObject {
         // LDPC decoder (the transponder/HF path is noisier than a clean WAV).
         let n = ftx_find_candidates(&mon.wf, Int32(maxC), &cands, 8)
 
+        // Noise floor from the waterfall ft8_lib already built (computed once, reused
+        // for every candidate) — no extra FFT, so measuring SNR is essentially free.
+        let noiseDb = FT4Engine.waterfallNoiseFloorDb(mon.wf)
+
         var result = SlotResult(blocks: Int(mon.wf.num_blocks), candidates: Int(n))
         var seen = Set<UInt16>()
         for idx in 0..<Int(n) {
@@ -523,15 +555,56 @@ final class FT4Engine: ObservableObject {
             let hz = (Double(mon.min_bin) + Double(cands[idx].freq_offset)
                       + Double(cands[idx].freq_sub) / Double(max(1, mon.wf.freq_osr)))
                      / Double(mon.symbol_period)
-            if !s.isEmpty { result.messages.append((s, snr(fromScore: Int(cands[idx].score)), hz)) }
+            if !s.isEmpty {
+                let report = FT4Engine.measuredSNR(mon.wf, cands[idx], noiseFloorDb: noiseDb)
+                result.messages.append((s, report, hz))
+            }
         }
         return result
     }
 
+    /// Noise floor (dB) = the 25th percentile of the whole waterfall, via a cheap
+    /// 256-bin histogram of the uint8 magnitudes ft8_lib already stored.
+    private nonisolated static func waterfallNoiseFloorDb(_ wf: ftx_waterfall_t) -> Float {
+        guard let mag = wf.mag, wf.num_blocks > 0, wf.block_stride > 0 else { return -110 }
+        let total = Int(wf.num_blocks) * Int(wf.block_stride)
+        var hist = [Int](repeating: 0, count: 256)
+        for i in 0..<total { hist[Int(mag[i])] += 1 }
+        let target = total / 4
+        var cum = 0, floorByte = 0
+        for v in 0..<256 { cum += hist[v]; if cum >= target { floorByte = v; break } }
+        return Float(floorByte) * 0.5 - 120.0        // ft8_lib byte → dB
+    }
+
+    /// Real per-candidate SNR from the existing waterfall (no extra FFT): the median
+    /// over symbols of the strongest tone-bin magnitude near the candidate, minus the
+    /// noise floor, referenced to the standard 2500 Hz noise bandwidth. Gives proper
+    /// +/- reports instead of the old sync-score heuristic.
+    private nonisolated static func measuredSNR(_ wf: ftx_waterfall_t, _ cand: ftx_candidate_t, noiseFloorDb: Float) -> Int {
+        guard let mag = wf.mag else { return 0 }
+        let nb = Int(wf.num_blocks), bins = Int(wf.num_bins), stride = Int(wf.block_stride)
+        let fsub = Int(cand.freq_sub), foff = Int(cand.freq_offset)
+        let lo = max(0, foff - 1), hi = min(bins - 1, foff + 7)   // spans FT4's 4 tones
+        guard nb > 0, hi >= lo else { return 0 }
+        var sig = [Float](); sig.reserveCapacity(nb)
+        for b in 0..<nb {
+            let base = b * stride + fsub * bins                    // time_sub 0
+            var m: UInt8 = 0
+            var bin = lo
+            while bin <= hi { let v = mag[base + bin]; if v > m { m = v }; bin += 1 }
+            sig.append(Float(m) * 0.5 - 120.0)
+        }
+        sig.sort()
+        let sigDb = sig[sig.count / 2]
+        // Bin BW ≈ 1/(symbol_period·freq_osr) ≈ 10.4 Hz for FT4 → 10·log10(2500/10.4) ≈ 24 dB.
+        return max(-24, min(30, Int((sigDb - noiseFloorDb - 24.0).rounded())))
+    }
+
     /// Approximate signal report (dB) from a candidate's sync score. ft8_lib does
     /// not expose a calibrated SNR, so this is a rough, clamped estimate that stands
-    /// in for the report we send — refine against on-air signals.
-    nonisolated static func snr(fromScore s: Int) -> Int { max(-24, min(15, s / 8 - 20)) }
+    /// in for the report we send. Recalibrated upward (the old mapping read ~10 dB
+    /// low versus on-air signals); still approximate — refine against known signals.
+    nonisolated static func snr(fromScore s: Int) -> Int { max(-24, min(24, s / 7 - 12)) }
 
     /// Encode a text message to FT4 tones (0…3), or nil if it can't be packed.
     nonisolated static func encodeTones(_ text: String) -> [UInt8]? {
