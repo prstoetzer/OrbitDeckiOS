@@ -217,16 +217,17 @@ enum CATCodec {
         Array(String(format: "%@%011llu;", vfo, hz).utf8)
     }
     static func kwSetMode(_ m: RigMode) -> [UInt8] { Array("MD\(kwModeDigit(m));".utf8) }
-    static func kwReadFreq() -> [UInt8] { Array("FA;".utf8) }
+    /// Read VFO A (downlink) or VFO B (uplink) on a full-duplex Kenwood.
+    static func kwReadFreq(vfoB: Bool = false) -> [UInt8] { Array((vfoB ? "FB;" : "FA;").utf8) }
     /// TS-2000 TX CTCSS: TNnn (1-based) + TO1/TO0.
     static func kwTone(on: Bool, toneHz: Double) -> [[UInt8]] {
         if !on || toneHz <= 0 { return [Array("TO0;".utf8)] }
         guard let i = CTCSS.index(hz: toneHz) else { return [] }
         return [Array(String(format: "TN%02d;", i + 1).utf8), Array("TO1;".utf8)]
     }
-    /// Parse "FA<digits>;" → Hz. Base stations answer 11 digits.
-    static func kwParseFreq(_ buf: [UInt8], digits: Int = 11) -> UInt64? {
-        guard let s = String(bytes: buf, encoding: .ascii), let r = s.range(of: "FA") else { return nil }
+    /// Parse "FA<digits>;" (or "FB…" for VFO B) → Hz. Base stations answer 11 digits.
+    static func kwParseFreq(_ buf: [UInt8], digits: Int = 11, vfoB: Bool = false) -> UInt64? {
+        guard let s = String(bytes: buf, encoding: .ascii), let r = s.range(of: vfoB ? "FB" : "FA") else { return nil }
         let start = s.index(r.upperBound, offsetBy: 0)
         let tail = s[start...].prefix(digits)
         guard tail.count == digits, tail.allSatisfy(\.isNumber) else { return nil }
@@ -298,6 +299,8 @@ enum CATCodec {
     static func rigctldSetSplitMode(_ mode: RigMode) -> [UInt8] { Array("X \(hamlibMode(mode)) 0\n".utf8) }
     static func rigctldSetSplit(on: Bool) -> [UInt8] { Array("S \(on ? 1 : 0) VFOB\n".utf8) }
     static func rigctldReadFreq() -> [UInt8] { Array("f\n".utf8) }
+    /// Read the split (TX) VFO frequency — for follow-uplink on a full-duplex split link.
+    static func rigctldReadSplitFreq() -> [UInt8] { Array("i\n".utf8) }
 
     /// First numeric line of a rigctld reply (skips `RPRT` status lines).
     static func rigctldParseFreq(_ bytes: [UInt8]) -> UInt64? {

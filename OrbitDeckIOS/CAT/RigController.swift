@@ -117,11 +117,18 @@ final class RigController: ObservableObject {
 
         // Build the link list. Slot 0 is the primary radio; slot 1 (dual) is uplink.
         var built: [LiveLink] = []
-        let leg0: RigRole = config.twoRadios ? .downlink : slot0.role
+        // A receive-only radio (CI-V receivers, RX-only handhelds) can only ever be a
+        // downlink: never honour a config that assigns it the uplink/both leg, so no TX
+        // frequency/mode/PTT frame is sent to a radio that must not transmit.
+        let leg0: RigRole = config.twoRadios ? .downlink : (spec0.rxOnly ? .downlink : slot0.role)
         built.append(LiveLink(slot: slot0, spec: spec0, transport: makeTransport(slot0, spec: spec0, index: 0), leg: leg0))
         if config.twoRadios, config.slots.count > 1, config.slots[1].enabled, let spec1 = config.slots[1].spec {
-            built.append(LiveLink(slot: config.slots[1], spec: spec1,
-                                  transport: makeTransport(config.slots[1], spec: spec1, index: 1), leg: .uplink))
+            if spec1.rxOnly {
+                ODLog.shared.log("ignoring uplink radio \(spec1.name): receive-only", category: "cat")
+            } else {
+                built.append(LiveLink(slot: config.slots[1], spec: spec1,
+                                      transport: makeTransport(config.slots[1], spec: spec1, index: 1), leg: .uplink))
+            }
         }
         links = built
         // Seed per-radio status (both show "Connecting…" for a two-radio station).
@@ -450,15 +457,19 @@ final class RigController: ObservableObject {
             let data = await link.transport.readAvailable(maxWait: 0.5)
             return CATCodec.yaesuParseFreq(link.spec, data)
         case .kenwoodBase:
-            await sendRaw(link, CATCodec.kwReadFreq())
+            // Full-duplex Kenwood: uplink is VFO B — read/parse FB, not FA (follow-uplink).
+            let vfoB = link.spec.fullDuplex && leg == .uplink
+            await sendRaw(link, CATCodec.kwReadFreq(vfoB: vfoB))
             let data = await link.transport.readAvailable(maxWait: 0.5)
-            return CATCodec.kwParseFreq(data)
+            return CATCodec.kwParseFreq(data, vfoB: vfoB)
         case .kenwoodHandheld:
             await sendRaw(link, CATCodec.khtReadFreq())
             let data = await link.transport.readAvailable(maxWait: 0.5)
             return CATCodec.khtParseFreq(data)
         case .rigctld:
-            await sendRaw(link, CATCodec.rigctldReadFreq())
+            // Full-duplex split: the uplink is on the TX (split) VFO — read it with `i`.
+            let split = link.leg == .both && config.tuning.rigctldUseSplit && leg == .uplink
+            await sendRaw(link, split ? CATCodec.rigctldReadSplitFreq() : CATCodec.rigctldReadFreq())
             let data = await link.transport.readAvailable(maxWait: 0.5)
             return CATCodec.rigctldParseFreq(data)
         }
@@ -591,7 +602,7 @@ final class RigController: ObservableObject {
 
     /// Whether the uplink radio can be keyed over CAT.
     var pttSupported: Bool {
-        guard connected, let link = links.first(where: { $0.leg == .uplink || $0.leg == .both }) else { return false }
+        guard connected, let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else { return false }
         switch link.spec.family {
         case .civ, .yaesuBinary, .yaesuFT736, .kenwoodBase, .rigctld: return true
         default: return false
@@ -601,7 +612,7 @@ final class RigController: ObservableObject {
     /// Key/unkey the uplink radio over CAT, if supported. No-op otherwise (the
     /// operator uses VOX or manual PTT).
     func setPTT(_ on: Bool) async {
-        guard connected, let link = links.first(where: { $0.leg == .uplink || $0.leg == .both }) else { return }
+        guard connected, let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else { return }
         switch link.spec.family {
         case .civ: await sendRaw(link, CATCodec.civPTT(addr: civAddr(link), on: on))
         case .yaesuBinary, .yaesuFT736: await sendRaw(link, CATCodec.yaesuPTT(on: on))
