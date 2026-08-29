@@ -27,7 +27,7 @@
         <div class="prose">
             <p class="eyebrow">Privacy Policy</p>
             <h1>Privacy Policy for OrbitDeck for iOS</h1>
-            <p><strong>Effective date:</strong> August 25, 2026</p>
+            <p><strong>Effective date:</strong> August 29, 2026</p>
 
             <p>This Privacy Policy explains how OrbitDeck for iOS ("OrbitDeck," "the app," "we," "us") handles information. OrbitDeck is developed by Paul Stoetzer, N8HM ("the developer"). We are committed to protecting your privacy. In short: <strong>OrbitDeck does not collect, store, or transmit your personal information to the developer, and contains no advertising or third-party analytics or tracking.</strong></p>
 
@@ -56,6 +56,7 @@
                 <li><strong>hamqsl.com (N0NBH)</strong> — observed sunspot number</li>
                 <li><strong>SatNOGS</strong> — transponder database</li>
                 <li><strong>hams.at</strong> — upcoming satellite activations, and posting your own activation alerts (with your API key)</li>
+                <li><strong>PSKReporter</strong> — FT4 reception reports, only if you opt in (see below)</li>
             </ul>
             <p>OrbitDeck identifies itself and rate-limits its requests in accordance with these services' usage policies.</p>
 
@@ -66,6 +67,12 @@
             <h2>Audio, logging and photos</h2>
             <p>OrbitDeck's pass-recording, SSTV and FT4 features capture audio from a connected USB audio interface (which iOS treats as a microphone, so iOS requests microphone permission) or from a network-audio radio. Audio is captured only while you record or decode, is processed on your device, and is not sent to the developer. Recordings and decoded SSTV images are stored on your device; SSTV images are added to your photo library only when you explicitly export them (iOS requests add-only photo permission at that time.)</p>
             <p>The <strong>QSO log</strong> is stored on your device. Uploading a QSO sends it only to the service you choose — <strong>LoTW</strong> (ARRL) or your own <strong>Cloudlog/Wavelog</strong> instance — and only when you tap upload. Your LoTW certificate is imported and kept on your device; its passphrase and any Cloudlog API key are stored in the iOS Keychain and are never sent to the developer.</p>
+
+            <h2>PSKReporter reception reports (optional)</h2>
+            <p>OrbitDeck can optionally upload the FT4 stations it decodes through satellites to <strong>PSKReporter</strong> (pskreporter.info), a public reception-reporting network, so that they appear on its public map. This feature is <strong>off by default</strong> and is only active if you enable "Upload FT4 reception reports" in Settings. When enabled, each report is sent directly from your device to PSKReporter and includes your callsign and grid square, the decoded station's callsign and (if heard) grid square, the downlink frequency, signal report (SNR), mode, and time. This information is inherent to amateur-radio reception reporting and is published publicly by PSKReporter under its own policies. Nothing is sent to the developer. You can turn this off at any time in Settings.</p>
+
+            <h2>Diagnostic logs</h2>
+            <p>OrbitDeck keeps an on-device diagnostic log (rig, audio, and network activity) to help troubleshoot problems. The log stays on your device and is never sent automatically. You may choose to share a log file with the developer — for example by email — when reporting an issue; only then does any log content leave your device, and only to the recipient you pick. You can disable logging or clear the logs at any time on the Diagnostics screen.</p>
 
             <h2>Notifications</h2>
             <p>If you schedule a pass alarm, OrbitDeck uses local notifications delivered on your device. Notification permission is requested only when you first schedule an alarm. No notification data leaves your device.</p>

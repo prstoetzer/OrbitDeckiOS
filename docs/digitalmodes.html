@@ -68,6 +68,12 @@
                     <strong>FT4 runs at nearly 100% duty cycle.</strong> On a shared linear transponder, reduce power out of respect for other operators — the app shows this reminder on the FT4 card.
                 </div>
 
+                <h3>Doppler correction (experimental)</h3>
+                <p>The downlink Doppler drift is common to every signal on a linear transponder, so OrbitDeck can flatten it in the audio domain. Two independent, experimental toggles (both off by default) live under the FT4 card's setup: <strong>Doppler-correct RX audio</strong> de-chirps each received 7.5-second slot before decoding (best with the radio's downlink <em>not</em> being CAT-Doppler-tuned — park RX and let OrbitDeck flatten it), and <strong>Doppler-correct TX audio</strong> pre-compensates your transmitted burst so your emitted signal stays put. Both need a configured transponder; validate on-air before relying on them.</p>
+
+                <h3 id="pskreporter">PSKReporter reception reports</h3>
+                <p>OrbitDeck can upload the FT4 stations it decodes to <a href="https://pskreporter.info" rel="noopener">PSKReporter</a> so they show on its public map. This is <strong>opt-in</strong> — turn on <strong>Settings &rarr; PSKReporter &rarr; Upload FT4 reception reports</strong> (your callsign and grid must be set). The reported frequency is the absolute downlink RF — the Doppler-corrected downlink dial from CAT when connected, otherwise the transponder's downlink center — plus the decode's audio offset. Nothing is sent unless you enable it; see the <a href="privacy.html">privacy policy</a>.</p>
+
                 <h2 id="ptt">PTT for FT4</h2>
                 <p>When a CAT radio is connected, OrbitDeck keys transmit over CAT automatically — CI-V, Yaesu, Kenwood, <a href="catcontrol.html">rigctld</a>, and Icom network. If your radio has no CAT PTT, use <strong>VOX</strong> or key manually: the FT4 card shows a prominent <em>TRANSMIT NOW</em> indicator at the start of each of your slots so you key in time.</p>
 

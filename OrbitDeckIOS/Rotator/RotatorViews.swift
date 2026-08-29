@@ -52,8 +52,14 @@ struct RotatorSettingsView: View {
                     } else {
                         TextField("Host / IP", text: b(\.host))
                             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
-                        Stepper(value: b(\.port), in: 1...65535) {
-                            Text(verbatim: "Port: \(rot.config.port)")
+                        HStack {
+                            Text("Port")
+                            Spacer()
+                            TextField("Port", value: b(\.port), format: .number.grouping(.never))
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 90)
+                                .textFieldStyle(.odField)
                         }
                         Text(rot.config.proto == .rotctld
                              ? "Hamlib rotctld TCP server (default port 4533)."

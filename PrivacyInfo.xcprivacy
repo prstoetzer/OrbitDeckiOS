@@ -28,7 +28,9 @@
     </array>
 
     <!-- Required-reason API declarations. OrbitDeck reads/writes UserDefaults to persist
-         the user's own settings and cached feed timestamps (app-only access): reason CA92.1. -->
+         the user's own settings and cached feed timestamps (app-only access): reason CA92.1.
+         It also reads the size of its own diagnostic-log file (in the app container) to
+         rotate it: File timestamp reason C617.1. -->
     <key>NSPrivacyAccessedAPITypes</key>
     <array>
         <dict>
@@ -37,6 +39,14 @@
             <key>NSPrivacyAccessedAPITypeReasons</key>
             <array>
                 <string>CA92.1</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>C617.1</string>
             </array>
         </dict>
     </array>

@@ -128,7 +128,9 @@
                     <li><strong>Adapter not found</strong> — make sure it's powered, in range, and not already connected to another app or the radio's own session; confirm Bluetooth permission was granted. Unnamed adapters still appear in the list (sorted by signal strength).</li>
                     <li><strong>Mode changes but frequency doesn't</strong> (handhelds) — the TH-D74/D75 refuse off-grid writes; OrbitDeck rounds to the mode's step (20&nbsp;Hz fine, 5&nbsp;kHz FM). Make sure the radio is on band&nbsp;B.</li>
                     <li><strong>Nothing moves</strong> — confirm the adapter's serial rate matches the radio, the CI-V address is correct, and <strong>Track Doppler</strong> is on.</li>
-                    <li><strong>Network radio won't connect</strong> — enable Network Control on the radio, set a User1 login, and check the IP and control port (serial is control&nbsp;+1).</li>
+                    <li><strong>Network radio won't connect</strong> — enable Network Control on the radio, set a User1 login, and check the IP and control port (serial is control&nbsp;+1). OrbitDeck now reports <em>where</em> the handshake stalled (no reply, login rejected, or connection refused) so you can tell reachability from credentials from a busy radio.</li>
+                    <li><strong>IC-9700 (or IC-905) network specifically</strong> — unlike the Wi-Fi IC-705, the <strong>IC-9700 uses its wired Ethernet jack</strong>. Make sure the radio is on the same subnet your iPhone/iPad is on (route Wi-Fi and the radio's LAN together, no client-isolation), Network Control and CI-V Transceive are ON, and no other program (RS-BA1 Remote Utility, wfview) already holds the radio's single network session — power-cycle the radio if a previous session hung. Leave the CI-V address override blank so the 9700's default (A2) is used.</li>
+                    <li><strong>Capture a log</strong> — for connection problems, turn on <strong>Settings &rarr; Diagnostics &rarr; Diagnostic logs</strong>, reproduce the issue, then share the log file with the developer. It records each connection stage.</li>
                 </ul>
             </div>
         </div>

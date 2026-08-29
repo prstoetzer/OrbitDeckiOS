@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage(FeatureVisibility.recorderKey) private var featureRecorder = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.sstvKey) private var featureSSTV = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.ft4Key) private var featureFT4 = FeatureVisibility.auto
+    @AppStorage(PSKReporterSettings.enabledKey) private var pskReporterEnabled = false
     @AppStorage("orbitdeck.spacetrack.identity") private var spaceTrackIdentity = ""
     @State private var spaceTrackPassword = ""
     @State private var spaceTrackLoaded = false
@@ -19,6 +20,8 @@ struct SettingsView: View {
     @State private var hamsatLoaded = false
     @State private var showRigControl = false
     @State private var showRotatorControl = false
+    @State private var confirmClearCredentials = false
+    @State private var showDiagnostics = false
 
     var body: some View {
         Form {
@@ -197,6 +200,12 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
+            Section("PSKReporter") {
+                Toggle("Upload FT4 reception reports", isOn: $pskReporterEnabled)
+                Text("When on, OrbitDeck sends the FT4 stations you decode through satellites to PSKReporter (pskreporter.info) so they appear on its public spotting map. Reports include your callsign, grid, the decoded station's callsign/grid, the downlink frequency, SNR, and time. Requires your callsign and grid to be set. Off by default; no reports are sent unless you enable this.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
             Section("Space-Track") {
                 TextField("Space-Track identity / email", text: $spaceTrackIdentity)
                     .textContentType(.username)
@@ -207,6 +216,24 @@ struct SettingsView: View {
                     .textContentType(.password)
                     .textFieldStyle(.odField)
                 Text("Used by Orbital History to fetch archival elements. The identity is stored on-device; the password is kept in the iOS Keychain.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
+            Section("Saved credentials") {
+                Button(role: .destructive) { confirmClearCredentials = true } label: {
+                    Label("Clear all saved passwords & keys", systemImage: "key.slash")
+                }
+                Text("Removes every OrbitDeck password and API key (QRZ, hams.at, Space-Track, rig network, LoTW, Cloudlog) from the iOS Keychain. Keychain entries persist even if you delete the app, so use this to wipe them before handing the device on or switching accounts.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+
+            Section("Diagnostics") {
+                Button {
+                    showDiagnostics = true
+                } label: {
+                    Label("Diagnostic logs", systemImage: "doc.text.magnifyingglass")
+                }
+                Text("Records rig, audio, and network activity so you can share a log file with the developer when troubleshooting.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
@@ -325,6 +352,16 @@ struct SettingsView: View {
                     }
             }
         }
+        .sheet(isPresented: $showDiagnostics) {
+            NavigationStack {
+                DebugLogScreen()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showDiagnostics = false }
+                        }
+                    }
+            }
+        }
         .task {
             if !qrzLoaded {
                 qrzPassword = OrbitSecretStore.get(.qrzPassword)
@@ -338,6 +375,15 @@ struct SettingsView: View {
                 hamsatApiKey = OrbitSecretStore.get(.hamsatApiKey)
                 hamsatLoaded = true
             }
+        }
+        .confirmationDialog("Clear all saved passwords & keys?", isPresented: $confirmClearCredentials, titleVisibility: .visible) {
+            Button("Clear credentials", role: .destructive) {
+                OrbitSecretStore.clearAll()
+                qrzPassword = ""; spaceTrackPassword = ""; hamsatApiKey = ""
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes every stored OrbitDeck password and API key from the Keychain. You'll need to re-enter them to use those services.")
         }
         .onChange(of: qrzPassword) { _, newValue in
             if qrzLoaded { OrbitSecretStore.set(newValue, for: .qrzPassword) }

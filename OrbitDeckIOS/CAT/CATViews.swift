@@ -61,8 +61,19 @@ struct RigControlSettingsView: View {
         Section(title) {
             Toggle("Use this radio", isOn: slotBind.enabled)
             if slot.enabled {
-                // Connection type first, so a network-only rigctld link doesn't need
-                // a catalog radio. Icom network only appears for LAN-capable radios.
+                // Radio model first (user preference). rigctld ignores it — Hamlib
+                // abstracts the rig — so the picker is hidden for that transport.
+                if slot.transport != .rigctld {
+                    Picker("Radio", selection: slotBind.radioID) {
+                        Text("Select…").tag("")
+                        ForEach(radioChoices(index)) { r in
+                            Text(r.name).tag(r.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                // Connection type. Icom network only appears for LAN-capable radios.
                 Picker("Connection", selection: transportBinding(index)) {
                     Text(CATTransportKind.ble.label).tag(CATTransportKind.ble)
                     if catalogSpec?.hasLan == true { Text(CATTransportKind.network.label).tag(CATTransportKind.network) }
@@ -90,9 +101,7 @@ struct RigControlSettingsView: View {
         }
         TextField("rigctld host / IP", text: slotBind.host)
             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
-        Stepper(value: slotBind.port, in: 1...65535) {
-            Text(verbatim: "Port: \(slot.port)")
-        }
+        portField(index, label: "Port")
         if rig.config.twoRadios == false, slot.role == .both {
             Toggle("Use split VFO for full duplex", isOn: bindTuning(\.rigctldUseSplit))
         }
@@ -103,14 +112,6 @@ struct RigControlSettingsView: View {
     /// Fields for a catalog radio over BLE or Icom network (the original flow).
     @ViewBuilder private func radioSlotFields(index: Int, spec: RadioSpec?) -> some View {
         let slotBind = bindSlot(index)
-        Picker("Radio", selection: slotBind.radioID) {
-            Text("Select…").tag("")
-            ForEach(radioChoices(index)) { r in
-                Text(r.name).tag(r.id)
-            }
-        }
-        .pickerStyle(.menu)
-
         if !rig.config.twoRadios, let spec, spec.fullDuplex {
             Picker("Controls", selection: slotBind.role) {
                 ForEach(RigRole.allCases) { Text($0.label).tag($0) }
@@ -141,9 +142,7 @@ struct RigControlSettingsView: View {
                     } else {
                         TextField("Radio IP / hostname", text: slotBind.host)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
-                        Stepper(value: slotBind.port, in: 1...65535) {
-                            Text(verbatim: "Control port: \(rig.config.slots[index].port)")
-                        }
+                        portField(index, label: "Control port")
                         TextField("Network username", text: slotBind.username)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
                         NetworkPasswordField(index: index)
@@ -177,11 +176,30 @@ struct RigControlSettingsView: View {
     /// to a network protocol (Icom 50001, rigctld 4532), so the Stepper starts sane.
     private func transportBinding(_ i: Int) -> Binding<CATTransportKind> {
         Binding(get: { rig.config.slots[i].transport }, set: { newT in
-            let old = rig.config.slots[i].transport
             rig.config.slots[i].transport = newT
-            if newT == .rigctld, rig.config.slots[i].port == 50001 { rig.config.slots[i].port = 4532 }
-            if newT == .network, old == .rigctld, rig.config.slots[i].port == 4532 { rig.config.slots[i].port = 50001 }
+            // Fill the standard port for the chosen protocol unless the user has
+            // set a non-default one. Icom network = 50001, rigctld = 4532.
+            let p = rig.config.slots[i].port
+            switch newT {
+            case .rigctld: if p == 0 || p == 50001 { rig.config.slots[i].port = 4532 }
+            case .network: if p == 0 || p == 4532 { rig.config.slots[i].port = 50001 }
+            case .ble: break
+            }
         })
+    }
+
+    /// Numeric port entry via keyboard. The default is pre-filled when the
+    /// connection type changes (see transportBinding), so this starts sane.
+    @ViewBuilder private func portField(_ i: Int, label: String) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            TextField("Port", value: bindSlot(i).port, format: .number.grouping(.never))
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 90)
+                .textFieldStyle(.odField)
+        }
     }
 
     private func civAddrHex(_ i: Int) -> Binding<String> {

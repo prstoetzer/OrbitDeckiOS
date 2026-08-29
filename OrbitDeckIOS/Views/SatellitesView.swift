@@ -279,6 +279,14 @@ struct SatellitesView: View {
                     Text("az \(ODFormat.angle(entry.azimuth, decimals: 0)) \(ODFormat.compass(entry.azimuth))")
                         .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
                 }
+                Button {
+                    store.toggleFavorite(entry.satellite.id)
+                } label: {
+                    Image(systemName: store.preferences.favorites.contains(entry.satellite.id) ? "star.fill" : "star")
+                        .foregroundStyle(store.preferences.favorites.contains(entry.satellite.id) ? ODTheme.warning : ODTheme.muted)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(store.preferences.favorites.contains(entry.satellite.id) ? "Remove favorite" : "Add favorite")
             }
             .contentShape(Rectangle())
         }

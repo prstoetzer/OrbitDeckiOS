@@ -119,6 +119,9 @@ final class RigController: ObservableObject {
             RigLinkStatus(id: i, radioName: link.spec.name, transport: link.slot.transport,
                           leg: link.leg, connecting: true, connected: false, error: nil)
         }
+        for link in built {
+            ODLog.shared.log("connect start: \(link.spec.name) via \(String(describing: link.slot.transport)) leg=\(String(describing: link.leg)) host=\(link.slot.host):\(link.slot.port)", category: "cat")
+        }
 
         Task {
             // Connect all radios concurrently so both progress at once. Capture the
@@ -133,7 +136,13 @@ final class RigController: ObservableObject {
                 }
                 for await (i, err) in group where i < statuses.count {
                     statuses[i].connecting = false
-                    if let err { statuses[i].error = err } else { statuses[i].connected = true }
+                    if let err {
+                        statuses[i].error = err
+                        ODLog.shared.log("connect failed [\(statuses[i].radioName)]: \(err)", category: "cat")
+                    } else {
+                        statuses[i].connected = true
+                        ODLog.shared.log("connected [\(statuses[i].radioName)]", category: "cat")
+                    }
                 }
             }
 
@@ -141,11 +150,13 @@ final class RigController: ObservableObject {
                 await engageOnce()
                 connected = true; connecting = false
                 statusText = "Connected."
+                ODLog.shared.log("all radios connected; Doppler loop started", category: "cat")
                 startLoop()
             } else {
                 connecting = false; connected = false
                 errorText = statuses.compactMap(\.error).first ?? "Connection failed."
                 statusText = "Connection failed."
+                ODLog.shared.log("connection failed: \(errorText)", category: "cat")
                 await teardown()
             }
         }

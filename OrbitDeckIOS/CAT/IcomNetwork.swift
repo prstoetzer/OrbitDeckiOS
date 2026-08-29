@@ -15,6 +15,38 @@ import Network
 //  field offsets are the least-certain part of the wire format.
 // ===========================================================================
 
+/// How far the RS-BA1 handshake got. On a connect timeout we turn the furthest stage
+/// reached into an actionable message — most 9700-vs-705 failures are environmental
+/// (reachability / Network Control off / a session already open), not byte bugs, and a
+/// single "timed out" hid where it stalled.
+enum IcomConnectStage: Int, Comparable {
+    case socket = 0          // UDP socket opened, are-you-there sent
+    case controlUp           // got i-am-here + ready, login sent
+    case loginAccepted       // login reply OK, auth sent
+    case authAccepted        // auth reply OK
+    case connInfoSent        // ConnInfo request sent
+    case connInfoAccepted    // ConnInfo accepted, serial stream starting
+    case serialUp            // serial opened → connected
+
+    static func < (a: IcomConnectStage, b: IcomConnectStage) -> Bool { a.rawValue < b.rawValue }
+
+    /// What to tell the operator if the handshake stalled at (i.e. never advanced past) this stage.
+    var timeoutDiagnostic: String {
+        switch self {
+        case .socket:
+            return "No reply from the radio. Check it's reachable on this network (the IC-9700 uses its wired Ethernet jack — put it on the same subnet as your Wi-Fi), Network Control is ON, and the IP/port are correct."
+        case .controlUp:
+            return "The radio answered but did not accept the login. Check the network username/password (a User1 login with Network Control enabled)."
+        case .loginAccepted, .authAccepted:
+            return "The radio accepted the login but not the connection — it may already have an active network session. Close RS-BA1 Remote Utility / wfview or power-cycle the radio, then retry."
+        case .connInfoSent, .connInfoAccepted:
+            return "The connection was set up but the CI-V serial stream did not open. Power-cycle the radio and retry."
+        case .serialUp:
+            return "Connected."
+        }
+    }
+}
+
 final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     private let host: String
     private let basePort: UInt16
@@ -22,6 +54,14 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     private let password: String
     private let modelName: String
     private let queue = DispatchQueue(label: "org.orbitdeck.cat.icomnet")
+
+    /// Furthest handshake stage reached (for a stage-aware timeout message + logging).
+    private var stage: IcomConnectStage = .socket
+    private func advance(to s: IcomConnectStage) {
+        guard s > stage || s == .socket else { return }
+        stage = s
+        ODLog.shared.log("icom-net stage → \(s) (\(host):\(basePort))", category: "cat")
+    }
 
     private var control: RSStream?
     private var serial: RSStream?
@@ -52,11 +92,14 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async {
                 self.connectCont = cont
+                self.stage = .socket
                 self.queue.asyncAfter(deadline: .now() + 25) { [weak self] in
                     guard let self, let c = self.connectCont else { return }
                     self.connectCont = nil
+                    let msg = self.stage.timeoutDiagnostic
+                    ODLog.shared.log("icom-net connect TIMEOUT at stage \(self.stage): \(msg)", category: "cat")
                     self.teardown()          // close sockets + cancel timers on timeout
-                    c.resume(throwing: CATError.connectTimeout)
+                    c.resume(throwing: CATError.network(msg))
                 }
                 self.startControl()
             }
@@ -170,9 +213,12 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         let s = RSStream(host: host, port: basePort, queue: queue)
         control = s
         s.onReady = { [weak self] in self?.control?.bootstrap() }
-        s.onBootstrapped = { [weak self] in self?.sendLogin() }
+        s.onBootstrapped = { [weak self] in self?.advance(to: .controlUp); self?.sendLogin() }
         s.onPacket = { [weak self] pkt in self?.handleControl(pkt) }
-        s.onError = { [weak self] e in self?.finishConnect(.failure(e)) }
+        s.onError = { [weak self] e in
+            ODLog.shared.log("icom-net control socket error: \(e.localizedDescription)", category: "cat")
+            self?.finishConnect(.failure(e))
+        }
         s.start()
     }
 
@@ -198,9 +244,11 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         // Login reply (0x60)
         if r.count >= 96, r[0] == 0x60, r[4] == 0x00 {
             if r.count >= 52, r[48] == 0xFF, r[49] == 0xFF, r[50] == 0xFF, r[51] == 0xFE {
-                finishConnect(.failure(CATError.network("hams.at radio rejected the network username/password.")))
+                ODLog.shared.log("icom-net login REJECTED (bad network username/password)", category: "cat")
+                finishConnect(.failure(CATError.network("The radio rejected the network username/password. Check the User1 login and that Network Control is enabled.")))
                 return
             }
+            advance(to: .loginAccepted)
             for i in 0..<6 { authID[i] = r[26 + i] }
             sendAuth(magic: 0x02); sendAuth(magic: 0x05)
             return
@@ -213,17 +261,23 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         }
         // Auth reply (0x40)
         if r.count >= 64, r[0] == 0x40 {
-            if r[21] == 0x05 { authOK = true; maybeSendConnInfo() }
+            if r[21] == 0x05 { advance(to: .authAccepted); authOK = true; maybeSendConnInfo() }
             return
         }
         // ConnInfo reply (0x90)
         if r.count >= 144, r[0] == 0x90, r[96] == 0x01 {
+            advance(to: .connInfoAccepted)
             control.remoteSID = readBE(r, 8)
             control.localSID = readBE(r, 12)
             for i in 0..<6 { authID[i] = r[26 + i] }
             startSerial()
             startReauth()
             return
+        }
+        // ConnInfo explicit rejection (0x90 with a non-1 status) — surface it rather
+        // than falling through to the generic timeout.
+        if r.count >= 144, r[0] == 0x90, r[96] != 0x01 {
+            ODLog.shared.log("icom-net ConnInfo rejected (status \(r[96])) — radio may already have a session", category: "cat")
         }
     }
 
@@ -243,6 +297,7 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     private func maybeSendConnInfo() {
         guard authOK, a8replyID.contains(where: { $0 != 0 }), !connInfoSent, let control else { return }
         connInfoSent = true
+        advance(to: .connInfoSent)
         var p = [UInt8](repeating: 0, count: 144)
         p[0] = 0x90
         writeBE(&p, 8, control.localSID); writeBE(&p, 12, control.remoteSID)
@@ -273,12 +328,15 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         let s = RSStream(host: host, port: basePort + 1, queue: queue)
         serial = s
         s.onReady = { [weak self] in self?.serial?.bootstrap() }
-        s.onBootstrapped = { [weak self] in self?.serial?.openSerial { [weak self] in self?.finishConnect(.success(())) } }
+        s.onBootstrapped = { [weak self] in self?.serial?.openSerial { [weak self] in self?.advance(to: .serialUp); ODLog.shared.log("icom-net serial open — connected", category: "cat"); self?.finishConnect(.success(())) } }
         s.onCIV = { [weak self] frame in
             guard let self else { return }
             self.lock.lock(); self.rxCIV.append(contentsOf: frame); self.lock.unlock()
         }
-        s.onError = { [weak self] e in self?.finishConnect(.failure(e)) }
+        s.onError = { [weak self] e in
+            ODLog.shared.log("icom-net serial socket error: \(e.localizedDescription)", category: "cat")
+            self?.finishConnect(.failure(e))
+        }
         s.start()
     }
 

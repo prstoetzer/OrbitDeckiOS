@@ -140,6 +140,22 @@ final class OrbitStore: ObservableObject {
         savePreferences()
     }
 
+    /// True for errors that just mean "the network isn't reachable" (airplane mode,
+    /// no Wi-Fi/cellular, DNS/host unreachable, timeouts). These are expected when the
+    /// operator is offline and must NOT raise the app-level alert — OrbitDeck runs fully
+    /// on cached elements offline, so we surface a quiet inline status instead.
+    nonisolated static func isOffline(_ error: Error) -> Bool {
+        guard let u = error as? URLError else { return false }
+        switch u.code {
+        case .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost,
+             .cannotFindHost, .dnsLookupFailed, .timedOut, .dataNotAllowed,
+             .internationalRoamingOff, .callIsActive, .resourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
     func refreshGP() async {
         guard !isRefreshingGP else { return }
         isRefreshingGP = true
@@ -185,10 +201,14 @@ final class OrbitStore: ObservableObject {
             if usingCelestrak, case GPServiceError.badResponse(let code) = error, code == 403 || code == 429 {
                 recordCelestrakFetch("gp")
                 lastError = "CelesTrak rate limit reached (HTTP \(code)). OrbitDeck will wait 2 hours before querying again to avoid an IP ban; cached elements remain in use."
+                statusMessage = "GP update failed"
+            } else if Self.isOffline(error) {
+                // Offline: keep running on cached elements, no popup.
+                statusMessage = satellites.isEmpty ? "Offline — connect to download elements" : "Offline — using cached elements"
             } else {
                 lastError = error.localizedDescription
+                statusMessage = "GP update failed"
             }
-            statusMessage = "GP update failed"
         }
     }
 
@@ -213,8 +233,12 @@ final class OrbitStore: ObservableObject {
             lastTransponderRefresh = .now
             statusMessage = "Cached transmitters for \(byString.count) satellites"
         } catch {
-            lastError = error.localizedDescription
-            statusMessage = "Transmitter fetch failed"
+            if Self.isOffline(error) {
+                statusMessage = "Offline — using cached transmitters"
+            } else {
+                lastError = error.localizedDescription
+                statusMessage = "Transmitter fetch failed"
+            }
         }
     }
 
@@ -247,7 +271,8 @@ final class OrbitStore: ObservableObject {
             satellites[index].transponders = mergeTransponderLists(records, manual)
             statusMessage = "Loaded \(records.count) SatNOGS transmitters"
         } catch {
-            lastError = error.localizedDescription
+            // Offline transponder loads are silent — cached/bundled data still applies.
+            if !Self.isOffline(error) { lastError = error.localizedDescription }
         }
     }
 
@@ -275,7 +300,9 @@ final class OrbitStore: ObservableObject {
                 try? data.write(to: Self.spaceWeatherCacheURL, options: .atomic)
             }
         } catch {
-            lastError = error.localizedDescription
+            // Space weather is ancillary and refreshes automatically — never pop an
+            // alert (especially offline); the indices just stay on the cached values.
+            statusMessage = Self.isOffline(error) ? "Offline — space weather not updated" : "Space weather update failed"
         }
     }
 
@@ -615,7 +642,7 @@ final class OrbitStore: ObservableObject {
 
 // MARK: - Secret storage
 
-enum OrbitSecret: String {
+enum OrbitSecret: String, CaseIterable {
     case qrzPassword = "qrz-password"
     case spaceTrackPassword = "spacetrack-password"
     // Personal hams.at API key (from the hams.at Settings page), used only to
@@ -667,6 +694,25 @@ enum OrbitSecretStore {
         return String(data: data, encoding: .utf8) ?? ""
 #else
         return UserDefaults.standard.string(forKey: "OrbitDeck.validation.\(secret.rawValue)") ?? ""
+#endif
+    }
+
+    /// Delete a single stored secret.
+    static func remove(_ secret: OrbitSecret) { set("", for: secret) }
+
+    /// Wipe every OrbitDeck secret from the Keychain. iOS Keychain items survive app
+    /// deletion and reappear on reinstall, so this gives the operator an explicit way to
+    /// clear stored passwords/API keys (e.g. handing the device on, or switching accounts).
+    static func clearAll() {
+#if canImport(Security)
+        // Delete by service so nothing is missed even if a key predates CaseIterable.
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service
+        ]
+        SecItemDelete(query as CFDictionary)
+#else
+        for s in OrbitSecret.allCases { UserDefaults.standard.removeObject(forKey: "OrbitDeck.validation.\(s.rawValue)") }
 #endif
     }
 }

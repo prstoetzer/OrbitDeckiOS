@@ -1,6 +1,6 @@
-# OrbitDeck iOS/iPadOS 0.9.14 (1) — logging, LoTW, SSTV, full-duplex FT4, rigctl
+# OrbitDeck iOS/iPadOS 0.9.14 — logging, LoTW, SSTV, full-duplex FT4, rigctl
 
-Version **0.9.14 (1)**. This release remains below 1.0. It follows 0.9.13.
+Version **0.9.14**. This release remains below 1.0. It follows 0.9.13.
 
 ## Summary
 
@@ -10,6 +10,31 @@ Version **0.9.14 (1)**. This release remains below 1.0. It follows 0.9.13.
 USB audio interface or an Icom network-audio radio. It also adds a **rigctl
 (Hamlib)** CAT path and fixes the satellite direction-of-travel arrow on
 high-elliptical orbits.
+
+## Later 0.9.14 builds — refinements
+
+- **PSKReporter (opt-in)** — upload the FT4 stations you decode to PSKReporter's
+  public map. Off by default; enable in **Settings → PSKReporter**. Reports the
+  absolute downlink RF (Doppler-corrected downlink dial from CAT, or the transponder
+  downlink center) plus the decode's audio offset. Disclosed in the privacy policy.
+- **FT4 audio Doppler correction (experimental)** — optional, off by default:
+  **RX** de-chirps each received slot before decoding (the downlink drift is common
+  to all signals on a linear transponder); **TX** pre-compensates your burst. Both
+  need a configured transponder and on-air validation.
+- **Icom network (RS-BA1) connect diagnostics** — the handshake now reports *where*
+  it stalled (unreachable / login rejected / connection refused), with specific
+  IC-9700 guidance (wired-Ethernet subnet, Network Control + CI-V Transceive, single
+  network session). Verified our RS-BA1 byte layout against wfview/kappanhang.
+- **Diagnostic logs** — a Settings → Diagnostics screen records rig/audio/network
+  activity to a file you can share with the developer when troubleshooting.
+- **Keychain** — a "Clear all saved passwords & keys" action; every credential uses a
+  distinct Keychain key (Keychain items persist across app deletion).
+- **Offline robustness** — element/transmitter/space-weather auto-refreshes fail
+  quietly to a status line instead of popping an alert when you're offline.
+- **Satellites** — favorite a satellite directly from the active (above-horizon) list.
+- **Rig/rotator setup** — Radio picker now sits above Connection type; port is a
+  numeric keyboard field; switching connection type fills the standard port
+  (Icom 50001 / rigctld 4532).
 
 ## Logging & uploads
 
@@ -73,4 +98,6 @@ high-elliptical orbits.
 - Audio is captured only while recording/decoding and stays on device; SSTV images
   export to Photos only when you choose. The QSO log stays on device; uploads go
   only to LoTW or your Cloudlog instance when you tap upload. Certificate
-  passphrase and API keys are stored in the iOS Keychain. See the privacy policy.
+  passphrase and API keys are stored in the iOS Keychain. PSKReporter uploads are
+  off unless you opt in. Diagnostic logs stay on device unless you share them. See
+  the privacy policy.

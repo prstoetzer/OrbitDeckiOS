@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import UIKit
+import Network
 
 // ===========================================================================
 //  FT4Engine.swift — full-duplex FT4 over an AudioSource, using ft8_lib (MIT)
@@ -56,10 +57,29 @@ final class FT4Engine: ObservableObject {
     /// across the burst so the emitted RF stays steady (helps others decode you at high
     /// Doppler rate). Off by default; needs on-air validation. Requires `dopplerProvider`.
     @Published var audioDopplerTX = false
+    /// EXPERIMENTAL: de-Doppler the whole received slot in the audio domain before
+    /// decoding, using the ephemeris downlink-Doppler drift (common to every signal on
+    /// the transponder). Best when the radio's downlink is NOT being CAT-Doppler-tuned
+    /// (park RX and let OrbitDeck flatten the drift) — otherwise it double-corrects.
+    /// Off by default; needs on-air validation. Requires `dopplerProvider`.
+    @Published var audioDopplerRX = false { didSet { rxDeDopplerEnabled = audioDopplerRX } }
 
     /// Supplies instantaneous downlink/uplink Doppler SHIFT (Hz) at a given time, from
     /// the ephemeris. Set by the view at start(); used for the readout and TX pre-comp.
     var dopplerProvider: (@Sendable (Date) -> (dl: Double, ul: Double)?)?
+
+    /// Opt-in PSKReporter uploader (nil = disabled). Set by the view at start() when the
+    /// operator has enabled reporting and has a callsign + grid.
+    var pskReporter: PSKReporter?
+    /// Current absolute downlink RF base (Hz) — the Doppler-corrected downlink dial from
+    /// CAT, or the transponder downlink center. A decode's reported frequency is this plus
+    /// its audio offset. Called on the main actor. Returns 0 when unknown (then no spot).
+    var rxBaseHzProvider: (() -> Double)?
+
+    // Nonisolated mirrors read from the slot queue (onSlotBoundary is nonisolated).
+    private nonisolated(unsafe) var rxDeDopplerEnabled = false
+    private nonisolated(unsafe) var dopplerProviderShared: (@Sendable (Date) -> (dl: Double, ul: Double)?)?
+    private nonisolated(unsafe) let deDoppler = HilbertDeDoppler()
 
     /// Quietest spot in the passband (Hz), updated from the waterfall — for "clear TX".
     @Published private(set) var suggestedTxFreq: Double = 1500
@@ -127,6 +147,8 @@ final class FT4Engine: ObservableObject {
         self.source = source
         self.satName = satellite
         self.sampleRate = source.sampleRate
+        rxDeDopplerEnabled = audioDopplerRX
+        dopplerProviderShared = dopplerProvider
         lock.lock(); rxBuffer.removeAll(keepingCapacity: true); lock.unlock()
         myCallSeq = myCall.uppercased()
         myGridSeq = String(myGrid.prefix(4)).uppercased()
@@ -160,6 +182,7 @@ final class FT4Engine: ObservableObject {
         source?.stopPlayback()
         source?.stop()
         source = nil
+        pskReporter?.stop(); pskReporter = nil
         if isTransmitting { Task { await rig?.setPTT(false) } }
         isTransmitting = false
         isRunning = false
@@ -289,9 +312,22 @@ final class FT4Engine: ObservableObject {
     /// then start a TX if it's our turn.
     private nonisolated func onSlotBoundary() {
         // Grab and reset the just-ended slot's audio.
-        lock.lock(); let slot = rxBuffer; rxBuffer.removeAll(keepingCapacity: true); let rate = sampleRate; lock.unlock()
+        lock.lock(); var slot = rxBuffer; rxBuffer.removeAll(keepingCapacity: true); let rate = sampleRate; lock.unlock()
 
         let endedSlotIndex = Int((Date().timeIntervalSince1970 / kFT4SlotSeconds).rounded()) - 1
+
+        // EXPERIMENTAL RX de-Doppler: flatten the downlink Doppler drift across this slot
+        // (common to all signals on the transponder) before decoding. Sample the ephemeris
+        // downlink shift at the slot's start and end for a linear drift rate; a smooth
+        // audio de-chirp counters it. Gated off by default; needs on-air validation.
+        if rxDeDopplerEnabled, slot.count > Int(rate * 3.0), let provider = dopplerProviderShared {
+            let slotStart = Date(timeIntervalSince1970: Double(endedSlotIndex) * kFT4SlotSeconds)
+            if let d0 = provider(slotStart), let d1 = provider(slotStart.addingTimeInterval(kFT4SlotSeconds)) {
+                let slope = (d1.dl - d0.dl) / kFT4SlotSeconds     // Hz/s of downlink drift
+                slot = deDoppler.removeLinearDrift(slot, rate: rate, slopeHzPerSec: slope)
+            }
+        }
+
         let haveAudio = slot.count > Int(rate * 3.0)
         let result = haveAudio ? FT4Engine.decodeSlot(slot, rate: rate) : FT4Engine.SlotResult()
         let found = result.messages
@@ -308,6 +344,24 @@ final class FT4Engine: ObservableObject {
                 self.qso?.addFT4Traffic(found.map {
                     FT4TrafficEntry(date: when, sat: self.satName, text: $0.text, snr: $0.snr, freqHz: Int($0.freq), sent: false)
                 })
+                // Opt-in PSKReporter spots: report each received station at its absolute
+                // downlink RF (downlink dial + audio offset). Skips our own signal and
+                // decodes with no known RF base.
+                if let psk = self.pskReporter {
+                    let base = self.rxBaseHzProvider?() ?? 0
+                    if base > 0 {
+                        for f in found {
+                            guard let fields = FT4Engine.parse(f.text) else { continue }
+                            let sender = fields.de
+                            guard !sender.isEmpty, sender != self.myCallSeq else { continue }
+                            let grid = FT4Engine.isGrid(fields.extra) ? fields.extra : ""
+                            psk.enqueue(PSKSpot(call: sender, grid: grid,
+                                                freqHz: Int64((base + f.freq).rounded()),
+                                                snr: f.snr, mode: "FT4", when: when))
+                        }
+                        psk.flush()
+                    }
+                }
             }
             // Always report what the decoder saw this slot — distinguishes "no audio"
             // from "signal but no sync candidates" from "candidates but no decode".
@@ -691,5 +745,221 @@ final class FT4Engine: ObservableObject {
             out[i] *= g; out[out.count - 1 - i] *= g
         }
         return out
+    }
+}
+
+// ===========================================================================
+//  PSKReporter — reception-report upload (opt-in)
+//
+//  Sends FT4 reception reports (spots) to PSKReporter over UDP using its IPFIX wire
+//  format, byte-compatible with WSJT-X's implementation. Each datagram carries the
+//  receiver (options) template + the sender template + one receiver-info record + a
+//  batch of sender spots. Templates are included in every datagram so the message is
+//  self-contained (PSKReporter tolerates repeated templates).
+//
+//  Reporting is OPT-IN (Settings → PSKReporter). We only upload when the operator has
+//  turned it on and set their callsign + grid. The reported frequency is the absolute
+//  downlink RF (Doppler-corrected downlink dial from CAT, or the transponder downlink
+//  center) plus the decode's audio offset.
+//
+//  Wire format reference: pskreporter.info/pskdev.html and WSJT-X Network/PSKReporter.cpp.
+// ===========================================================================
+
+/// Settings keys for PSKReporter (opt-in).
+enum PSKReporterSettings {
+    static let enabledKey = "orbitdeck.pskreporter.enabled"
+}
+
+/// One reception report.
+struct PSKSpot {
+    let call: String        // decoded sender callsign (their DE)
+    let grid: String        // their grid, if the message carried one ("" otherwise)
+    let freqHz: Int64       // absolute RF of the received signal (downlink RF + audio offset)
+    let snr: Int            // measured SNR (dB)
+    let mode: String        // "FT4"
+    let when: Date          // slot start (UTC)
+}
+
+@MainActor
+final class PSKReporter {
+    static let host = "report.pskreporter.info"
+    static let port: UInt16 = 4739
+    private static let enterprise: UInt32 = 30351   // PSKReporter IANA enterprise number
+
+    private let receiverCall: String
+    private let receiverGrid: String
+    private let software: String
+    private let antenna: String
+
+    private var queued: [PSKSpot] = []
+    private var sequence: UInt32 = 0
+    private let observationID: UInt32
+
+    /// True only when we have the minimum required receiver identity.
+    var isConfigured: Bool { !receiverCall.isEmpty && !receiverGrid.isEmpty }
+
+    init(receiverCall: String, receiverGrid: String, software: String, antenna: String = "") {
+        self.receiverCall = receiverCall.uppercased()
+        self.receiverGrid = receiverGrid
+        self.software = software
+        self.antenna = antenna
+        self.observationID = UInt32.random(in: 1...UInt32.max)
+    }
+
+    /// Queue a spot for the next flush. Ignores empty/own calls and unknown frequency.
+    func enqueue(_ spot: PSKSpot) {
+        guard isConfigured, !spot.call.isEmpty, spot.freqHz > 0 else { return }
+        queued.append(spot)
+    }
+
+    /// Build one datagram from the queued spots and send it, then clear the queue.
+    func flush() {
+        guard isConfigured, !queued.isEmpty else { return }
+        let spots = queued
+        queued.removeAll(keepingCapacity: true)
+        sequence &+= 1
+        let datagram = buildDatagram(spots: spots, sequence: sequence)
+        ODLog.shared.log("pskreporter: sending \(spots.count) spot(s), \(datagram.count) bytes", category: "psk")
+        send(datagram)
+    }
+
+    /// Flush anything remaining (call when FT4 stops).
+    func stop() { flush() }
+
+    // MARK: Datagram assembly
+
+    private func buildDatagram(spots: [PSKSpot], sequence: UInt32) -> Data {
+        var body = [UInt8]()
+        body.append(contentsOf: receiverTemplate())
+        body.append(contentsOf: senderTemplate())
+        body.append(contentsOf: receiverDataSet())
+        body.append(contentsOf: senderDataSet(spots))
+
+        // 16-byte IPFIX message header, with the total length back-patched.
+        var msg = [UInt8]()
+        appendU16(&msg, 0x000A)                       // version
+        appendU16(&msg, 0)                            // length placeholder
+        appendU32(&msg, UInt32(truncatingIfNeeded: Int(Date().timeIntervalSince1970)))  // export time
+        appendU32(&msg, sequence)                     // sequence number
+        appendU32(&msg, observationID)                // random observation domain id
+        msg.append(contentsOf: body)
+        let total = UInt16(truncatingIfNeeded: msg.count)
+        msg[2] = UInt8(total >> 8); msg[3] = UInt8(total & 0xFF)
+        return Data(msg)
+    }
+
+    /// Receiver (options) template: set id 3, template 0x50E2, 4 enterprise fields.
+    private func receiverTemplate() -> [UInt8] {
+        var s = [UInt8]()
+        appendU16(&s, 0x0003)          // options template set id
+        appendU16(&s, 0)               // length placeholder
+        appendU16(&s, 0x50E2)          // template id
+        appendU16(&s, 4)               // field count
+        appendU16(&s, 0)               // scope field count
+        appendField(&s, 0x8002, 0xFFFF)   // receiverCallsign (variable)
+        appendField(&s, 0x8004, 0xFFFF)   // receiverLocator
+        appendField(&s, 0x8008, 0xFFFF)   // decodingSoftware
+        appendField(&s, 0x8009, 0xFFFF)   // antennaInformation
+        return finalizeSet(&s)
+    }
+
+    /// Sender template: set id 2, template 0x50E3, 7 fields.
+    private func senderTemplate() -> [UInt8] {
+        var s = [UInt8]()
+        appendU16(&s, 0x0002)          // template set id
+        appendU16(&s, 0)               // length placeholder
+        appendU16(&s, 0x50E3)          // template id
+        appendU16(&s, 7)               // field count
+        appendField(&s, 0x8001, 0xFFFF)   // senderCallsign (variable)
+        appendField(&s, 0x8005, 5)        // frequency, 5 bytes
+        appendField(&s, 0x8006, 1)        // sNR, 1 byte
+        appendField(&s, 0x800A, 0xFFFF)   // mode (variable)
+        appendField(&s, 0x8003, 0xFFFF)   // senderLocator (variable)
+        appendField(&s, 0x800B, 1)        // informationSource, 1 byte
+        appendU16(&s, 150)                // dateTimeSeconds (standard element)
+        appendU16(&s, 4)                  //   length 4
+        return finalizeSet(&s)
+    }
+
+    private func receiverDataSet() -> [UInt8] {
+        var s = [UInt8]()
+        appendU16(&s, 0x50E2)          // set id = receiver template id
+        appendU16(&s, 0)               // length placeholder
+        appendString(&s, receiverCall)
+        appendString(&s, receiverGrid)
+        appendString(&s, software)
+        appendString(&s, antenna)
+        return finalizeSet(&s)
+    }
+
+    private func senderDataSet(_ spots: [PSKSpot]) -> [UInt8] {
+        var s = [UInt8]()
+        appendU16(&s, 0x50E3)          // set id = sender template id
+        appendU16(&s, 0)               // length placeholder
+        for spot in spots {
+            appendString(&s, spot.call)
+            appendU40(&s, UInt64(max(0, spot.freqHz)))
+            s.append(UInt8(bitPattern: Int8(clamping: spot.snr)))
+            appendString(&s, spot.mode)
+            appendString(&s, spot.grid)
+            s.append(1)                // informationSource = 1 (automatically extracted)
+            appendU32(&s, UInt32(truncatingIfNeeded: Int(spot.when.timeIntervalSince1970)))
+        }
+        return finalizeSet(&s)
+    }
+
+    // MARK: byte helpers
+
+    private func appendU16(_ b: inout [UInt8], _ v: UInt16) {
+        b.append(UInt8(v >> 8)); b.append(UInt8(v & 0xFF))
+    }
+    private func appendU32(_ b: inout [UInt8], _ v: UInt32) {
+        b.append(UInt8((v >> 24) & 0xFF)); b.append(UInt8((v >> 16) & 0xFF))
+        b.append(UInt8((v >> 8) & 0xFF)); b.append(UInt8(v & 0xFF))
+    }
+    /// 5-byte big-endian (the PSKReporter frequency field width).
+    private func appendU40(_ b: inout [UInt8], _ v: UInt64) {
+        b.append(UInt8((v >> 32) & 0xFF)); b.append(UInt8((v >> 24) & 0xFF))
+        b.append(UInt8((v >> 16) & 0xFF)); b.append(UInt8((v >> 8) & 0xFF)); b.append(UInt8(v & 0xFF))
+    }
+    /// IPFIX enterprise field specifier: id (enterprise bit already set) + length + enterprise number.
+    private func appendField(_ b: inout [UInt8], _ id: UInt16, _ length: UInt16) {
+        appendU16(&b, id); appendU16(&b, length); appendU32(&b, Self.enterprise)
+    }
+    /// Length-prefixed UTF-8 string (1-byte length, max 254 bytes).
+    private func appendString(_ b: inout [UInt8], _ s: String) {
+        let bytes = Array(s.utf8.prefix(254))
+        b.append(UInt8(bytes.count))
+        b.append(contentsOf: bytes)
+    }
+    /// Back-patch the set's length field and pad the set to a 4-byte boundary
+    /// (padding is counted in the length, per IPFIX).
+    private func finalizeSet(_ s: inout [UInt8]) -> [UInt8] {
+        let pad = (4 - s.count % 4) % 4
+        for _ in 0..<pad { s.append(0) }
+        let len = UInt16(truncatingIfNeeded: s.count)
+        s[2] = UInt8(len >> 8); s[3] = UInt8(len & 0xFF)
+        return s
+    }
+
+    // MARK: UDP send
+
+    private func send(_ data: Data) {
+        let conn = NWConnection(host: NWEndpoint.Host(Self.host),
+                                port: NWEndpoint.Port(rawValue: Self.port)!,
+                                using: .udp)
+        conn.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                conn.send(content: data, completion: .contentProcessed { _ in
+                    conn.cancel()
+                })
+            case .failed, .cancelled:
+                conn.cancel()
+            default:
+                break
+            }
+        }
+        conn.start(queue: DispatchQueue.global(qos: .utility))
     }
 }

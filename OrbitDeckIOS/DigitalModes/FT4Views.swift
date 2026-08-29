@@ -85,6 +85,7 @@ struct HomeFT4Card: View {
     @EnvironmentObject private var rig: RigController
     @EnvironmentObject private var qso: QSOStore
     @AppStorage(FeatureVisibility.ft4Key) private var visibility = FeatureVisibility.auto
+    @AppStorage(PSKReporterSettings.enabledKey) private var pskEnabled = false
     @State private var showSetup = false
     let satellite: SatelliteRecord
 
@@ -431,6 +432,11 @@ struct HomeFT4Card: View {
             Text("Chirps the transmitted audio to cancel uplink-Doppler drift so your signal stays put across the burst. Needs a configured transponder; validate on-air before relying on it.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
 
+            Toggle("Doppler-correct RX audio (experimental)", isOn: $ft4.audioDopplerRX)
+                .font(.caption)
+            Text("Flattens the downlink-Doppler drift across each received slot before decoding — helps at high Doppler rate. Best with the radio's downlink NOT CAT-Doppler-tuned (park RX). Needs a configured transponder; validate on-air.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+
             if ft4.autoSequence {
                 Text("Call CQ, or tap a decoded station to answer it — the exchange (grid → report → RR73) and logging run automatically; your report is set from their decoded SNR.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
@@ -450,9 +456,28 @@ struct HomeFT4Card: View {
         if ft4.isRunning {
             ft4.stop()
         } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
+            let transponder = rig.transponder(for: satellite)
             ft4.dopplerProvider = Self.makeDopplerProvider(satellite: satellite,
                                                            observer: store.preferences.observer,
-                                                           transponder: rig.transponder(for: satellite))
+                                                           transponder: transponder)
+            // Absolute downlink RF base: the Doppler-corrected downlink dial from CAT when
+            // connected, else the transponder's nominal downlink center.
+            let dlCenter = Double(transponder?.downlinkCenter ?? 0)
+            ft4.rxBaseHzProvider = { [weak rig] in
+                let dial = Double(rig?.downlinkDialHz ?? 0)
+                return dial > 0 ? dial : dlCenter
+            }
+            // Opt-in PSKReporter reporting (needs callsign + grid).
+            if pskEnabled {
+                let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+                let reporter = PSKReporter(receiverCall: qso.config.myCall,
+                                           receiverGrid: store.operatorGrid6,
+                                           software: "OrbitDeck \(version)",
+                                           antenna: satellite.name)
+                ft4.pskReporter = reporter.isConfigured ? reporter : nil
+            } else {
+                ft4.pskReporter = nil
+            }
             ft4.start(source: source, myCall: qso.config.myCall, myGrid: store.operatorGrid6, satellite: satellite.name)
         } else {
             ft4.errorText = "No audio interface available."

@@ -12,6 +12,7 @@
 		08EDC310E824B8CB90D8A3EE /* Views/HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A72471D03E195359C63155A /* Views/HomeView.swift */; };
 		0C4C1D39CC489508720D4198 /* Views/SkyRadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C400D0BA43629F11E97C6234 /* Views/SkyRadarView.swift */; };
 		24A2EC1FCE037F1FA7FD744D /* Services/LocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32CC53E0E4F549F7E5A4BF44 /* Services/LocationProvider.swift */; };
+		2E0DC92730437DC800E1F00A /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E0DC92530437DC800E1F00A /* DebugLog.swift */; };
 		2E1437DA303DCFC70001B31F /* CATCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D3303DCFC60001B31F /* CATCodec.swift */; };
 		2E1437DB303DCFC70001B31F /* CATTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D4303DCFC60001B31F /* CATTransport.swift */; };
 		2E1437DC303DCFC70001B31F /* IcomNetwork.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1437D6303DCFC60001B31F /* IcomNetwork.swift */; };
@@ -109,6 +110,7 @@
 		25C9F5562B8D8E90BE1FE63E /* Views/RadioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/RadioView.swift; sourceTree = "<group>"; };
 		288DA342A9387B413727BBE4 /* Views/OrbitalAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/OrbitalAnalysisView.swift; sourceTree = "<group>"; };
 		2A72471D03E195359C63155A /* Views/HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views/HomeView.swift; sourceTree = "<group>"; };
+		2E0DC92530437DC800E1F00A /* DebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
 		2E1437C8303DC53F0001B31F /* OrbitDeckIOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OrbitDeckIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2E1437D3303DCFC60001B31F /* CATCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CATCodec.swift; sourceTree = "<group>"; };
 		2E1437D4303DCFC60001B31F /* CATTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CATTransport.swift; sourceTree = "<group>"; };
@@ -226,6 +228,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		2E0DC92630437DC800E1F00A /* Diagnostics */ = {
+			isa = PBXGroup;
+			children = (
+				2E0DC92530437DC800E1F00A /* DebugLog.swift */,
+			);
+			path = Diagnostics;
+			sourceTree = "<group>";
+		};
 		2E1437D9303DCFC60001B31F /* CAT */ = {
 			isa = PBXGroup;
 			children = (
@@ -374,6 +384,7 @@
 		8309DD304D804F9D7F6302F5 /* OrbitDeckIOS */ = {
 			isa = PBXGroup;
 			children = (
+				2E0DC92630437DC800E1F00A /* Diagnostics */,
 				2E143810303F12EA0001B31F /* DigitalModes */,
 				2E143809303F112D0001B31F /* Recording */,
 				2E1437FF303F110D0001B31F /* Log */,
@@ -604,6 +615,7 @@
 				2E1437DD303DCFC70001B31F /* RigController.swift in Sources */,
 				2E1437DE303DCFC70001B31F /* RigTypes.swift in Sources */,
 				2E1437DF303DCFC70001B31F /* CATViews.swift in Sources */,
+				2E0DC92730437DC800E1F00A /* DebugLog.swift in Sources */,
 				E05000020000000000000011 /* Services/PassAlarmService.swift in Sources */,
 				F08994C001BC8C8619BC6225 /* Views/Components.swift in Sources */,
 				A903F6A56AC625C98B5048C1 /* Views/GroundTrackView.swift in Sources */,
@@ -818,7 +830,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/OrbitDeckIOS/DigitalModes/ft8_lib";
@@ -853,7 +865,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/OrbitDeckIOS/DigitalModes/ft8_lib";

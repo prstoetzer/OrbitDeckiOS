@@ -156,6 +156,72 @@ final class SpectrumAnalyzer: @unchecked Sendable {
     }
 }
 
+/// Audio-domain Doppler removal for a whole RX slot (FT4). The downlink-path Doppler
+/// is COMMON to every signal coming through a linear transponder, so a single
+/// time-varying frequency shift de-Dopplers the entire slot buffer at once. We build
+/// the analytic (complex) signal with an FFT Hilbert transform, then SSB-mix it with a
+/// de-chirp `exp(-jθ(t))` that cancels the (near-linear) drift across the 7.5 s slot,
+/// and return the real part. Used only from FT4Engine's slot queue → `@unchecked Sendable`.
+final class HilbertDeDoppler: @unchecked Sendable {
+    private var setup: FFTSetup?
+    private var setupLog2n: vDSP_Length = 0
+
+    deinit { if let s = setup { vDSP_destroy_fftsetup(s) } }
+
+    /// Remove a linear frequency drift from a real signal. `slopeHzPerSec` is the rate
+    /// of the drift present in the signal, referenced so that t = 0 at the first sample
+    /// (the drift there is treated as 0, keeping signals near their original audio
+    /// positions). Returns the corrected real signal (same length as input).
+    func removeLinearDrift(_ x: [Float], rate: Double, slopeHzPerSec: Double) -> [Float] {
+        let nIn = x.count
+        guard nIn > 64, rate > 0, slopeHzPerSec.isFinite, slopeHzPerSec != 0 else { return x }
+        let log2n = vDSP_Length(ceil(log2(Double(nIn))))
+        let nfft = 1 << Int(log2n)
+        if setup == nil || setupLog2n != log2n {
+            if let s = setup { vDSP_destroy_fftsetup(s) }
+            setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
+            setupLog2n = log2n
+        }
+        guard let setup else { return x }
+
+        var realp = [Float](repeating: 0, count: nfft)
+        var imagp = [Float](repeating: 0, count: nfft)
+        for i in 0..<nIn { realp[i] = x[i] }
+
+        realp.withUnsafeMutableBufferPointer { rp in
+            imagp.withUnsafeMutableBufferPointer { ip in
+                var split = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
+                // Forward complex FFT (unscaled).
+                vDSP_fft_zip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
+                // Analytic signal: double the positive frequencies, zero the negative
+                // half; leave DC (0) and Nyquist (half) untouched.
+                let half = nfft / 2
+                if half > 1 {
+                    var two: Float = 2
+                    vDSP_vsmul(rp.baseAddress! + 1, 1, &two, rp.baseAddress! + 1, 1, vDSP_Length(half - 1))
+                    vDSP_vsmul(ip.baseAddress! + 1, 1, &two, ip.baseAddress! + 1, 1, vDSP_Length(half - 1))
+                }
+                for k in (half + 1)..<nfft { rp[k] = 0; ip[k] = 0 }
+                // Inverse FFT → analytic signal, scaled by nfft (undone below).
+                vDSP_fft_zip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Inverse))
+            }
+        }
+
+        // De-chirp and take the real part. θ(t) = 2π·∫₀ᵗ (slope·τ) dτ = π·slope·t².
+        // Re{ a·e^{-jθ} } = ar·cosθ + ai·sinθ.
+        let inv = 1.0 / Double(nfft)
+        let piSlope = Double.pi * slopeHzPerSec
+        var out = [Float](repeating: 0, count: nIn)
+        for n in 0..<nIn {
+            let t = Double(n) / rate
+            let theta = piSlope * t * t
+            let c = cos(theta), s = sin(theta)
+            out[n] = Float((Double(realp[n]) * c + Double(imagp[n]) * s) * inv)
+        }
+        return out
+    }
+}
+
 /// Maps a normalized magnitude (0…1) to WSJT-X's **Default** waterfall palette,
 /// using the exact design anchors from WSJT-X `Palettes/Default.pal` (9 stops,
 /// linearly interpolated): black → blues → tan → yellow-greens → yellow → red.
