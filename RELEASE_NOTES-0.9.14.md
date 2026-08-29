@@ -1,6 +1,6 @@
-# OrbitDeck iOS/iPadOS 0.9.14 — logging, LoTW, SSTV, full-duplex FT4, rigctl
+# OrbitDeck iOS/iPadOS 0.9.14 (4) — logging, LoTW, SSTV, full-duplex FT4, rigctl
 
-Version **0.9.14**. This release remains below 1.0. It follows 0.9.13.
+Version **0.9.14 (4)**. This release remains below 1.0. It follows 0.9.13.
 
 ## Summary
 
@@ -11,7 +11,7 @@ USB audio interface or an Icom network-audio radio. It also adds a **rigctl
 (Hamlib)** CAT path and fixes the satellite direction-of-travel arrow on
 high-elliptical orbits.
 
-## Later 0.9.14 builds — refinements
+## 0.9.14 (4) — refinements
 
 - **PSKReporter (opt-in)** — upload the FT4 stations you decode to PSKReporter's
   public map. Off by default; enable in **Settings → PSKReporter**. Reports the
