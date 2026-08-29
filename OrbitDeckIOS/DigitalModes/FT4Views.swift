@@ -107,6 +107,7 @@ struct HomeFT4Card: View {
                         .buttonStyle(.bordered)
                 }
                 SatelliteStatusLine(satellite: satellite)
+                if ft4.isRunning { dopplerLine }
 
                 nextTxPanel
 
@@ -201,6 +202,23 @@ struct HomeFT4Card: View {
                     .font(.caption.monospacedDigit())
                 Spacer()
                 ProgressView(value: min(1, intoSlot / period)).frame(width: 90)
+            }
+        }
+    }
+
+    /// Live net Doppler readout (downlink/uplink shift + drift rate) from the ephemeris.
+    @ViewBuilder private var dopplerLine: some View {
+        if let p = ft4.dopplerProvider {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let now = context.date
+                if let d = p(now), let d1 = p(now.addingTimeInterval(1)) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "waveform.path").font(.system(size: 9)).foregroundStyle(ODTheme.muted)
+                        Text(String(format: "Doppler  DL %+.0f · UL %+.0f Hz  ·  %+.0f Hz/s", d.dl, d.ul, d1.dl - d.dl))
+                        Spacer()
+                    }
+                    .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                }
             }
         }
     }
@@ -403,8 +421,15 @@ struct HomeFT4Card: View {
                 Text("TX freq").font(.caption2).foregroundStyle(ODTheme.muted)
                 Spacer()
                 Text("\(Int(ft4.txAudioFreq)) Hz").font(.caption2.monospacedDigit())
+                Button("Clear spot") { ft4.txAudioFreq = (ft4.suggestedTxFreq / 10).rounded() * 10 }
+                    .font(.caption2).buttonStyle(.borderless).disabled(!ft4.isRunning)
             }
             FineSlider(value: $ft4.txAudioFreq, range: 300...2700, step: 10)
+
+            Toggle("Doppler-correct TX audio (experimental)", isOn: $ft4.audioDopplerTX)
+                .font(.caption)
+            Text("Chirps the transmitted audio to cancel uplink-Doppler drift so your signal stays put across the burst. Needs a configured transponder; validate on-air before relying on it.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
 
             if ft4.autoSequence {
                 Text("Call CQ, or tap a decoded station to answer it — the exchange (grid → report → RR73) and logging run automatically; your report is set from their decoded SNR.")
@@ -425,10 +450,27 @@ struct HomeFT4Card: View {
         if ft4.isRunning {
             ft4.stop()
         } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
+            ft4.dopplerProvider = Self.makeDopplerProvider(satellite: satellite,
+                                                           observer: store.preferences.observer,
+                                                           transponder: rig.transponder(for: satellite))
             ft4.start(source: source, myCall: qso.config.myCall, myGrid: store.operatorGrid6, satellite: satellite.name)
         } else {
             ft4.errorText = "No audio interface available."
         }
     }
 
+    /// Ephemeris-backed instantaneous downlink/uplink Doppler shift (Hz) for the card's
+    /// readout and the (experimental) TX pre-compensation. Uses the transponder centers;
+    /// the ~1e-4 error from using center vs edge frequency is negligible.
+    private static func makeDopplerProvider(satellite: SatelliteRecord, observer: ObserverSite,
+                                            transponder: TransponderRecord?) -> (@Sendable (Date) -> (dl: Double, ul: Double)?)? {
+        guard let tp = transponder, tp.downlinkCenter > 0 else { return nil }
+        let dl = Double(tp.downlinkCenter), ul = Double(max(0, tp.uplinkCenter))
+        return { date in
+            guard let look = try? OrbitPredictor.look(satellite, observer: observer, at: date) else { return nil }
+            let v = look.rangeRateKmS * 1000.0          // m/s, positive = receding
+            let c = 299_792_458.0
+            return (dl: -dl * v / c, ul: -ul * v / c)
+        }
+    }
 }

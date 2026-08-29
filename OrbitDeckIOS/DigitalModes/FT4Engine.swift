@@ -52,6 +52,17 @@ final class FT4Engine: ObservableObject {
     @Published var txOnEvenSlots = true
     @Published var txMessage = ""
     @Published var txAudioFreq = 1500.0
+    /// EXPERIMENTAL: pre-compensate the transmitted audio for the uplink Doppler drift
+    /// across the burst so the emitted RF stays steady (helps others decode you at high
+    /// Doppler rate). Off by default; needs on-air validation. Requires `dopplerProvider`.
+    @Published var audioDopplerTX = false
+
+    /// Supplies instantaneous downlink/uplink Doppler SHIFT (Hz) at a given time, from
+    /// the ephemeris. Set by the view at start(); used for the readout and TX pre-comp.
+    var dopplerProvider: (@Sendable (Date) -> (dl: Double, ul: Double)?)?
+
+    /// Quietest spot in the passband (Hz), updated from the waterfall — for "clear TX".
+    @Published private(set) var suggestedTxFreq: Double = 1500
 
     // Auto-sequencing (WSJT-style): the engine advances the standard FT4 exchange
     // and logs on completion. Report we send (dB); the station we're working.
@@ -201,19 +212,38 @@ final class FT4Engine: ObservableObject {
         let rate = sampleRate
 
         var image: UIImage?
+        var clearHz: Double?
         if win.count >= analyzer.n {
             let db = analyzer.magnitudesDB(win)
             if !db.isEmpty {
                 let binHz = rate / Double(analyzer.n)
                 let maxBin = max(1, min(db.count, Int(3000.0 / binHz)))
                 image = appendWaterfall(Array(db[0..<maxBin]))
+                clearHz = quietestFreq(db, binHz: binHz)
             }
         }
         Task { @MainActor in
             // Fast attack, slow release so the meter reads like a VU meter (no flash).
             self.rxLevel = max(peak, self.rxLevel * 0.75)
             if let image { self.waterfall = image }
+            if let clearHz { self.suggestedTxFreq = clearHz }
         }
+    }
+
+    /// The center of the quietest ~150 Hz spot in the 500–2500 Hz FT4 sub-band — a good
+    /// place to drop your TX so you don't sit on another signal.
+    private nonisolated func quietestFreq(_ db: [Float], binHz: Double) -> Double? {
+        let lo = max(1, Int(500 / binHz)), hi = min(db.count - 1, Int(2500 / binHz))
+        guard hi > lo else { return nil }
+        let win = max(1, Int(75 / binHz))               // ±75 Hz window
+        var bestC = lo, bestSum = Float.greatestFiniteMagnitude
+        var c = lo + win
+        while c <= hi - win {
+            var s: Float = 0; for k in (c - win)...(c + win) { s += db[k] }
+            if s < bestSum { bestSum = s; bestC = c }
+            c += win                                     // step by the window for speed
+        }
+        return Double(bestC) * binHz
     }
 
     /// Push a new magnitude row and render the scrolling waterfall (newest at bottom).
@@ -432,7 +462,20 @@ final class FT4Engine: ObservableObject {
     private func beginTransmit() {
         guard let source, !isTransmitting else { return }
         guard let tones = FT4Engine.encodeTones(txMessage) else { errorText = "Could not encode \"\(txMessage)\"."; return }
-        let tx = FT4Engine.synthesize(tones: tones, rate: source.sampleRate, f0: txAudioFreq)
+        // EXPERIMENTAL uplink-Doppler pre-compensation: sample the uplink Doppler at the
+        // start and end of the ~4.5 s burst and apply the negative of its drift to the
+        // audio so the emitted RF stays constant (a smooth chirp, not the staircase the
+        // slow CI-V dial would produce). Linear over a burst is a good approximation.
+        var offset: ((Double) -> Double)?
+        if audioDopplerTX, let provider = dopplerProvider {
+            let now = Date()
+            let burst = Double(FT4_NN) * Double(FT4_SYMBOL_PERIOD)
+            if let d0 = provider(now), let d1 = provider(now.addingTimeInterval(burst)) {
+                let slope = (d1.ul - d0.ul) / burst      // Hz/s of uplink Doppler
+                offset = { elapsed in -slope * elapsed }  // cancel the drift
+            }
+        }
+        let tx = FT4Engine.synthesize(tones: tones, rate: source.sampleRate, f0: txAudioFreq, offsetHz: offset)
         txLock.lock(); txBuffer = tx; txIndex = 0; txDone = false; txPeak = 0; txLock.unlock()
         isTransmitting = true
         status = "Transmitting: \(txMessage)"
@@ -622,14 +665,18 @@ final class FT4Engine: ObservableObject {
 
     /// Continuous-phase 4-FSK synthesis of FT4 tones (approximate GFSK; decodes
     /// fine in practice). Tone spacing = 1/symbol period = 20.833 Hz.
-    nonisolated static func synthesize(tones: [UInt8], rate: Double, f0: Double) -> [Float] {
+    /// `offsetHz` (optional) returns an audio-frequency offset (Hz) as a function of
+    /// elapsed seconds into the burst — used to pre-compensate uplink Doppler drift so
+    /// the emitted RF stays constant across the transmission.
+    nonisolated static func synthesize(tones: [UInt8], rate: Double, f0: Double,
+                                       offsetHz: ((Double) -> Double)? = nil) -> [Float] {
         let symbolPeriod = Double(FT4_SYMBOL_PERIOD)
         let sps = max(1, Int(rate * symbolPeriod))
         let toneSpacing = 1.0 / symbolPeriod
         var out = [Float](); out.reserveCapacity(sps * tones.count)
         var phase = 0.0
-        for t in tones {
-            let f = f0 + Double(t) * toneSpacing
+        for (i, t) in tones.enumerated() {
+            let f = f0 + Double(t) * toneSpacing + (offsetHz?(Double(i) * symbolPeriod) ?? 0)
             let dphi = 2.0 * Double.pi * f / rate
             for _ in 0..<sps {
                 out.append(Float(0.5 * sin(phase)))
