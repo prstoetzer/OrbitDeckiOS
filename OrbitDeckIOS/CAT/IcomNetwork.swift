@@ -274,11 +274,9 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
             startReauth()
             return
         }
-        // ConnInfo explicit rejection (0x90 with a non-1 status) — surface it rather
-        // than falling through to the generic timeout.
-        if r.count >= 144, r[0] == 0x90, r[96] != 0x01 {
-            ODLog.shared.log("icom-net ConnInfo rejected (status \(r[96])) — radio may already have a session", category: "cat")
-        }
+        // Note: a 0x90 with r[96] != 1 is NOT necessarily a rejection — the radio also
+        // sends benign 0x90 status frames during a normal, successful connect — so we
+        // don't treat it as an error here (the connect timeout still catches a real stall).
     }
 
     private func sendAuth(magic: UInt8) {

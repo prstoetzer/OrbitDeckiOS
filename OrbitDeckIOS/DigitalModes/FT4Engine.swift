@@ -169,6 +169,14 @@ final class FT4Engine: ObservableObject {
         } catch { errorText = error.localizedDescription; self.source = nil; return }
         isRunning = true; status = "Listening…"
         AudioActivity.begin()
+        // Slot-gate CAT Doppler while FT4 runs: hold the continuous loop and step the
+        // dial once per slot boundary, so the radio never retunes mid-slot (which would
+        // break the coherent decode). The within-slot drift is smooth and is removed in
+        // the audio domain when RX de-Doppler is on.
+        if let rig, rig.connected, rig.config.tuning.trackDoppler {
+            rig.holdDoppler = true
+            Task { await rig.stepDopplerNow() }
+        }
         // Fresh waterfall state (safe: the analysis timer isn't running yet).
         waterMagRows.removeAll(keepingCapacity: true); waterFloor = 0
         scheduleSlotTimer()
@@ -183,6 +191,11 @@ final class FT4Engine: ObservableObject {
         source?.stop()
         source = nil
         pskReporter?.stop(); pskReporter = nil
+        // Resume continuous CAT Doppler tracking (undo the FT4 slot-gating).
+        if let rig, rig.holdDoppler {
+            rig.holdDoppler = false
+            Task { await rig.stepDopplerNow() }
+        }
         if isTransmitting { Task { await rig?.setPTT(false) } }
         isTransmitting = false
         isRunning = false
@@ -334,6 +347,11 @@ final class FT4Engine: ObservableObject {
         let startingSlot = endedSlotIndex + 1
 
         Task { @MainActor in
+            // Slot-gated CAT Doppler: step the dial once now, at the boundary between the
+            // slot that just ended and the one starting — the only moment we retune, so the
+            // radio holds one frequency through each RX/TX slot. Runs before TX begins.
+            if let rig = self.rig, rig.holdDoppler { await rig.stepDopplerNow() }
+
             for f in found {
                 self.decodes.append(FT4DecodedMessage(text: f.text, snr: f.snr, freqHz: f.freq, atSlot: endedSlotIndex))
             }

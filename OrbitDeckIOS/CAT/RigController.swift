@@ -27,6 +27,12 @@ final class RigController: ObservableObject {
     /// Live corrected dials (real, transverter-inclusive) for the Home card.
     @Published var downlinkDialHz: Int64 = 0
     @Published var uplinkDialHz: Int64 = 0
+    /// When true, the periodic Doppler loop stops pushing continuous updates; the dial
+    /// is stepped explicitly instead (see `stepDopplerNow()`). An active FT4 session sets
+    /// this so the frequency changes only at slot boundaries — the dial stays constant
+    /// within each 7.5 s slot and the audio-domain de-Doppler removes the residual drift,
+    /// rather than a mid-slot retune smearing the coherent decode.
+    var holdDoppler = false
     /// Which transponder of the selected satellite CAT tracks.
     @Published var transponderID: String?
     /// Per-radio connection status for the Home card (one entry per configured
@@ -68,6 +74,10 @@ final class RigController: ObservableObject {
     /// Identifies the current satellite/transponder/mode so mode + step are
     /// re-applied whenever any of them changes (not just at connect).
     private var lastEngageKey = ""
+    /// Last "why the loop can't tune" message, so we log it only when it changes.
+    private var lastTickBail = ""
+    /// Throttle for per-tick frequency-send logging (diagnostics).
+    private var lastFreqLogAt = Date.distantPast
 
     private struct LiveLink {
         let slot: RigSlot
@@ -204,9 +214,15 @@ final class RigController: ObservableObject {
             if link.spec.family == .kenwoodHandheld {
                 for f in CATCodec.khtSession() { await sendRaw(link, f); await pace(30) }
             }
-            if config.tuning.satMode, link.spec.family == .civ, link.spec.fullDuplex,
+            // Satellite mode. The IC-9100/9700 (canAssignBand) REQUIRE satellite mode for
+            // full-duplex MAIN/SUB tuning to take effect, so command it automatically for
+            // those; other CI-V rigs honour the user's "Command satellite mode" toggle.
+            if link.spec.family == .civ, link.spec.fullDuplex,
+               (config.tuning.satMode || link.spec.canAssignBand),
                let f = CATCodec.civSatMode(link.spec, addr: addr, on: true) {
                 await sendRaw(link, f)
+                ODLog.shared.log("sat mode ON → \(link.spec.name)", category: "cat")
+                await pace(60)
             }
             // rigctld full-duplex single radio: enable split so uplink tracks on
             // the TX VFO while downlink tracks on the RX VFO.
@@ -238,6 +254,30 @@ final class RigController: ObservableObject {
         }
     }
 
+    /// Assign which band is on MAIN vs SUB for radios that need it (IC-9100/9700, the
+    /// `07 D2` command). Without this the 9700's MAIN/SUB VFOs can sit on the wrong
+    /// bands, so Doppler frequency/mode writes land where the operator can't see them.
+    /// MAIN = uplink, SUB = downlink (unless the operator swapped that). Auto for
+    /// canAssignBand rigs; other rigs are unaffected.
+    private func applyBandAssignment(tp: TransponderRecord) async {
+        for link in links where link.spec.canAssignBand && link.leg == .both {
+            let mainIsUp = config.tuning.mainIsUplink
+            let mainHz = UInt64(max(0, mainIsUp ? tp.uplinkCenter : tp.downlinkCenter))
+            let subHz  = UInt64(max(0, mainIsUp ? tp.downlinkCenter : tp.uplinkCenter))
+            let frames = CATCodec.civAssignBands(link.spec, addr: civAddr(link), mainHz: mainHz, subHz: subHz)
+            guard !frames.isEmpty else { continue }
+            for f in frames { await sendRaw(link, f); await pace(60) }
+            ODLog.shared.log("band assign \(link.spec.name): MAIN=\(mainHz) SUB=\(subHz)", category: "cat")
+        }
+    }
+
+    /// Log a "can't tune" reason once, only when it changes (empty clears it).
+    private func bailLog(_ reason: String) {
+        guard reason != lastTickBail else { return }
+        lastTickBail = reason
+        if !reason.isEmpty { ODLog.shared.log("Doppler idle: \(reason)", category: "cat") }
+    }
+
     // MARK: Doppler loop
 
     private func startLoop() {
@@ -253,6 +293,9 @@ final class RigController: ObservableObject {
         t.setEventHandler { [weak self] in
             Task { @MainActor in
                 guard let self, !self.isTicking else { return }
+                // Slot-gated (FT4): the periodic loop is suppressed; frequency is stepped
+                // at slot boundaries via stepDopplerNow() instead.
+                if self.holdDoppler { return }
                 self.isTicking = true
                 await self.tick()
                 self.isTicking = false
@@ -262,10 +305,25 @@ final class RigController: ObservableObject {
         timer = t
     }
 
+    /// Perform one Doppler update immediately, regardless of `holdDoppler`. Used by an
+    /// active FT4 session to step the dial once per slot boundary (between the RX and TX
+    /// slots) so it never retunes mid-slot. Overlap-guarded like the periodic tick.
+    func stepDopplerNow() async {
+        guard connected, !isTicking else { return }
+        isTicking = true
+        await tick()
+        isTicking = false
+    }
+
     /// One tuning cycle: compute corrected dials and push changed frequencies.
     func tick() async {
-        guard connected, config.tuning.trackDoppler,
-              let store, let sat = store.selectedSatellite, let tp = transponder(for: sat) else { return }
+        // Log *why* the loop can't tune (once, when the reason changes) — otherwise a
+        // "connected but nothing moves" report is undiagnosable from the log.
+        guard connected else { return }
+        guard config.tuning.trackDoppler else { return bailLog("Track Doppler is off") }
+        guard let store, let sat = store.selectedSatellite else { return bailLog("no satellite selected") }
+        guard let tp = transponder(for: sat) else { return bailLog("no transponder for \(sat.name) — select one on the Home card") }
+        bailLog("")   // clear: we can tune
         let observer = store.preferences.observer
         let isFM = tp.mode.uppercased().contains("FM")
         let deadband = Int64(isFM ? config.tuning.fmDeadbandHz : config.tuning.linearDeadbandHz)
@@ -278,6 +336,8 @@ final class RigController: ObservableObject {
         if key != lastEngageKey {
             lastEngageKey = key
             lastSentRx = 0; lastSentTx = 0; uplinkDeferTicks = 0
+            ODLog.shared.log("engage \(sat.name)/\(tp.id): dl=\(dlMode.rawValue) ul=\(ulMode.rawValue) \(isFM ? "FM" : "linear")", category: "cat")
+            await applyBandAssignment(tp: tp)
             await applyModes(dlMode: dlMode, ulMode: ulMode, isFM: isFM)
         }
 
@@ -326,6 +386,13 @@ final class RigController: ObservableObject {
         downlinkDialHz = rxReal; uplinkDialHz = txReal
         let rxRig = rxReal - config.tuning.xvtrDownlinkHz
         let txRig = txReal - config.tuning.xvtrUplinkHz
+
+        // Throttled diagnostics (every ~5 s): confirms the loop is driving and shows the
+        // target dials, so a "connected but nothing moves" report is answerable.
+        if Date().timeIntervalSince(lastFreqLogAt) >= 5 {
+            lastFreqLogAt = Date()
+            ODLog.shared.log("tune rx=\(rxRig) tx=\(txRig) dl=\(dlMode.rawValue) ul=\(ulMode.rawValue)", category: "cat")
+        }
 
         for link in links {
             switch link.leg {

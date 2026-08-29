@@ -166,10 +166,17 @@ struct SelectedSatelliteHeader: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(ODTheme.muted)
                 Spacer()
-                if store.preferences.favorites.contains(satellite.id) {
-                    Image(systemName: "star.fill")
-                        .foregroundStyle(ODTheme.warning)
+                // Tap to favorite/unfavorite the currently active satellite without
+                // leaving the screen.
+                let isFav = store.preferences.favorites.contains(satellite.id)
+                Button {
+                    store.toggleFavorite(satellite.id)
+                } label: {
+                    Image(systemName: isFav ? "star.fill" : "star")
+                        .foregroundStyle(isFav ? ODTheme.warning : ODTheme.muted)
                 }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(isFav ? "Remove favorite" : "Add favorite")
             } else {
                 Label("No satellite selected", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(ODTheme.warning)
@@ -609,11 +616,22 @@ struct SatelliteStatusLine: View {
             .foregroundStyle(ODTheme.muted)
         }
         .task(id: satellite.id) {
-            // Recompute the pass once now, then again shortly after each LOS.
+            // A new satellite: drop the previous one's pass so its countdown never
+            // lingers while the first recompute runs.
+            pass = nil
             while !Task.isCancelled {
                 await recompute()
-                let sleep = pass.map { max(2, $0.los.timeIntervalSinceNow + 2) } ?? 300
-                try? await Task.sleep(nanoseconds: UInt64(min(max(sleep, 5), 600) * 1_000_000_000))
+                // Refresh soon after the next event (AOS if still waiting, else LOS),
+                // but at least once a minute so the readout stays fresh across station
+                // movement / prediction drift and recovers quickly from a hiccup.
+                let next: TimeInterval
+                if let p = pass {
+                    let event = Date() < p.aos ? p.aos : p.los
+                    next = min(60, max(5, event.timeIntervalSinceNow + 2))
+                } else {
+                    next = 15   // no pass yet (or a transient failure): retry shortly
+                }
+                try? await Task.sleep(nanoseconds: UInt64(next * 1_000_000_000))
             }
         }
     }
@@ -632,6 +650,12 @@ struct SatelliteStatusLine: View {
         let passes = try? await Task.detached(priority: .utility) {
             try OrbitPredictor.predictPasses(sat, observer: observer, minElevation: 0, maxCount: 1)
         }.value
-        pass = passes?.first
+        if let first = passes?.first {
+            pass = first
+        } else if let current = pass, Date() > current.los {
+            // Only clear a stale pass once it has fully elapsed; keep the last good
+            // pass through a transient propagation failure so the countdown doesn't blank.
+            pass = nil
+        }
     }
 }

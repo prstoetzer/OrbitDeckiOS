@@ -434,7 +434,7 @@ struct HomeFT4Card: View {
 
             Toggle("Doppler-correct RX audio (experimental)", isOn: $ft4.audioDopplerRX)
                 .font(.caption)
-            Text("Flattens the downlink-Doppler drift across each received slot before decoding — helps at high Doppler rate. Best with the radio's downlink NOT CAT-Doppler-tuned (park RX). Needs a configured transponder; validate on-air.")
+            Text("Flattens the downlink-Doppler drift across each received slot before decoding — helps at high Doppler rate. While FT4 runs with a connected CAT radio, OrbitDeck holds the dial steady and only re-tunes at slot boundaries, so it never retunes mid-slot; this correction then removes the residual within-slot drift. Needs a configured transponder; validate on-air.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
 
             if ft4.autoSequence {

@@ -1,6 +1,6 @@
-# OrbitDeck iOS/iPadOS 0.9.14 (4) — logging, LoTW, SSTV, full-duplex FT4, rigctl
+# OrbitDeck iOS/iPadOS 0.9.14 (5) — logging, LoTW, SSTV, full-duplex FT4, rigctl
 
-Version **0.9.14 (4)**. This release remains below 1.0. It follows 0.9.13.
+Version **0.9.14 (5)**. This release remains below 1.0. It follows 0.9.13.
 
 ## Summary
 
@@ -10,6 +10,20 @@ Version **0.9.14 (4)**. This release remains below 1.0. It follows 0.9.13.
 USB audio interface or an Icom network-audio radio. It also adds a **rigctl
 (Hamlib)** CAT path and fixes the satellite direction-of-travel arrow on
 high-elliptical orbits.
+
+## 0.9.14 (5) — refinements
+
+- **IC-9700 network CAT fixes** — the 9700 (and IC-9100) now automatically enter
+  **satellite mode** and get their **MAIN/SUB band assignment** (`07 D2`) on connect,
+  which they require for full-duplex Doppler tuning to take effect. (The IC-821 path is
+  unchanged.) CAT diagnostics now log *why* the loop can't tune (no satellite /
+  transponder / Track Doppler off) and confirm the tuning commands being sent.
+- **FT4 holds the dial steady across each slot** — with a connected CAT radio, Doppler
+  updates are stepped only at slot boundaries (never mid-slot), so a coherent decode is
+  never smeared; the RX audio correction removes the residual within-slot drift.
+- **AOS/LOS readouts** on the recording/SSTV/FT4 cards now stay current mid-pass and when
+  switching satellites (kept through transient prediction hiccups instead of blanking).
+- **Favorite the active satellite** from the header star on Home and the feature screens.
 
 ## 0.9.14 (4) — refinements
 
