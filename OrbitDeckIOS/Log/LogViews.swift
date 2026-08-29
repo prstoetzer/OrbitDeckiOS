@@ -206,7 +206,7 @@ struct LogScreen: View {
             .buttonStyle(.borderless)
             VStack(alignment: .leading, spacing: 2) {
                 Text(r.sat.isEmpty ? "Recording" : r.sat).font(.subheadline.weight(.semibold))
-                Text("\(ODFormat.primaryClock(r.start)) · \(ODFormat.duration(r.duration))")
+                Text("\(ODFormat.utcStamp(r.start)) · \(ODFormat.duration(r.duration))")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Spacer()

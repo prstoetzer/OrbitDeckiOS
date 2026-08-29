@@ -13,6 +13,7 @@ struct HomeSSTVCard: View {
     @EnvironmentObject private var audio: AudioHub
     @EnvironmentObject private var decoder: SSTVDecoder
     @AppStorage(FeatureVisibility.sstvKey) private var visibility = FeatureVisibility.auto
+    @State private var showSetup = false
     let satellite: SatelliteRecord
 
     private var visible: Bool {
@@ -39,12 +40,6 @@ struct HomeSSTVCard: View {
                         .frame(maxHeight: 240).cornerRadius(6)
                 }
 
-                if decoder.isListening {
-                    AudioLevelControl(title: "Input level", gain: $decoder.inputGain, level: decoder.inputLevel)
-                    Text("SSTV is FM — level doesn't set the colors, but keep the meter out of the red and off the floor for a clean decode.")
-                        .font(.caption2).foregroundStyle(ODTheme.muted)
-                }
-
                 Picker("Mode", selection: Binding(
                     get: { decoder.manualMode?.name ?? "" },
                     set: { name in decoder.manualMode = SSTVModes.all.first { $0.name == name } }
@@ -54,7 +49,20 @@ struct HomeSSTVCard: View {
                 }
                 .disabled(decoder.isListening)
 
-                compensation
+                // Level meter + calibration tucked into a disclosure so the card stays
+                // uncluttered (mirrors the FT4 card).
+                DisclosureGroup("Setup & calibration", isExpanded: $showSetup) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if decoder.isListening {
+                            AudioLevelControl(title: "Input level", gain: $decoder.inputGain, level: decoder.inputLevel)
+                            Text("SSTV is FM — level doesn't set the colors, but keep the meter out of the red and off the floor for a clean decode.")
+                                .font(.caption2).foregroundStyle(ODTheme.muted)
+                        }
+                        compensation
+                    }
+                    .padding(.top, 4)
+                }
+                .font(.subheadline).tint(ODTheme.accent)
 
                 Text("Decodes SSTV live from your USB (or network) audio interface — the image builds as it receives. Saved images appear on the SSTV Images screen. Foreground only.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
@@ -200,7 +208,7 @@ struct SSTVGalleryScreen: View {
             }
             Text("\(s.mode.isEmpty ? "SSTV" : s.mode)\(s.sat.isEmpty ? "" : " · \(s.sat)")")
                 .font(.caption2.weight(.semibold)).lineLimit(1)
-            Text(ODFormat.primaryClock(s.date)).font(.caption2).foregroundStyle(ODTheme.muted)
+            Text(ODFormat.utcStamp(s.date)).font(.caption2).foregroundStyle(ODTheme.muted)
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(ODTheme.accent, lineWidth: isSel ? 2 : 0))
     }
