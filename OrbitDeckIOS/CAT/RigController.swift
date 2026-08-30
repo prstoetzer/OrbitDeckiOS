@@ -78,6 +78,10 @@ final class RigController: ObservableObject {
     private var lastTickBail = ""
     /// Throttle for per-tick frequency-send logging (diagnostics).
     private var lastFreqLogAt = Date.distantPast
+    /// Previous tick's commanded downlink dial + time, for the adaptive-deadband (D2)
+    /// Doppler-slew estimate. Reset in startLoop().
+    private var lastTickRxReal: Int64 = 0
+    private var lastTickTime = Date.distantPast
 
     private struct LiveLink {
         let slot: RigSlot
@@ -302,6 +306,7 @@ final class RigController: ObservableObject {
     private func startLoop() {
         timer?.cancel()
         lastSentRx = 0; lastSentTx = 0; lastEngageKey = ""; uplinkDeferTicks = 0
+        lastTickRxReal = 0; lastTickTime = .distantPast
         // A GCD timer on the main queue — reliable here, unlike a MainActor
         // `while { await Task.sleep }` loop, which can peg the main thread and
         // freeze the UI on this device. The overlap guard skips a tick if the
@@ -345,7 +350,7 @@ final class RigController: ObservableObject {
         bailLog("")   // clear: we can tune
         let observer = store.preferences.observer
         let isFM = tp.mode.uppercased().contains("FM")
-        let deadband = Int64(isFM ? config.tuning.fmDeadbandHz : config.tuning.linearDeadbandHz)
+        var deadband = Int64(isFM ? config.tuning.fmDeadbandHz : config.tuning.linearDeadbandHz)   // adapted near TCA (D2)
         let dlMode = RigMode.parse(tp.mode)
         let ulMode = uplinkMode(dlMode, invert: tp.invert, linear: tp.isLinear)
 
@@ -385,7 +390,15 @@ final class RigController: ObservableObject {
         // (leadMs + updateMs/2), not "now". Otherwise the dial always trails the true
         // Doppler by up to a half-interval — worst near TCA (high Doppler rate), where
         // it smears FT4 within a slot. Centering halves the peak tracking error for free.
-        let leadSec = (Double(config.tuning.leadMs) + Double(config.tuning.updateMs) * 0.5) / 1000.0
+        // D1 — TCA lead taper: a fixed forward lead over-predicts near TCA, where the
+        // range rate ≈ 0 but its slope (Doppler curvature) is steepest, so aiming ahead
+        // pushes the dial PAST the true value right at closest approach. Scale the lead by
+        // |range-rate|/0.35 km/s so it fades to ~0 at TCA and is full on the fast legs. A
+        // cheap probe at "now" gives the current range rate (SGP4 is fast).
+        let baseLeadSec = (Double(config.tuning.leadMs) + Double(config.tuning.updateMs) * 0.5) / 1000.0
+        let rrNow = (try? OrbitPredictor.look(sat, observer: observer, at: Date()))?.rangeRateKmS ?? 0
+        let leadTaper = min(1.0, abs(rrNow) / 0.35)
+        let leadSec = baseLeadSec * leadTaper
         let when = Date().addingTimeInterval(leadSec)
         guard let look = try? OrbitPredictor.look(sat, observer: observer, at: when) else { return }
         let offset = tp.isLinear ? Int64(config.tuning.passbandOffsetHz.rounded()) : 0
@@ -405,6 +418,22 @@ final class RigController: ObservableObject {
         downlinkDialHz = rxReal; uplinkDialHz = txReal
         let rxRig = rxReal - config.tuning.xvtrDownlinkHz
         let txRig = txReal - config.tuning.xvtrUplinkHz
+
+        // D2 — adaptive deadband: when the downlink Doppler is slewing fast (near TCA),
+        // shrink the deadband so the dial updates more often exactly when it matters;
+        // relax it back to the configured value away from TCA to spare the CI-V/BLE bus.
+        // Slew (Hz/s) = the per-tick change in the commanded downlink dial.
+        let nowTick = Date()
+        let dt = max(0.02, nowTick.timeIntervalSince(lastTickTime))
+        let slewHzPerSec = lastTickRxReal == 0 ? 0 : abs(Double(rxReal - lastTickRxReal)) / dt
+        lastTickRxReal = rxReal; lastTickTime = nowTick
+        // Ramp from the base deadband (slew ≤ 15 Hz/s) down to a floor (slew ≥ 35 Hz/s).
+        // The floor is base/2 but never below 25 Hz and never ABOVE the base (so the tight
+        // linear deadband is left alone; the coarse FM deadband is the one that benefits).
+        let baseDb = Double(deadband)
+        let floorDb = min(baseDb, max(25.0, baseDb / 2.0))
+        let ramp = min(1.0, max(0.0, (slewHzPerSec - 15.0) / 20.0))
+        deadband = Int64(baseDb - (baseDb - floorDb) * ramp)
 
         // Throttled diagnostics (every ~5 s): confirms the loop is driving and shows the
         // target dials, so a "connected but nothing moves" report is answerable.

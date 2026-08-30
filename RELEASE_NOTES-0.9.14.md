@@ -1,6 +1,6 @@
-# OrbitDeck iOS/iPadOS 0.9.14 (5) — logging, LoTW, SSTV, full-duplex FT4, rigctl
+# OrbitDeck iOS/iPadOS 0.9.14 (6) — logging, LoTW, SSTV, full-duplex FT4, rigctl
 
-Version **0.9.14 (5)**. This release remains below 1.0. It follows 0.9.13.
+Version **0.9.14 (6)**. This release remains below 1.0. It follows 0.9.13.
 
 ## Summary
 
@@ -10,6 +10,17 @@ Version **0.9.14 (5)**. This release remains below 1.0. It follows 0.9.13.
 USB audio interface or an Icom network-audio radio. It also adds a **rigctl
 (Hamlib)** CAT path and fixes the satellite direction-of-travel arrow on
 high-elliptical orbits.
+
+## 0.9.14 (6) — refinements
+
+- **CAT cross-audited against OscarWatch-Tracker + Hamlib.** FT-847 now enters satellite
+  mode at connect (0x4E) so its SAT RX/TX VFO tracking drives real receive/transmit;
+  the FT-736R gets true full-duplex via its split VFO (freq 0x2E / mode 0x27, full-duplex
+  0x0E — from Hamlib ft736.c). Receive-only radios can no longer be assigned the uplink.
+- **Doppler tuning is smarter near closest approach.** The predictive lead now tapers to
+  ~zero at TCA (where a fixed forward lead over-shoots), and the dial deadband tightens
+  when the Doppler is slewing fast so the frequency updates more often exactly when it
+  matters — while relaxing again on the slow legs to spare the CI-V/BLE bus.
 
 ## 0.9.14 (5) — refinements
 
