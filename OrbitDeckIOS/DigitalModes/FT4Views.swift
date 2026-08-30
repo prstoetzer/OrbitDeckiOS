@@ -427,14 +427,14 @@ struct HomeFT4Card: View {
             }
             FineSlider(value: $ft4.txAudioFreq, range: 300...2700, step: 10)
 
-            Toggle("Doppler-correct TX audio (experimental)", isOn: $ft4.audioDopplerTX)
+            Toggle("Doppler-correct TX audio", isOn: $ft4.audioDopplerTX)
                 .font(.caption)
-            Text("Chirps the transmitted audio to cancel uplink-Doppler drift so your signal stays put across the burst. Needs a configured transponder; validate on-air before relying on it.")
+            Text("On by default. Chirps the transmitted audio to cancel uplink-Doppler drift so your signal stays put across the burst. While FT4 runs the CAT dial is frozen for the whole slot, so this within-burst correction is what keeps you from smearing — turning it off makes others see you drift. Needs a configured transponder.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
 
-            Toggle("Doppler-correct RX audio (experimental)", isOn: $ft4.audioDopplerRX)
+            Toggle("Doppler-correct RX audio", isOn: $ft4.audioDopplerRX)
                 .font(.caption)
-            Text("Flattens the downlink-Doppler drift across each received slot before decoding — helps at high Doppler rate. While FT4 runs with a connected CAT radio, OrbitDeck holds the dial steady and only re-tunes at slot boundaries, so it never retunes mid-slot; this correction then removes the residual within-slot drift. Needs a configured transponder; validate on-air.")
+            Text("On by default. Flattens the downlink-Doppler drift across each received slot before decoding — helps at high Doppler rate. While FT4 runs with a connected CAT radio, OrbitDeck holds the dial steady and only re-tunes at slot boundaries, so this removes the residual within-slot drift without double-correcting. Needs a configured transponder.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
 
             if ft4.autoSequence {
@@ -460,6 +460,15 @@ struct HomeFT4Card: View {
             ft4.dopplerProvider = Self.makeDopplerProvider(satellite: satellite,
                                                            observer: store.preferences.observer,
                                                            transponder: transponder)
+            // Which sideband the uplink is keyed in decides the TX Doppler-comp sign: an
+            // inverting linear transponder flips the downlink sideband on the uplink (USB
+            // down → LSB up), and in LSB the audio→RF mapping inverts. Mirror the CAT
+            // engine's uplinkMode() so the pre-comp cancels drift instead of doubling it.
+            let dlMode = RigMode.parse(transponder?.mode ?? "USB")
+            let ulMode: RigMode = (transponder?.isLinear == true && transponder?.invert == true)
+                ? (dlMode == .usb ? .lsb : (dlMode == .lsb ? .usb : dlMode))
+                : dlMode
+            ft4.uplinkAudioInverted = (ulMode == .lsb)
             // Absolute downlink RF base for PSKReporter spots: the Doppler-corrected
             // downlink dial from CAT when connected (already includes the per-satellite
             // calibration). Without CAT we can't read the dial, so fall back to the

@@ -20,6 +20,14 @@ import Network
 /// FT4 slot period (seconds). File-scope so the nonisolated slot handler can use it.
 private let kFT4SlotSeconds = 7.5
 
+/// How far before each slot boundary the TX "pre-arm" fires: it steps the CAT dial and
+/// keys PTT in the dead-air tail of the previous slot (FT4's signal occupies only 5.04 s
+/// of the 7.5 s slot, so retuning ~0.5 s early lands after the signal), so the burst can
+/// start right at the boundary instead of after two serial CAT round-trips. This is also
+/// the maximum key-up "dead carrier" before the burst — kept short out of transponder
+/// courtesy while still covering typical BLE CAT latency.
+private let kFT4PreArmLead = 0.5
+
 enum FT4MsgKind: Sendable { case received, sent }
 
 struct FT4DecodedMessage: Identifiable, Sendable {
@@ -53,20 +61,28 @@ final class FT4Engine: ObservableObject {
     @Published var txOnEvenSlots = true
     @Published var txMessage = ""
     @Published var txAudioFreq = 1500.0
-    /// EXPERIMENTAL: pre-compensate the transmitted audio for the uplink Doppler drift
-    /// across the burst so the emitted RF stays steady (helps others decode you at high
-    /// Doppler rate). Off by default; needs on-air validation. Requires `dopplerProvider`.
-    @Published var audioDopplerTX = false
-    /// EXPERIMENTAL: de-Doppler the whole received slot in the audio domain before
-    /// decoding, using the ephemeris downlink-Doppler drift (common to every signal on
-    /// the transponder). Best when the radio's downlink is NOT being CAT-Doppler-tuned
-    /// (park RX and let OrbitDeck flatten the drift) — otherwise it double-corrects.
-    /// Off by default; needs on-air validation. Requires `dopplerProvider`.
-    @Published var audioDopplerRX = false { didSet { rxDeDopplerEnabled = audioDopplerRX } }
+    /// Pre-compensate the transmitted audio for the uplink Doppler drift across the burst
+    /// so the emitted RF stays steady in the transponder passband (others decode you at a
+    /// fixed spot instead of a smear). ON by default: while FT4 runs, `holdDoppler` freezes
+    /// the CAT dial for the whole slot, so the within-burst uplink drift MUST be removed in
+    /// the audio domain — without this the burst drifts ~tens of Hz and others report smear.
+    /// Requires `dopplerProvider` (a configured transponder). No-op when it's unavailable.
+    @Published var audioDopplerTX = true
+    /// De-Doppler the whole received slot in the audio domain before decoding, using the
+    /// ephemeris downlink-Doppler drift (common to every signal on the transponder). ON by
+    /// default: the slot-gated CAT loop holds the dial steady within each slot and only
+    /// re-tunes at boundaries, so this removes the residual within-slot drift (no double
+    /// correction). Requires `dopplerProvider`. No-op when it's unavailable.
+    @Published var audioDopplerRX = true { didSet { rxDeDopplerEnabled = audioDopplerRX } }
 
     /// Supplies instantaneous downlink/uplink Doppler SHIFT (Hz) at a given time, from
     /// the ephemeris. Set by the view at start(); used for the readout and TX pre-comp.
     var dopplerProvider: (@Sendable (Date) -> (dl: Double, ul: Double)?)?
+    /// True when the uplink is keyed in LSB (inverting linear transponders). In LSB the
+    /// audio→RF mapping is inverted (RF = dial − audio), so the TX Doppler pre-comp slope
+    /// must flip sign — otherwise it DOUBLES the drift on an inverting bird instead of
+    /// cancelling it. Set by the view from the transponder's inversion + downlink mode.
+    var uplinkAudioInverted = false
 
     /// Opt-in PSKReporter uploader (nil = disabled). Set by the view at start() when the
     /// operator has enabled reporting and has a callsign + grid.
@@ -115,6 +131,17 @@ final class FT4Engine: ObservableObject {
 
     private let slotQueue = DispatchQueue(label: "org.orbitdeck.ft4.slot")
     private nonisolated(unsafe) var slotTimer: DispatchSourceTimer?
+
+    // TX pre-arm: fires `kFT4PreArmLead` before each boundary. For an upcoming TX slot it
+    // steps the dial and keys PTT ahead of time (in the previous slot's dead-air tail) so
+    // the boundary handler can start the burst immediately (dT ≈ 0) rather than after the
+    // serial CAT round-trips. All arm state is main-actor-isolated (touched only from the
+    // pre-arm hop and the boundary's main-actor Task).
+    private nonisolated(unsafe) var preArmTimer: DispatchSourceTimer?
+    private var preArmTask: Task<Void, Never>?
+    private var pttArmed = false            // PTT pre-keyed for the upcoming TX slot
+    private var armedSlotIndex = -1         // starting-slot index we've armed for
+    private var dialSteppedForSlot = -1     // guard against double-stepping the dial
 
     // RX buffer for the current slot (filled on the audio thread).
     private nonisolated(unsafe) var rxBuffer: [Float] = []
@@ -179,13 +206,17 @@ final class FT4Engine: ObservableObject {
         }
         // Fresh waterfall state (safe: the analysis timer isn't running yet).
         waterMagRows.removeAll(keepingCapacity: true); waterFloor = 0
+        preArmTask = nil; pttArmed = false; armedSlotIndex = -1; dialSteppedForSlot = -1
         scheduleSlotTimer()
+        schedulePreArmTimer()
         scheduleAnalysisTimer()
     }
 
     func stop() {
         guard isRunning else { return }
         slotTimer?.cancel(); slotTimer = nil
+        preArmTimer?.cancel(); preArmTimer = nil
+        preArmTask?.cancel(); preArmTask = nil
         analysisTimer?.cancel(); analysisTimer = nil
         source?.stopPlayback()
         source?.stop()
@@ -196,7 +227,8 @@ final class FT4Engine: ObservableObject {
             rig.holdDoppler = false
             Task { await rig.stepDopplerNow() }
         }
-        if isTransmitting { Task { await rig?.setPTT(false) } }
+        if isTransmitting || pttArmed { Task { await rig?.setPTT(false) } }
+        pttArmed = false; armedSlotIndex = -1; dialSteppedForSlot = -1
         isTransmitting = false
         isRunning = false
         AudioActivity.end()
@@ -216,6 +248,47 @@ final class FT4Engine: ObservableObject {
         t.setEventHandler { [weak self] in self?.onSlotBoundary() }
         t.resume()
         slotTimer = t
+    }
+
+    /// Fires `kFT4PreArmLead` before each slot boundary so an upcoming TX slot can key up
+    /// early (see `preArmUpcomingSlot`).
+    private nonisolated func schedulePreArmTimer() {
+        let period = kFT4SlotSeconds
+        let now = Date().timeIntervalSince1970
+        var delay = (floor(now / period) + 1) * period - kFT4PreArmLead - now
+        while delay < 0 { delay += period }
+        let t = DispatchSource.makeTimerSource(queue: slotQueue)
+        t.schedule(deadline: .now() + delay, repeating: period)
+        t.setEventHandler { [weak self] in Task { @MainActor in self?.preArmUpcomingSlot() } }
+        t.resume()
+        preArmTimer = t
+    }
+
+    /// If the slot starting at the next boundary is ours to transmit, step the CAT dial and
+    /// key PTT now — during the dead-air tail of the current slot — so the burst can start
+    /// at the boundary with the RF already up and settled (dT ≈ 0). Only meaningful with a
+    /// slot-gated CAT radio (`holdDoppler`); without one the boundary path is already fast.
+    /// The boundary handler awaits `preArmTask` before transmitting, so no retune is ever in
+    /// flight while a burst is on the air.
+    private func preArmUpcomingSlot() {
+        guard isRunning, !isTransmitting, let rig, rig.connected, rig.holdDoppler else { return }
+        guard txEnabled, !txMessage.isEmpty else { return }
+        let period = kFT4SlotSeconds
+        let upcoming = Int((Date().timeIntervalSince1970 / period).rounded(.down)) + 1
+        guard (upcoming % 2 == 0) == txOnEvenSlots else { return }   // our TX slot?
+        guard armedSlotIndex != upcoming else { return }             // already armed
+        armedSlotIndex = upcoming
+        let keyPTT = pttOverCAT
+        preArmTask = Task { @MainActor in
+            if self.dialSteppedForSlot != upcoming {
+                await rig.stepDopplerNow()
+                self.dialSteppedForSlot = upcoming
+            }
+            if keyPTT {
+                await rig.setPTT(true)
+                self.pttArmed = true
+            }
+        }
     }
 
     // MARK: Spectrum + level metering
@@ -347,10 +420,17 @@ final class FT4Engine: ObservableObject {
         let startingSlot = endedSlotIndex + 1
 
         Task { @MainActor in
+            // Ensure any pre-arm (dial step + PTT) for this starting slot has settled, so a
+            // retune is never in flight once the burst goes on the air.
+            await self.preArmTask?.value
             // Slot-gated CAT Doppler: step the dial once now, at the boundary between the
             // slot that just ended and the one starting — the only moment we retune, so the
-            // radio holds one frequency through each RX/TX slot. Runs before TX begins.
-            if let rig = self.rig, rig.holdDoppler { await rig.stepDopplerNow() }
+            // radio holds one frequency through each RX/TX slot. Skip it if the pre-arm
+            // already stepped for this slot (a TX slot arms in the previous slot's tail).
+            if let rig = self.rig, rig.holdDoppler, self.dialSteppedForSlot != startingSlot {
+                self.dialSteppedForSlot = startingSlot
+                await rig.stepDopplerNow()
+            }
 
             for f in found {
                 self.decodes.append(FT4DecodedMessage(text: f.text, snr: f.snr, freqHz: f.freq, atSlot: endedSlotIndex))
@@ -394,9 +474,16 @@ final class FT4Engine: ObservableObject {
             // Auto-sequencer updates txMessage/txEnabled before the TX decision.
             if self.autoSequence { self.advance(found, endedSlot: endedSlotIndex) }
 
-            guard self.txEnabled, !self.txMessage.isEmpty else { return }
-            let ourSlot = (startingSlot % 2 == 0) == self.txOnEvenSlots
-            if ourSlot { self.beginTransmit() }
+            let armed = self.pttArmed
+            self.pttArmed = false
+            let wantTx = self.txEnabled && !self.txMessage.isEmpty
+                && ((startingSlot % 2 == 0) == self.txOnEvenSlots)
+            if wantTx {
+                self.beginTransmit(pttAlreadyKeyed: armed)
+            } else if armed {
+                // Pre-armed PTT but this slot won't transmit after all — release it.
+                await self.rig?.setPTT(false)
+            }
         }
     }
 
@@ -531,20 +618,30 @@ final class FT4Engine: ObservableObject {
 
     // MARK: Transmit
 
-    private func beginTransmit() {
+    private func beginTransmit(pttAlreadyKeyed: Bool = false) {
         guard let source, !isTransmitting else { return }
         guard let tones = FT4Engine.encodeTones(txMessage) else { errorText = "Could not encode \"\(txMessage)\"."; return }
-        // EXPERIMENTAL uplink-Doppler pre-compensation: sample the uplink Doppler at the
-        // start and end of the ~4.5 s burst and apply the negative of its drift to the
-        // audio so the emitted RF stays constant (a smooth chirp, not the staircase the
-        // slow CI-V dial would produce). Linear over a burst is a good approximation.
+        // The slot we're transmitting on (its UTC start anchors both the Doppler slope and
+        // the dT diagnostic below).
+        let txSlot = Int((Date().timeIntervalSince1970 / kFT4SlotSeconds).rounded())
+        let slotStart = Date(timeIntervalSince1970: Double(txSlot) * kFT4SlotSeconds)
+        // Uplink-Doppler pre-compensation: `holdDoppler` freezes the CAT dial for the whole
+        // slot, so we cancel the within-burst uplink drift in the audio domain — a smooth
+        // chirp that keeps the emitted RF fixed in the transponder passband. Sample the
+        // uplink Doppler at the slot START and one burst later for the drift rate (anchored
+        // to the slot start, matching the dial that was stepped at the boundary — not the
+        // late wall-clock, which would bias the burst by the launch latency). Linear over a
+        // ~5 s burst is a good approximation.
         var offset: ((Double) -> Double)?
         if audioDopplerTX, let provider = dopplerProvider {
-            let now = Date()
             let burst = Double(FT4_NN) * Double(FT4_SYMBOL_PERIOD)
-            if let d0 = provider(now), let d1 = provider(now.addingTimeInterval(burst)) {
+            if let d0 = provider(slotStart), let d1 = provider(slotStart.addingTimeInterval(burst)) {
                 let slope = (d1.ul - d0.ul) / burst      // Hz/s of uplink Doppler
-                offset = { elapsed in -slope * elapsed }  // cancel the drift
+                // USB uplink: RF = dial + audio, so cancel with -slope. LSB uplink
+                // (inverting linear transponders): RF = dial - audio, so the sign flips —
+                // otherwise the comp doubles the drift on the majority of linear birds.
+                let sign: Double = uplinkAudioInverted ? 1.0 : -1.0
+                offset = { elapsed in sign * slope * elapsed }  // cancel the drift
             }
         }
         let tx = FT4Engine.synthesize(tones: tones, rate: source.sampleRate, f0: txAudioFreq, offsetHz: offset)
@@ -553,7 +650,6 @@ final class FT4Engine: ObservableObject {
         status = "Transmitting: \(txMessage)"
         // Log our own transmission so it shows in the activity panel even when the
         // full-duplex receiver doesn't decode it back.
-        let txSlot = Int((Date().timeIntervalSince1970 / kFT4SlotSeconds).rounded())
         decodes.append(FT4DecodedMessage(text: txMessage, snr: 0, freqHz: txAudioFreq, atSlot: txSlot, kind: .sent))
         if decodes.count > 100 { decodes.removeFirst(decodes.count - 100) }
         qso?.addFT4Traffic([FT4TrafficEntry(date: Date(timeIntervalSince1970: Double(txSlot) * kFT4SlotSeconds),
@@ -572,7 +668,13 @@ final class FT4Engine: ObservableObject {
         // the UI clears even if the audio output node never pulls the buffer dry.
         let txDuration = Double(tx.count) / source.sampleRate + 0.4
         Task {
-            await rig?.setPTT(true)
+            // PTT is already up when the slot was pre-armed; otherwise key it now.
+            if !pttAlreadyKeyed { await rig?.setPTT(true) }
+            // Diagnostic: how late the burst starts relative to the slot boundary. WSJT-X
+            // stations see this as the decode's dT; aim for well under a few hundred ms.
+            let dT = Date().timeIntervalSince1970 - Double(txSlot) * kFT4SlotSeconds
+            ODLog.shared.log(String(format: "FT4 TX dT=%+.2fs%@ · \"%@\"", dT,
+                                    pttAlreadyKeyed ? " (pre-armed)" : "", txMessage), category: "ft4")
             do {
                 try source.startPlayback(pull: { [weak self] count in self?.pullTX(count) ?? [] })
             } catch { errorText = error.localizedDescription; await endTransmit(); return }
