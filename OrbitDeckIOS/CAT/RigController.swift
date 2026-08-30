@@ -224,6 +224,12 @@ final class RigController: ObservableObject {
                 await sendRaw(link, CATCodec.ft736FullDuplexOn); await pace(60)
                 ODLog.shared.log("FT-736R full-duplex ON", category: "cat")
             }
+            // FT-847: enter satellite mode so its SAT RX/TX VFO tracking drives actual
+            // receive/transmit (Hamlib ft847.c 0x4E). Idempotent if already in SAT.
+            if link.spec.family == .yaesuBinary, link.spec.fullDuplex, link.leg == .both {
+                await sendRaw(link, CATCodec.ft847SatModeOn); await pace(60)
+                ODLog.shared.log("FT-847 satellite mode ON", category: "cat")
+            }
             if link.spec.family == .kenwoodHandheld {
                 for f in CATCodec.khtSession() { await sendRaw(link, f); await pace(30) }
             }

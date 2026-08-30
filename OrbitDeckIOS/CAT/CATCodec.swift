@@ -187,6 +187,12 @@ enum CATCodec {
     }
 
     static let yaesuCATOn: [UInt8] = [0, 0, 0, 0, 0x00]
+    /// FT-847 satellite mode ON (0x4E) / OFF (0x8E) — Hamlib ft847.c. The sat RX/TX VFO
+    /// freq/mode commands (0x11/0x21, 0x17/0x27) can be set regardless of mode, but the
+    /// radio must be in SAT for that tracking to drive actual receive/transmit. Harmless
+    /// if the operator already pressed SAT.
+    static let ft847SatModeOn: [UInt8] = [0, 0, 0, 0, 0x4E]
+    static let ft847SatModeOff: [UInt8] = [0, 0, 0, 0, 0x8E]
     /// FT-736R full-duplex (split) ON (0x0E) / OFF (0x8E) — Hamlib ft736.c. Enabling it
     /// lets the RX (main) and uplink (split TX) VFOs be tuned independently for Doppler.
     static let ft736FullDuplexOn: [UInt8] = [0, 0, 0, 0, 0x0E]
