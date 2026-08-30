@@ -460,12 +460,19 @@ struct HomeFT4Card: View {
             ft4.dopplerProvider = Self.makeDopplerProvider(satellite: satellite,
                                                            observer: store.preferences.observer,
                                                            transponder: transponder)
-            // Absolute downlink RF base: the Doppler-corrected downlink dial from CAT when
-            // connected, else the transponder's nominal downlink center.
+            // Absolute downlink RF base for PSKReporter spots: the Doppler-corrected
+            // downlink dial from CAT when connected (already includes the per-satellite
+            // calibration). Without CAT we can't read the dial, so fall back to the
+            // transponder downlink center PLUS the operator's saved calibration for this
+            // bird — matching what the CAT path reports, so audio-only spots are
+            // calibration-aware too. (Doppler isn't added: on a fixed manual dial it's
+            // already carried in each decode's audio offset.)
+            let calHz = store.downlinkCalibrationHz(for: satellite.id, invert: transponder?.invert ?? false)
             let dlCenter = Double(transponder?.downlinkCenter ?? 0)
+            let calibratedCenter = dlCenter > 0 ? dlCenter + calHz : 0
             ft4.rxBaseHzProvider = { [weak rig] in
                 let dial = Double(rig?.downlinkDialHz ?? 0)
-                return dial > 0 ? dial : dlCenter
+                return dial > 0 ? dial : calibratedCenter
             }
             // Opt-in PSKReporter reporting (needs callsign + grid).
             if pskEnabled {
