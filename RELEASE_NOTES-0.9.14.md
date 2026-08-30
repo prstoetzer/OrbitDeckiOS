@@ -1,6 +1,6 @@
-# OrbitDeck iOS/iPadOS 0.9.14 (6) — logging, LoTW, SSTV, full-duplex FT4, rigctl
+# OrbitDeck iOS/iPadOS 0.9.14 (7) — logging, LoTW, SSTV, full-duplex FT4, rigctl
 
-Version **0.9.14 (6)**. This release remains below 1.0. It follows 0.9.13.
+Version **0.9.14 (7)**. This release remains below 1.0. It follows 0.9.13.
 
 ## Summary
 
@@ -11,8 +11,38 @@ USB audio interface or an Icom network-audio radio. It also adds a **rigctl
 (Hamlib)** CAT path and fixes the satellite direction-of-travel arrow on
 high-elliptical orbits.
 
+## 0.9.14 (7) — running station robustness
+
+- **Everything keeps running off the home screen and in the background.** CAT, the rotator,
+  pass recording, SSTV and FT4 keep running as you move around the app, and the audio modes
+  keep decoding/recording with the screen locked or the app backgrounded during a pass
+  (`UIBackgroundModes: audio`).
+- **Connections re-establish when you return.** If a link drops while the app is
+  backgrounded/suspended (iOS reclaims BLE + UDP sockets), CAT and the rotator reconnect on
+  foreground; audio decoders rebuild their capture graph after a phone-call/Siri
+  interruption.
+- **Icom network (RS-BA1) disconnect fixed.** A dropped control/serial socket after connect
+  used to be logged but never acted on — the app kept firing tune commands into dead sockets
+  and never freed the radio's session, so PTT went dead and the radio reported "a session is
+  already open" on reconnect. The transport now tears down cleanly (frees the session) and
+  the controller auto-reconnects (3 tries, 2&nbsp;s backoff). PTT is logged for diagnosis.
+- **Rotator auto-reconnect** — the rotator now reconnects after an unexpected link drop, like
+  CAT.
+- **Audio setup is saved** — input/output gain for recording, SSTV and FT4 persists across
+  launches; the SSTV input-level control is always available in Setup.
+
 ## 0.9.14 (6) — refinements
 
+- **FT4 audio Doppler compensation is now on by default — and correct on inverting
+  transponders.** Because the CAT dial is held steady across each slot, the within-slot
+  drift *must* be removed in the audio domain, so RX de-chirp and TX pre-chirp are now
+  default-on. The transmit correction is now **sideband-aware**: on an inverting linear
+  transponder the uplink is LSB, so the correction sign flips — the previous single-sign
+  correction doubled the drift on inverting birds (others reported smearing; you couldn't
+  decode your own signal). See the [Doppler deep dive](https://orbitdeckios.n8hm.radio/digitalmodes.html#doppler).
+- **FT4 transmits start on time.** A pre-arm steps the dial and keys PTT in the dead air
+  before your slot, so the burst starts at the slot boundary instead of up to ~0.8&nbsp;s
+  late (a bad `dT` that hurt others' decodes). A diagnostic logs each transmission's `dT`.
 - **CAT cross-audited against OscarWatch-Tracker + Hamlib.** FT-847 now enters satellite
   mode at connect (0x4E) so its SAT RX/TX VFO tracking drives real receive/transmit;
   the FT-736R gets true full-duplex via its split VFO (freq 0x2E / mode 0x27, full-duplex

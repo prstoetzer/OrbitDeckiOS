@@ -34,6 +34,7 @@
                 <a href="#recording">Pass recording</a>
                 <a href="#sstv">SSTV</a>
                 <a href="#ft4">Full-duplex FT4</a>
+                <a href="#doppler">Doppler compensation — deep dive</a>
                 <a href="#ptt">PTT for FT4</a>
                 <a href="#status">Maturity &amp; testing</a>
                 <a href="#privacy">Permissions &amp; privacy</a>
@@ -53,10 +54,13 @@
                 </ul>
 
                 <h3>Input &amp; output levels</h3>
-                <p>The SSTV and FT4 cards show a live <strong>input-level meter</strong> with a gain slider (and FT4 adds an <strong>output/TX</strong> level). Set the input so the meter rides in the green — too low buries the signal in noise, too high (red) clips and hurts decoding.</p>
+                <p>The SSTV and FT4 cards show a live <strong>input-level meter</strong> with a gain slider (and FT4 adds an <strong>output/TX</strong> level). Set the input so the meter rides in the green — too low buries the signal in noise, too high (red) clips and hurts decoding. The SSTV level control lives in <strong>Setup &amp; calibration</strong> and is available before you start decoding. Your gain settings are <strong>saved and restored</strong> across launches for each feature.</p>
+
+                <h3>Runs off the home screen and in the background</h3>
+                <p>Recording, SSTV, FT4, CAT and the rotator are all app-wide — they keep running when you navigate to other screens, and audio modes keep decoding/recording with the screen locked or the app backgrounded during a pass. If a connection drops while you're away (iOS reclaims Bluetooth and network sockets when an app is suspended), OrbitDeck re-establishes it when you return.</p>
 
                 <h2 id="recording">Pass recording</h2>
-                <p>The Home <strong>Pass recording</strong> card streams the received audio to a compressed <strong>AAC <code>.m4a</code></strong> file tagged with the satellite and UTC time — roughly a fifteenth the size of uncompressed WAV, so a full pass is a few MB. Recordings are listed on the <a href="logging.html#recordings">Log screen</a> with playback and share. Recording runs while OrbitDeck is in the foreground.</p>
+                <p>The Home <strong>Pass recording</strong> card streams the received audio to a compressed <strong>AAC <code>.m4a</code></strong> file tagged with the satellite and UTC time — roughly a fifteenth the size of uncompressed WAV, so a full pass is a few MB. Recordings are listed on the <a href="logging.html#recordings">Log screen</a> with playback and share.</p>
 
                 <h2 id="sstv">SSTV</h2>
                 <p>The Home <strong>SSTV</strong> card decodes the video subcarrier live, auto-detecting the mode from the VIS header (or you can force a mode). Supported modes include Robot 36/72, Scottie S1/S2/DX, Martin M1/M2, Wraase SC2-180 and the full PD series (PD 50/90/120/160/180/240/290). The decoder tracks the horizontal sync pulse on every line so the picture stays aligned across long modes.</p>
@@ -68,12 +72,52 @@
                     <strong>FT4 runs at nearly 100% duty cycle.</strong> On a shared linear transponder, reduce power out of respect for other operators — the app shows this reminder on the FT4 card.
                 </div>
 
-                <h3>Doppler correction (experimental)</h3>
-                <p>The downlink Doppler drift is common to every signal on a linear transponder, so OrbitDeck can flatten it in the audio domain. Two independent, experimental toggles (both off by default) live under the FT4 card's setup: <strong>Doppler-correct RX audio</strong> de-chirps each received 7.5-second slot before decoding, and <strong>Doppler-correct TX audio</strong> pre-compensates your transmitted burst so your emitted signal stays put. Both need a configured transponder; validate on-air before relying on them.</p>
-                <p>While FT4 is running with a connected CAT radio, OrbitDeck automatically <strong>holds the dial steady and only re-tunes at slot boundaries</strong> (between the receive and transmit slots) instead of chasing Doppler continuously — a mid-slot re-tune would break the coherent decode. The dial stays constant through each slot, and the RX audio correction removes the smooth within-slot drift.</p>
+                <h3>Doppler correction (on by default)</h3>
+                <p>The downlink Doppler drift is common to every signal on a linear transponder, so OrbitDeck flattens it in the audio domain. Two toggles under the FT4 card's setup — <strong>Doppler-correct RX audio</strong> and <strong>Doppler-correct TX audio</strong> — are <strong>on by default</strong>. RX de-chirps each received 7.5-second slot before decoding; TX pre-compensates your transmitted burst so the signal the satellite hears stays on one frequency. Both need a configured transponder.</p>
+                <p>While FT4 is running with a connected CAT radio, OrbitDeck <strong>holds the dial steady and only re-tunes at slot boundaries</strong> (between the receive and transmit slots) rather than chasing Doppler continuously — a mid-slot re-tune would shift the whole coherent burst and break the decode. Because the dial is frozen for the slot, the audio-domain correction isn't optional polish: it's what removes the within-slot drift. For exactly how this works — and why the transmit correction depends on your transponder's inversion — see the <a href="#doppler">deep dive</a> below.</p>
 
                 <h3 id="pskreporter">PSKReporter reception reports</h3>
                 <p>OrbitDeck can upload the FT4 stations it decodes to <a href="https://pskreporter.info" rel="noopener">PSKReporter</a> so they show on its public map. This is <strong>opt-in</strong> — turn on <strong>Settings &rarr; PSKReporter &rarr; Upload FT4 reception reports</strong> (your callsign and grid must be set). The reported frequency is the absolute downlink RF — the Doppler-corrected downlink dial from CAT when connected, otherwise the transponder's downlink center — plus the decode's audio offset. Nothing is sent unless you enable it; see the <a href="privacy.html">privacy policy</a>.</p>
+
+                <h2 id="doppler">Doppler compensation — deep dive</h2>
+                <p class="section-intro">How OrbitDeck keeps a coherent FT4 burst readable through the fast Doppler of a low-earth-orbit pass. This section is for the curious; you don't need any of it to operate.</p>
+
+                <h3>Why Doppler breaks FT4</h3>
+                <p>An FT4 transmission is a continuous-phase 4-GFSK burst: 105 symbols at a 0.048&nbsp;s symbol period (≈4.48–5&nbsp;s on the air), with the four tones spaced 20.83&nbsp;Hz apart. The decoder recovers each symbol by finding which tone bin holds the energy, coherently, across the whole burst. If the signal's frequency <em>slides</em> during the burst, each tone smears across bins and the decode collapses.</p>
+                <p>On a LEO pass the Doppler shift is largest and changing fastest near closest approach (TCA). On 70&nbsp;cm the total shift swings several kHz across a pass; the <em>rate</em> near TCA can be well over 10&nbsp;Hz/s. Over a single ≈5&nbsp;s burst that's tens of Hz of drift — several tone spacings. Left uncorrected, nobody decodes you (and you can't decode the bird).</p>
+
+                <h3>Two things move: downlink and uplink</h3>
+                <ul>
+                    <li><strong>Downlink</strong> — the frequency you <em>receive</em> drifts. On a linear transponder this drift is <strong>common to every signal</strong> in the passband: the whole band slides together.</li>
+                    <li><strong>Uplink</strong> — the frequency the <em>satellite receives from you</em> drifts, so without correction your signal walks across the transponder passband as others hear it.</li>
+                </ul>
+                <p>Both come straight from the ephemeris. With range rate <code>ṙ</code> (positive = receding) and carrier <code>f</code>, the shift is <code>−f·ṙ/c</code>. OrbitDeck samples this from the same SGP4 propagator that drives the rest of the app.</p>
+
+                <h3>Why not just tune the radio faster?</h3>
+                <p>Two reasons. A CAT dial over CI-V/BLE can't be nudged smoothly or often enough to track a 10&nbsp;Hz/s slope. More fundamentally, <strong>any re-tune during the burst shifts the entire coherent signal</strong> — the very thing the decoder can't tolerate. So OrbitDeck splits the labor:</p>
+                <ul>
+                    <li><strong>Coarse, between slots:</strong> the CAT dial is stepped once per 7.5&nbsp;s slot boundary and then <strong>held rock-steady</strong> through the slot. (This is the "hold the dial, step at boundaries" behavior above.)</li>
+                    <li><strong>Fine, within the slot:</strong> the smooth residual drift is removed in the <strong>audio domain</strong>, where it can be a continuous chirp instead of a staircase.</li>
+                </ul>
+                <p>Over one ≈5&nbsp;s burst the drift is very nearly linear, so a straight-line (constant-slope) correction is more than good enough. OrbitDeck samples the ephemeris shift at the slot start and one burst-length later and uses the slope between them.</p>
+
+                <h3>Receive: de-chirping the slot</h3>
+                <p>Because the downlink drift is common to the whole passband, one correction fixes every signal at once. OrbitDeck takes the recorded 7.5&nbsp;s slot, forms its analytic (complex) signal with a Hilbert transform, and multiplies by a complex exponential whose frequency ramps at the negative of the downlink slope — a de-chirp — then hands the flattened audio to the decoder. The effect is dramatic near TCA: toggling <strong>Doppler-correct RX audio</strong> off there visibly thins out the decodes.</p>
+
+                <h3>Transmit: pre-chirping the burst</h3>
+                <p>The goal on transmit is that the frequency the <em>satellite</em> receives holds still, so you sit on one spot in the passband for everyone listening. With the dial frozen for the slot, that has to be done in the transmitted audio. The sign of the correction depends on which sideband the uplink uses:</p>
+                <ul>
+                    <li><strong>USB uplink</strong> (non-inverting transponder): transmitted RF = dial <code>+</code> audio. To cancel a rising uplink Doppler the audio must fall — offset <code>= −slope · t</code>.</li>
+                    <li><strong>LSB uplink</strong> (inverting transponder): transmitted RF = dial <code>−</code> audio, so the audio→RF mapping flips and the sign of the correction flips with it — offset <code>= +slope · t</code>.</li>
+                </ul>
+                <div class="note">
+                    <strong>Most linear transponders invert</strong> (RS-44, the CAS/XW birds, AO-7 mode B, …), and OrbitDeck keys their uplink in LSB when the downlink is USB. Applying the USB sign on an inverting bird doesn't just fail to help — it <strong>doubles</strong> the drift, so everyone reports you smearing. OrbitDeck derives the uplink sideband from the transponder's inversion flag and flips the correction automatically; the slope is anchored to the slot start so it matches the dial that was stepped at the boundary.</div>
+
+                <h3>Starting the burst on time</h3>
+                <p>FT4's signal occupies only ≈5&nbsp;s of the 7.5&nbsp;s slot, leaving dead air at the end. OrbitDeck uses that tail: on a transmit slot it steps the dial and keys PTT <strong>before</strong> the boundary, so the burst begins right on time instead of after the CAT round-trips. Receiving stations see this as your <code>dT</code> — the offset of your signal from the slot start — and it should sit well under a few tenths of a second. (Earlier builds could start ≈0.8&nbsp;s late, which both hurt your decodes and ate into the decode window.)</p>
+
+                <h3>Putting it together</h3>
+                <p>On a connected CAT radio, one FT4 cycle looks like this: at the slot boundary the dial steps to the new coarse Doppler and then holds; on receive slots the recorded audio is de-chirped and decoded; on transmit slots PTT is pre-armed in the previous slot's dead air and the burst is synthesized with a sideband-correct pre-chirp so the satellite hears a steady tone. The dial handles the big, slow, between-slot motion; the audio handles the small, smooth, within-slot motion. Neither double-corrects the other, because the dial never moves inside a slot.</p>
 
                 <h2 id="ptt">PTT for FT4</h2>
                 <p>When a CAT radio is connected, OrbitDeck keys transmit over CAT automatically — CI-V, Yaesu, Kenwood, <a href="catcontrol.html">rigctld</a>, and Icom network. If your radio has no CAT PTT, use <strong>VOX</strong> or key manually: the FT4 card shows a prominent <em>TRANSMIT NOW</em> indicator at the start of each of your slots so you key in time.</p>
