@@ -146,10 +146,16 @@ enum CATCodec {
         switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .data: 0x05; case .fm: 0x06 }
     }
 
-    /// Frequency frame. `vfo` selects the FT-847 SAT VFO (0x11/0x21); mono radios pass `.plain`.
+    /// Frequency frame. `vfo` selects the SAT VFO. FT-847 uses 0x11/0x21; the FT-736R
+    /// uses main 0x01 (RX) / split 0x2E (TX) — see `ft736FullDuplexOn`. Mono rigs pass `.plain`.
     static func yaesuSetFreq(_ spec: RadioSpec, hz: UInt64, vfo: YaesuVFO) -> [UInt8] {
         if spec.family == .yaesuFT100 {
             return yaesuBCDLittleEndian(hz) + [0x0A]
+        }
+        if spec.family == .yaesuFT736 {
+            // FT-736R full duplex (Hamlib ft736.c): RX = main (0x01), uplink = split TX (0x2E).
+            let op: UInt8 = vfo == .satTX ? 0x2E : 0x01
+            return yaesuBCDBigEndian(hz) + [op]
         }
         let op: UInt8 = vfo == .satRX ? 0x11 : vfo == .satTX ? 0x21 : 0x01
         return yaesuBCDBigEndian(hz) + [op]
@@ -161,6 +167,10 @@ enum CATCodec {
             return [0, 0, 0, yaesuFT100ModeByte(mode), 0x0C]         // mode in data[3]
         case .yaesuVR5000:
             return [yaesuVR5000ModeByte(mode), 0, 0, 0, 0x07]
+        case .yaesuFT736:
+            // FT-736R: RX mode = 0x07, uplink (split TX) mode = 0x27 (Hamlib ft736.c).
+            let op: UInt8 = vfo == .satTX ? 0x27 : 0x07
+            return [yaesuBinModeByte(mode), 0, 0, 0, op]
         default:
             let op: UInt8 = vfo == .satRX ? 0x17 : vfo == .satTX ? 0x27 : 0x07
             return [yaesuBinModeByte(mode), 0, 0, 0, op]
@@ -177,6 +187,10 @@ enum CATCodec {
     }
 
     static let yaesuCATOn: [UInt8] = [0, 0, 0, 0, 0x00]
+    /// FT-736R full-duplex (split) ON (0x0E) / OFF (0x8E) — Hamlib ft736.c. Enabling it
+    /// lets the RX (main) and uplink (split TX) VFOs be tuned independently for Doppler.
+    static let ft736FullDuplexOn: [UInt8] = [0, 0, 0, 0, 0x0E]
+    static let ft736FullDuplexOff: [UInt8] = [0, 0, 0, 0, 0x8E]
 
     /// FT-847 CTCSS CAT codes, in the shared 39-tone order.
     static let ft847CTCSS: [UInt8] = [

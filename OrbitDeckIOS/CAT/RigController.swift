@@ -218,6 +218,12 @@ final class RigController: ObservableObject {
             if link.spec.family == .yaesuFT736 || (link.spec.family == .yaesuBinary && link.spec.fullDuplex) {
                 await sendRaw(link, CATCodec.yaesuCATOn); await pace(60)
             }
+            // FT-736R: enable full-duplex (split) so the RX (main) and uplink (split TX)
+            // VFOs tune independently — required for two-leg Doppler on the '736R.
+            if link.spec.family == .yaesuFT736, link.spec.fullDuplex, link.leg == .both {
+                await sendRaw(link, CATCodec.ft736FullDuplexOn); await pace(60)
+                ODLog.shared.log("FT-736R full-duplex ON", category: "cat")
+            }
             if link.spec.family == .kenwoodHandheld {
                 for f in CATCodec.khtSession() { await sendRaw(link, f); await pace(30) }
             }
@@ -493,7 +499,8 @@ final class RigController: ObservableObject {
     }
 
     private func yaesuVFO(_ link: LiveLink, leg: RigRole) -> YaesuVFO {
-        guard link.spec.fullDuplex, link.spec.family == .yaesuBinary else { return .plain }
+        // Full-duplex Yaesu (FT-847 SAT VFOs, FT-736R split RX/TX): map the leg to a VFO.
+        guard link.spec.fullDuplex, link.spec.family == .yaesuBinary || link.spec.family == .yaesuFT736 else { return .plain }
         return leg == .uplink ? .satTX : .satRX
     }
 
