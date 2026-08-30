@@ -53,18 +53,18 @@ struct HomeSSTVCard: View {
                 // uncluttered (mirrors the FT4 card).
                 DisclosureGroup("Setup & calibration", isExpanded: $showSetup) {
                     VStack(alignment: .leading, spacing: 8) {
-                        if decoder.isListening {
-                            AudioLevelControl(title: "Input level", gain: $decoder.inputGain, level: decoder.inputLevel)
-                            Text("SSTV is FM — level doesn't set the colors, but keep the meter out of the red and off the floor for a clean decode.")
-                                .font(.caption2).foregroundStyle(ODTheme.muted)
-                        }
+                        // Always available so the operator can set the level before decoding
+                        // (persisted across launches); the meter reads 0 until listening.
+                        AudioLevelControl(title: "Input level", gain: $decoder.inputGain, level: decoder.inputLevel)
+                        Text("SSTV is FM — level doesn't set the colors, but keep the meter out of the red and off the floor for a clean decode.")
+                            .font(.caption2).foregroundStyle(ODTheme.muted)
                         compensation
                     }
                     .padding(.top, 4)
                 }
                 .font(.subheadline).tint(ODTheme.accent)
 
-                Text("Decodes SSTV live from your USB (or network) audio interface — the image builds as it receives. Saved images appear on the SSTV Images screen. Foreground only.")
+                Text("Decodes SSTV live from your USB (or network) audio interface — the image builds as it receives. Saved images appear on the SSTV Images screen. Keeps decoding with the screen locked or the app backgrounded during a pass.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }

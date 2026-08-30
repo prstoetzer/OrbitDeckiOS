@@ -39,6 +39,21 @@ protocol AudioSource: AnyObject {
     func stopPlayback()
 }
 
+/// Persists audio-setup slider values (input/output gain) across launches so the
+/// operator doesn't re-adjust every session. Backs the `@Published` gains in FT4Engine,
+/// SSTVDecoder and PassRecorder — plain UserDefaults, since those are ObservableObjects
+/// (not SwiftUI Views, so `@AppStorage` doesn't apply).
+enum AudioGainStore {
+    /// Load a saved gain, or `fallback` when nothing is stored yet (0 is a valid muted
+    /// value, so we test for the key's presence rather than a zero reading).
+    static func load(_ key: String, _ fallback: Float = 1) -> Float {
+        UserDefaults.standard.object(forKey: key) == nil ? fallback : UserDefaults.standard.float(forKey: key)
+    }
+    static func save(_ key: String, _ value: Float) {
+        UserDefaults.standard.set(value, forKey: key)
+    }
+}
+
 enum AudioError: LocalizedError {
     case noDevice
     case sessionFailed(String)

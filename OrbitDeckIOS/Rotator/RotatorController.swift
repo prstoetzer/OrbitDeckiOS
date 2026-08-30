@@ -33,6 +33,8 @@ final class RotatorController: ObservableObject {
     private var lastSendAt: Date?
     private static let keepaliveSec = 2.0
     private var parked = false
+    private var wantConnection = false      // operator intent — false after a manual disconnect()
+    private var reconnecting = false
     private var az450PreCommit = false
     private var flipCachePassID: Date?
     private var flipCacheValue = false
@@ -58,8 +60,11 @@ final class RotatorController: ObservableObject {
     func connect() {
         guard !connecting, !connected else { return }
         guard config.isConfigured else { errorText = "Configure a rotator first."; return }
-        connecting = true; errorText = ""; statusText = "Connecting…"; persist()
+        connecting = true; wantConnection = true; errorText = ""; statusText = "Connecting…"; persist()
         let t = makeTransport(); transport = t
+        // Reconnect if the link drops unexpectedly (server hiccup, Wi-Fi blip); never on a
+        // caller-initiated disconnect.
+        t.onDisconnect = { [weak self] in Task { @MainActor in self?.handleDrop() } }
         Task {
             do {
                 try await t.connect()
@@ -77,6 +82,7 @@ final class RotatorController: ObservableObject {
 
     func disconnect() {
         timer?.cancel(); timer = nil
+        wantConnection = false
         let t = transport; transport = nil
         connected = false; statusText = "Not connected"
         let proto = config.proto, parkAz = Double(config.parkAz), parkEl = Double(config.parkEl)
@@ -86,6 +92,36 @@ final class RotatorController: ObservableObject {
                 await t.disconnect()
             }
         }
+    }
+
+    /// A live link drop after a good connect: stop the loop and reconnect after a short
+    /// backoff so pointing survives a brief server/Wi-Fi blip. Never fires on a
+    /// caller-initiated disconnect (which clears `wantConnection` first).
+    private func handleDrop() {
+        guard connected, wantConnection, !reconnecting else { return }
+        reconnecting = true
+        connected = false
+        timer?.cancel(); timer = nil
+        statusText = "Connection lost — reconnecting…"
+        ODLog.shared.log("rotator link dropped — reconnecting", category: "rotator")
+        let old = transport; transport = nil
+        Task {
+            if let old { await old.disconnect() }
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().asyncAfter(deadline: .now() + 2) { c.resume() }
+            }
+            reconnecting = false
+            guard wantConnection, !connected, !connecting else { return }
+            connect()
+        }
+    }
+
+    /// Foreground restore: reconnect if the operator had connected but the link died while
+    /// the app was backgrounded/suspended. Called from the scene-phase handler on `.active`.
+    func resumeIfNeeded() {
+        guard wantConnection, !connected, !connecting, !reconnecting else { return }
+        ODLog.shared.log("foreground: restoring dropped rotator connection", category: "rotator")
+        connect()
     }
 
     private func makeTransport() -> CATTransport {

@@ -29,6 +29,8 @@ final class USBAudioSource: AudioSource, @unchecked Sendable {
     private var pullHandler: ((Int) -> [Float])?
     private var sourceNode: AVAudioSourceNode?
     private var capturing = false
+    private var restarting = false
+    private var observers: [NSObjectProtocol] = []
 
     /// Optional error sink (set by the caller); invoked on the main queue.
     var onError: ((String) -> Void)?
@@ -40,6 +42,39 @@ final class USBAudioSource: AudioSource, @unchecked Sendable {
     init(targetRate: Double = 48_000) {
         self.targetRate = targetRate
         self.sampleRate = targetRate
+        // Recover the capture graph after the system tears it down — a phone call / Siri
+        // interruption (the common "left the app and came back" case) or a media-services
+        // reset. Route changes are deliberately NOT handled here: our own setCategory/
+        // setActive posts route-change notifications, so restarting on them would loop.
+        let nc = NotificationCenter.default
+        observers.append(nc.addObserver(forName: AVAudioSession.interruptionNotification,
+                                        object: nil, queue: nil) { [weak self] n in
+            guard let self,
+                  let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            self.q.async { self.restartCapture(reason: "interruption ended") }
+        })
+        observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
+                                        object: nil, queue: nil) { [weak self] _ in
+            self?.q.async { self?.restartCapture(reason: "media services reset") }
+        })
+    }
+
+    deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
+
+    /// Rebuild the capture/playback graph in place, keeping the same frame/pull handlers,
+    /// so decoders and the recorder resume transparently. Runs on `q`; the `restarting`
+    /// guard blocks re-entrancy from overlapping notifications.
+    private func restartCapture(reason: String) {
+        guard frameHandler != nil, !restarting else { return }
+        restarting = true
+        ODLog.shared.log("usb-audio: restarting capture (\(reason))", category: "audio")
+        if capturing { engine.inputNode.removeTap(onBus: 0); capturing = false }
+        if let node = sourceNode { engine.detach(node); sourceNode = nil }
+        engine.stop()
+        converter = nil
+        beginCapture()
+        restarting = false
     }
 
     var isAvailable: Bool {

@@ -10,5 +10,12 @@
     <string>OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone) to record passes and decode SSTV and FT4. Audio is used only while you record or decode.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
     <string>OrbitDeck can save decoded SSTV images to your photo library when you choose to export them.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <!-- Keep capturing/playing satellite audio (pass recording, SSTV, FT4) — and the
+             CAT/network link that rides alongside it — running while the screen is locked
+             or the app is backgrounded during a pass. -->
+        <string>audio</string>
+    </array>
 </dict>
 </plist>

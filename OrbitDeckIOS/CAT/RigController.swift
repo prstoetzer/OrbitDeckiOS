@@ -66,6 +66,11 @@ final class RigController: ObservableObject {
     private var links: [LiveLink] = []
     private var timer: DispatchSourceTimer?
     private var isTicking = false
+    // Auto-reconnect on an unexpected link drop (see handleLinkDropped).
+    private var reconnecting = false
+    private var reconnectAttempts = 0
+    private var lastConnectAt = Date.distantPast
+    private var wantConnection = false      // operator intent — false after a manual disconnect()
     private var lastSentRx: Int64 = 0
     private var lastSentTx: Int64 = 0
     /// One-tick uplink deferral after a downlink move (CardSat's driveUplinkDeferred):
@@ -116,7 +121,7 @@ final class RigController: ObservableObject {
         guard config.isConfigured, let slot0 = config.slots.first, let spec0 = slot0.spec else {
             errorText = "Configure a radio first."; return
         }
-        connecting = true; errorText = ""; statusText = "Connecting…"
+        connecting = true; wantConnection = true; errorText = ""; statusText = "Connecting…"
         persist()
 
         // Build the link list. Slot 0 is the primary radio; slot 1 (dual) is uplink.
@@ -135,6 +140,15 @@ final class RigController: ObservableObject {
             }
         }
         links = built
+        // Bring the whole station back if any link drops unexpectedly after connect (a
+        // brief Wi-Fi/BLE blip, the radio power-cycling, or the app being backgrounded and
+        // iOS reclaiming the sockets). transport.onDisconnect only fires on a live drop,
+        // never on our own disconnect().
+        for link in links {
+            link.transport.onDisconnect = { [weak self] in
+                Task { @MainActor in self?.handleLinkDropped() }
+            }
+        }
         // Seed per-radio status (both show "Connecting…" for a two-radio station).
         statuses = built.enumerated().map { i, link in
             RigLinkStatus(id: i, radioName: link.spec.name, transport: link.slot.transport,
@@ -170,6 +184,7 @@ final class RigController: ObservableObject {
             if statuses.allSatisfy({ $0.connected }) {
                 await engageOnce()
                 connected = true; connecting = false
+                lastConnectAt = Date()
                 statusText = "Connected."
                 ODLog.shared.log("all radios connected; Doppler loop started", category: "cat")
                 startLoop()
@@ -185,13 +200,60 @@ final class RigController: ObservableObject {
 
     func disconnect() {
         timer?.cancel(); timer = nil
+        // Clear `connected` BEFORE tearing the transports down: closing a socket can fire
+        // its onError/state handler, and handleLinkDropped() guards on `connected`, so this
+        // stops a caller-initiated disconnect from being mistaken for a live drop.
+        connected = false
+        wantConnection = false
+        reconnectAttempts = 0
         statuses.removeAll()
-        Task { await teardown(); connected = false; statusText = "Not connected." }
+        Task { await teardown(); statusText = "Not connected." }
     }
 
     private func teardown() async {
         for link in links { await link.transport.disconnect() }
         links.removeAll()
+    }
+
+    /// A transport reported an unexpected drop after a good connect. Stop the loop, tear
+    /// the station down cleanly, and reconnect — so a pass survives a brief Wi-Fi/BLE blip
+    /// or the app being backgrounded. Bounded (3 tries) so a radio that stays down doesn't
+    /// spin forever; a session that had been stable for a while resets the counter, so this
+    /// only gives up on genuine flapping.
+    private func handleLinkDropped() {
+        guard connected, !reconnecting else { return }
+        reconnecting = true
+        connected = false
+        timer?.cancel(); timer = nil
+        if Date().timeIntervalSince(lastConnectAt) > 30 { reconnectAttempts = 0 }
+        Task {
+            await teardown()
+            reconnecting = false
+            guard reconnectAttempts < 3 else {
+                statusText = "Connection lost."
+                errorText = "Lost the connection to the radio. Check its power/Wi-Fi/BLE and reconnect."
+                statuses.removeAll(); reconnectAttempts = 0
+                ODLog.shared.log("link drop: giving up after 3 reconnect attempts", category: "cat")
+                return
+            }
+            reconnectAttempts += 1
+            statusText = "Connection lost — reconnecting (\(reconnectAttempts)/3)…"
+            ODLog.shared.log("link drop: reconnect attempt \(reconnectAttempts)/3", category: "cat")
+            await pace(2000)
+            guard wantConnection else { return }   // operator disconnected during the backoff
+            connect()
+        }
+    }
+
+    /// Foreground restore: if the operator had connected but the link died while the app
+    /// was backgrounded/suspended (iOS reclaims BLE + UDP sockets), bring it back. Called
+    /// from the scene-phase handler on `.active`. No-op when already connected/connecting,
+    /// mid-reconnect, or the operator had deliberately disconnected.
+    func resumeIfNeeded() {
+        guard wantConnection, !connected, !connecting, !reconnecting else { return }
+        ODLog.shared.log("foreground: restoring dropped CAT connection", category: "cat")
+        reconnectAttempts = 0
+        connect()
     }
 
     private func makeTransport(_ slot: RigSlot, spec: RadioSpec, index: Int) -> CATTransport {
@@ -654,7 +716,11 @@ final class RigController: ObservableObject {
     /// Key/unkey the uplink radio over CAT, if supported. No-op otherwise (the
     /// operator uses VOX or manual PTT).
     func setPTT(_ on: Bool) async {
-        guard connected, let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else { return }
+        guard connected, let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else {
+            ODLog.shared.log("setPTT(\(on)) ignored — not connected or no keyable uplink link", category: "cat")
+            return
+        }
+        ODLog.shared.log("setPTT(\(on)) → \(link.spec.name) [\(link.spec.family)]", category: "cat")
         switch link.spec.family {
         case .civ: await sendRaw(link, CATCodec.civPTT(addr: civAddr(link), on: on))
         case .yaesuBinary, .yaesuFT736: await sendRaw(link, CATCodec.yaesuPTT(on: on))

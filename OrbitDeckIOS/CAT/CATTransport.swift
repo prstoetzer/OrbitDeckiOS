@@ -43,6 +43,11 @@ protocol CATTransport: AnyObject, Sendable {
     /// Return bytes received so far, waiting up to `maxWait` for the first byte.
     func readAvailable(maxWait: TimeInterval) async -> [UInt8]
     var isConnected: Bool { get }
+    /// Fired once when the link drops UNEXPECTEDLY after a successful connect — never on a
+    /// caller-initiated `disconnect()`. The transport cleans up its own sockets/session
+    /// first (so a reconnect doesn't collide with a zombie session), then calls this so
+    /// the owner (RigController) can stop the loop and reconnect.
+    var onDisconnect: (@Sendable () -> Void)? { get set }
 }
 
 /// BLE UART serial transport (CoreBluetooth). Thread-safety is hand-managed with
@@ -69,6 +74,8 @@ final class BLESerialTransport: NSObject, CATTransport, @unchecked Sendable {
     private var wantConnect = false
     private var connected = false
     private var scanning = false
+
+    var onDisconnect: (@Sendable () -> Void)?
 
     var isConnected: Bool { lock.lock(); defer { lock.unlock() }; return connected }
 
@@ -202,8 +209,14 @@ extension BLESerialTransport: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        lock.lock(); connected = false; lock.unlock()
-        finishConnect(.failure(error ?? CATError.notConnected))
+        lock.lock(); let wasConnected = connected; connected = false; lock.unlock()
+        if connectCont != nil {
+            finishConnect(.failure(error ?? CATError.notConnected))
+        } else if wasConnected, wantConnect {
+            // Live drop after a good connect (adapter out of range / powered off), not a
+            // caller-initiated disconnect (which clears wantConnect first).
+            onDisconnect?()
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {

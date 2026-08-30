@@ -71,6 +71,7 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     private var connectCont: CheckedContinuation<Void, Error>?
     private var connected = false
     private var reauthTimer: DispatchSourceTimer?
+    var onDisconnect: (@Sendable () -> Void)?
 
     private let lock = NSLock()
     private var rxCIV: [UInt8] = []
@@ -217,9 +218,22 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         s.onPacket = { [weak self] pkt in self?.handleControl(pkt) }
         s.onError = { [weak self] e in
             ODLog.shared.log("icom-net control socket error: \(e.localizedDescription)", category: "cat")
-            self?.finishConnect(.failure(e))
+            self?.handleSocketError(e)
         }
         s.start()
+    }
+
+    /// A socket error during the handshake fails the pending connect; one AFTER connect is
+    /// a live drop (radio powered off, Wi-Fi blip, app suspended and iOS killed the UDP
+    /// sockets). In that case tear down cleanly — `teardown()` sends the RS-BA1 disconnect
+    /// so the radio frees its session and a reconnect doesn't hit "a session is already
+    /// open" — then notify the owner exactly once.
+    private func handleSocketError(_ e: Error) {
+        if connectCont != nil { finishConnect(.failure(e)); return }
+        guard connected else { return }        // already torn down by the first socket's error
+        ODLog.shared.log("icom-net live drop — freeing session and signalling reconnect", category: "cat")
+        teardown()
+        onDisconnect?()
     }
 
     private func sendLogin() {
@@ -333,7 +347,7 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         }
         s.onError = { [weak self] e in
             ODLog.shared.log("icom-net serial socket error: \(e.localizedDescription)", category: "cat")
-            self?.finishConnect(.failure(e))
+            self?.handleSocketError(e)
         }
         s.start()
     }

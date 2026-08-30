@@ -188,6 +188,8 @@ private let navGroups: [NavGroup] = [
 struct RootView: View {
     @EnvironmentObject private var store: OrbitStore
     @EnvironmentObject private var notifications: NotificationRouter
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var rotator: RotatorController
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var autoLocation = LocationProvider()
@@ -288,6 +290,12 @@ struct RootView: View {
                     await store.refreshCatalogsIfNeeded()
                 }
                 updateLocationFollow()
+                // Re-establish any radio/rotator link that dropped while the app was
+                // backgrounded or suspended (iOS reclaims BLE + UDP sockets). No-op unless
+                // the operator had a connection up. Audio decoders recover on their own via
+                // the AVAudioSession interruption handler in USBAudioSource.
+                rig.resumeIfNeeded()
+                rotator.resumeIfNeeded()
             } else {
                 // Release the GPS while backgrounded; it resumes on foreground.
                 autoLocation.stopFollowing()

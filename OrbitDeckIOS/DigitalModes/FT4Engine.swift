@@ -52,9 +52,14 @@ final class FT4Engine: ObservableObject {
     @Published private(set) var waterfall: UIImage?    // scrolling spectrum waterfall
     @Published var errorText = ""
 
-    // Audio levels (linear multipliers) applied to the shared source.
-    @Published var inputGain: Float = 1 { didSet { source?.inputGain = inputGain } }
-    @Published var outputGain: Float = 1 { didSet { source?.outputGain = outputGain } }
+    // Audio levels (linear multipliers) applied to the shared source. Persisted so the
+    // operator's setup survives relaunch.
+    @Published var inputGain: Float = AudioGainStore.load("orbitdeck.ft4.inputGain") {
+        didSet { source?.inputGain = inputGain; AudioGainStore.save("orbitdeck.ft4.inputGain", inputGain) }
+    }
+    @Published var outputGain: Float = AudioGainStore.load("orbitdeck.ft4.outputGain") {
+        didSet { source?.outputGain = outputGain; AudioGainStore.save("orbitdeck.ft4.outputGain", outputGain) }
+    }
 
     // Operator-set TX state.
     @Published var txEnabled = false

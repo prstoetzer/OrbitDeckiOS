@@ -25,6 +25,8 @@ final class RotatorNetworkTransport: NSObject, CATTransport, @unchecked Sendable
     private var connectCont: CheckedContinuation<Void, Error>?
     private var connected = false
 
+    var onDisconnect: (@Sendable () -> Void)?
+
     var isConnected: Bool { lock.lock(); defer { lock.unlock() }; return connected }
 
     init(host: String, port: UInt16, udp: Bool, localPort: UInt16? = nil) {
@@ -62,6 +64,12 @@ final class RotatorNetworkTransport: NSObject, CATTransport, @unchecked Sendable
                         if let cc = self.connectCont { self.connectCont = nil; cc.resume() }
                     case .failed(let e), .waiting(let e):
                         if let cc = self.connectCont { self.connectCont = nil; cc.resume(throwing: CATError.network(e.localizedDescription)) }
+                        else {
+                            // Live drop after connect (not a caller-initiated disconnect,
+                            // which cancels the connection and nils it first).
+                            let wasConnected = self.lock.withLock { let w = self.connected; self.connected = false; return w }
+                            if wasConnected { self.onDisconnect?() }
+                        }
                     default: break
                     }
                 }

@@ -61,7 +61,9 @@ final class SSTVDecoder: ObservableObject {
     /// change the recovered colors directly, but it keeps a weak signal above the
     /// ADC/quantization noise floor (which *does* wash colors out). Receive-only —
     /// there is no transmit path, hence no output level.
-    @Published var inputGain: Float = 1 { didSet { source?.inputGain = inputGain } }
+    @Published var inputGain: Float = AudioGainStore.load("orbitdeck.sstv.inputGain") {
+        didSet { source?.inputGain = inputGain; AudioGainStore.save("orbitdeck.sstv.inputGain", inputGain) }
+    }
     /// Live input level (0…1) for the level meter.
     @Published private(set) var inputLevel: Float = 0
     private nonisolated(unsafe) var inPeak: Float = 0
