@@ -1,4 +1,4 @@
-# TestFlight — OrbitDeck 0.9.18 (8) · What to Test
+# TestFlight — OrbitDeck 0.9.14 (8) · What to Test
 
 This build fixes an IC-9700 satellite-mode bug, hardens the Icom network link, fixes a
 pass-recording failure, adds a data-mode option for FT4, and prevents audio-feature
