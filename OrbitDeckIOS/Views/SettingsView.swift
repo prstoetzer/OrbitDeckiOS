@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage(FeatureVisibility.recorderKey) private var featureRecorder = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.sstvKey) private var featureSSTV = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.ft4Key) private var featureFT4 = FeatureVisibility.auto
+    @AppStorage(FeatureVisibility.remoteAudioKey) private var featureRemoteAudio = FeatureVisibility.auto
     @AppStorage(PSKReporterSettings.enabledKey) private var pskReporterEnabled = false
     @AppStorage(FT4Settings.dataModeKey) private var ft4DataMode = true
     @AppStorage("orbitdeck.spacetrack.identity") private var spaceTrackIdentity = ""
@@ -196,6 +197,10 @@ struct SettingsView: View {
                 Picker(selection: $featureFT4) {
                     ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
                 } label: { Label("FT4", systemImage: "dot.radiowaves.left.and.right") }
+                .pickerStyle(.menu)
+                Picker(selection: $featureRemoteAudio) {
+                    ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
+                } label: { Label("Remote audio (voice)", systemImage: "mic.and.signal.meter") }
                 .pickerStyle(.menu)
                 Text("These Home cards normally appear only when a USB or network audio interface is connected. Set one to \u{201C}Always show\u{201D} to use it without an interface (it still prefers USB or network audio, falling back to the built-in microphone — hold the phone near your receiver), or \u{201C}Hidden\u{201D} to keep it off the Home screen even with an interface plugged in.")
                     .font(.caption).foregroundStyle(ODTheme.muted)

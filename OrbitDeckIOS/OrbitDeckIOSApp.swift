@@ -11,6 +11,7 @@ struct OrbitDeckIOSApp: App {
     @StateObject private var recorder = PassRecorder()
     @StateObject private var sstv = SSTVDecoder()
     @StateObject private var ft4 = FT4Engine()
+    @StateObject private var voice = RemoteVoiceController()
 
     var body: some Scene {
         WindowGroup {
@@ -24,6 +25,7 @@ struct OrbitDeckIOSApp: App {
                 .environmentObject(recorder)
                 .environmentObject(sstv)
                 .environmentObject(ft4)
+                .environmentObject(voice)
                 .preferredColorScheme(.dark)
                 .task {
                     notifications.activate()
@@ -34,6 +36,7 @@ struct OrbitDeckIOSApp: App {
                     recorder.attach(qsoLog)
                     sstv.attach(qsoLog)
                     ft4.attach(rig: rig, qso: qsoLog)
+                    voice.attach(rig: rig, hub: audio)
                     await store.bootstrap()
                 }
         }

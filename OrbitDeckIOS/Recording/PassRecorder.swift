@@ -46,12 +46,8 @@ final class PassRecorder: ObservableObject {
 
     func start(source: AudioSource, satellite: String) {
         guard !isRecording else { return }
-        // One input capture at a time until a shared hub lands (each feature opens its own
-        // audio engine). Recording can't yet coexist with FT4/SSTV — surface why.
-        guard AudioActivity.claimCapture("Recording") else {
-            errorText = "Audio is in use by \(AudioActivity.captureHolder ?? "another feature"). Stop it first."
-            return
-        }
+        // Recording shares the AudioHub capture, so it can run alongside a decoder or the
+        // monitor — no exclusive claim.
         errorText = ""
         self.source = source
         self.sat = satellite
@@ -69,7 +65,6 @@ final class PassRecorder: ObservableObject {
         } catch {
             errorText = error.localizedDescription
             file = nil; self.source = nil
-            AudioActivity.releaseCapture("Recording")
             return
         }
 
@@ -83,7 +78,6 @@ final class PassRecorder: ObservableObject {
         source?.stop()
         source = nil
         AudioActivity.end()
-        AudioActivity.releaseCapture("Recording")
         meterTimer?.cancel(); meterTimer = nil
         let duration = elapsed
         let sat = self.sat, filename = self.filename, start = startDate ?? Date()

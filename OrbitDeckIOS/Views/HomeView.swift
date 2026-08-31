@@ -58,6 +58,7 @@ struct HomeView: View {
                                        passbandOffsetHz: $passbandOffsetHz)
                     HomeRotatorCard(satellite: satellite)
                     HomeQuickLogCard(satellite: satellite)
+                    HomeRemoteAudioCard(satellite: satellite)
                     HomeRecordingCard(satellite: satellite)
                     HomeSSTVCard(satellite: satellite)
                     HomeFT4Card(satellite: satellite)

@@ -3,46 +3,54 @@ import AVFoundation
 import Combine
 
 // ===========================================================================
-//  AudioHub.swift — audio availability + source vending
+//  AudioHub.swift — shared audio capture hub + availability
 //
-//  Tracks whether an audio interface is present (a USB audio interface, or a
-//  configured+connected Icom network-audio radio) and vends the active
-//  `AudioSource`. `audioAvailable` is the gate for the FT4 / SSTV / pass-recording
-//  Home cards (they appear only when audio is present). Observes
-//  `AVAudioSession.routeChangeNotification` so plugging/unplugging updates live.
+//  Owns ONE capture (a USB interface or the Icom RS-BA1 network stream) and fans
+//  its mono Float frames to any number of subscribers, so pass recording, a decoder
+//  (FT4/SSTV), and the live monitor / remote-voice mode can share a single engine
+//  instead of each opening their own (which conflict on one AVAudioSession).
+//
+//  `makeSource()` returns an `AudioSubscription` that conforms to `AudioSource`, so
+//  the existing consumers keep calling start/stop/startPlayback/inputGain unchanged —
+//  the hub multiplexes behind that facade. The capture starts on the first subscriber
+//  and stops on the last. Exactly one subscriber may drive the transmit path at a time.
+//
+//  Also tracks whether an audio interface is present (`audioAvailable`, the gate for
+//  the audio Home cards) and observes route changes.
 // ===========================================================================
 
 /// Tracks whether any digital-audio operation (FT4 RX/TX, SSTV decode, pass
-/// recording) is active. When active, notification *alert sounds* are suppressed
-/// (see `NotificationRouter`): an alert beep would be transmitted over the air on
-/// FT4, or would corrupt an SSTV decode / recording. All callers are `@MainActor`,
-/// so the counter is only touched on the main thread.
+/// recording, remote voice) is active. When active, notification *alert sounds* are
+/// suppressed (see `NotificationRouter`): an alert beep would be transmitted over the
+/// air, or would corrupt a decode / recording. All callers are `@MainActor`.
 enum AudioActivity {
     private nonisolated(unsafe) static var count = 0
     static var isActive: Bool { count > 0 }
     static func begin() { count += 1 }
     static func end() { count = max(0, count - 1) }
 
-    // Exclusive input capture. FT4, SSTV and pass recording each open their OWN audio
-    // engine on the shared session, so only one may capture the input at a time (a shared
-    // capture hub — future work — will let recording coexist with a decoder). The holder's
-    // display name is surfaced so the blocked feature can explain why it won't start.
-    private nonisolated(unsafe) static var captureOwner: String?
-    static var captureHolder: String? { captureOwner }
-    /// Claim the capture for `who`; false (with `captureHolder` set) if another holds it.
-    static func claimCapture(_ who: String) -> Bool {
-        if let o = captureOwner, o != who { return false }
-        captureOwner = who; return true
+    // Exclusive "operating mode": FT4, SSTV and remote voice each either decode the
+    // input or transmit, so only one runs at a time. Pass recording and the live
+    // monitor are NOT exclusive — they share the hub's capture. The holder's display
+    // name is surfaced so a blocked mode can explain why it won't start.
+    private nonisolated(unsafe) static var modeOwner: String?
+    static var modeHolder: String? { modeOwner }
+    static func claimMode(_ who: String) -> Bool {
+        if let o = modeOwner, o != who { return false }
+        modeOwner = who; return true
     }
-    static func releaseCapture(_ who: String) {
-        if captureOwner == who { captureOwner = nil }
+    static func releaseMode(_ who: String) {
+        if modeOwner == who { modeOwner = nil }
     }
+    // Back-compat aliases (older call sites used "capture").
+    static func claimCapture(_ who: String) -> Bool { claimMode(who) }
+    static func releaseCapture(_ who: String) { releaseMode(who) }
+    static var captureHolder: String? { modeOwner }
 }
 
-/// Per-feature visibility for the audio-driven Home cards (pass recording, SSTV,
-/// FT4). `auto` shows the card only when an audio interface is present (the default);
-/// `always` shows it even without one (using the built-in mic); `off` hides it even
-/// when an interface is connected — e.g. a voice-only op who wants only the recorder.
+/// Per-feature visibility for the audio-driven Home cards. `auto` shows the card only
+/// when an audio interface is present (default); `always` shows it even without one
+/// (built-in mic); `off` hides it even with an interface.
 enum FeatureVisibility: String, CaseIterable, Identifiable {
     case auto, always, off
     var id: String { rawValue }
@@ -53,17 +61,17 @@ enum FeatureVisibility: String, CaseIterable, Identifiable {
         case .off: "Hidden"
         }
     }
-    /// UserDefaults keys (also read by the cards via @AppStorage).
     static let recorderKey = "feature.recorder"
     static let sstvKey = "feature.sstv"
     static let ft4Key = "feature.ft4"
+    static let remoteAudioKey = "feature.remoteaudio"
 }
 
 @MainActor
 final class AudioHub: ObservableObject {
     /// A USB audio interface is connected (input port present).
     @Published private(set) var usbConnected = false
-    /// An Icom network-audio radio is configured and connected (Phase 7).
+    /// An Icom network-audio radio is configured and connected.
     @Published private(set) var icomAudioReady = false
 
     /// The gate for the audio-feature Home cards.
@@ -72,6 +80,27 @@ final class AudioHub: ObservableObject {
     private weak var rig: RigController?
     private var cancellables = Set<AnyCancellable>()
 
+    // MARK: Shared capture
+    private var captureSource: AudioSource?
+    private var micFallbackWanted = false
+    private nonisolated(unsafe) var subscribers: [String: AudioSubscription] = [:]
+    private nonisolated(unsafe) let subLock = NSLock()
+    private nonisolated(unsafe) weak var txSub: AudioSubscription?
+    private var txOwner: String?
+
+    /// Shared capture input/output gain (one hardware capture → one gain), persisted.
+    var inputGain: Float = AudioGainStore.load("orbitdeck.capture.inputGain") {
+        didSet { captureSource?.inputGain = inputGain; AudioGainStore.save("orbitdeck.capture.inputGain", inputGain) }
+    }
+    var outputGain: Float = AudioGainStore.load("orbitdeck.capture.outputGain") {
+        didSet { captureSource?.outputGain = outputGain; AudioGainStore.save("orbitdeck.capture.outputGain", outputGain) }
+    }
+
+    /// Sample rate of the active capture (48 kHz USB, 16 kHz network).
+    var captureSampleRate: Double { captureSource?.sampleRate ?? 48_000 }
+    /// True while a capture is running (one or more subscribers).
+    var isCapturing: Bool { captureSource != nil }
+
     func attach(_ rig: RigController) {
         self.rig = rig
         NotificationCenter.default.addObserver(
@@ -79,17 +108,12 @@ final class AudioHub: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
-        // Recompute when the rig connects/disconnects (Icom network audio path).
         rig.$connected.receive(on: RunLoop.main).sink { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }.store(in: &cancellables)
         refresh()
     }
 
-    /// Recompute availability. Called on route changes and when rig state changes.
-    /// A USB audio interface may present as an input, an output (system audio is
-    /// routed to it), or an available input — check all three so a bidirectional
-    /// adapter is detected even when we're not recording.
     func refresh() {
         let s = AVAudioSession.sharedInstance()
         let route = s.currentRoute
@@ -97,19 +121,425 @@ final class AudioHub: ObservableObject {
         let outRoute = route.outputs.contains { $0.portType == .usbAudio }
         let inAvail = (s.availableInputs ?? []).contains { $0.portType == .usbAudio }
         usbConnected = inRoute || outRoute || inAvail
-        // Icom network audio is available when a configured radio uses the RS-BA1
-        // network transport and is connected (EXPERIMENTAL path).
         icomAudioReady = rig?.icomAudioTransport != nil
     }
 
-    /// The active audio source, preferring a USB interface, else Icom network audio.
-    /// With `allowMicFallback`, falls back to the built-in microphone when neither is
-    /// present (a feature was set to "Always show") — lets SSTV/recording work by
-    /// acoustically coupling the phone to a receiver's speaker.
+    /// A handle onto the shared capture, usable exactly like a standalone `AudioSource`.
+    /// The real capture is created on the first subscriber and torn down on the last.
     func makeSource(allowMicFallback: Bool = false) -> AudioSource? {
+        // Must have a real interface unless mic fallback is allowed.
+        guard usbConnected || (rig?.icomAudioTransport != nil) || allowMicFallback else { return nil }
+        if allowMicFallback { micFallbackWanted = true }
+        return AudioSubscription(hub: self, id: UUID().uuidString, allowMicFallback: allowMicFallback)
+    }
+
+    /// Build the actual capture device (USB preferred, else network, else built-in mic).
+    private func makeRawSource(allowMicFallback: Bool) -> AudioSource? {
         if usbConnected { return USBAudioSource() }
         if let t = rig?.icomAudioTransport { return IcomAudioSource(transport: t) }
         if allowMicFallback { return USBAudioSource() }   // default input = built-in mic
         return nil
+    }
+
+    // MARK: Subscriber plumbing (called by AudioSubscription — a Sendable reference, so no
+    // closures cross the actor boundary; the hub calls back into it on the audio thread).
+
+    func attachSubscriber(_ sub: AudioSubscription) throws {
+        if captureSource == nil {
+            guard let src = makeRawSource(allowMicFallback: sub.allowMicFallback || micFallbackWanted) else {
+                throw AudioError.noDevice
+            }
+            src.inputGain = inputGain
+            src.outputGain = outputGain
+            src.onError = { [weak self] m in Task { @MainActor in self?.reportError(m) } }
+            captureSource = src
+            do {
+                try src.start(onFrames: { [weak self] frames in self?.fanOut(frames) })
+            } catch {
+                captureSource = nil
+                throw error
+            }
+        }
+        subLock.lock(); subscribers[sub.id] = sub; subLock.unlock()
+    }
+
+    func detachSubscriber(_ sub: AudioSubscription) {
+        subLock.lock(); subscribers.removeValue(forKey: sub.id); let empty = subscribers.isEmpty; subLock.unlock()
+        if txOwner == sub.id { endTX(sub) }
+        if empty { teardownCapture() }
+    }
+
+    func beginTX(_ sub: AudioSubscription) throws {
+        guard captureSource != nil else { throw AudioError.notSupported }
+        guard txOwner == nil || txOwner == sub.id else { throw AudioError.notSupported }
+        txOwner = sub.id
+        txSub = sub
+        try captureSource?.startPlayback(pull: { [weak self] n in self?.txSub?.pullTX(n) ?? [] })
+    }
+
+    func endTX(_ sub: AudioSubscription) {
+        guard txOwner == sub.id else { return }
+        txOwner = nil; txSub = nil
+        captureSource?.stopPlayback()
+    }
+
+    func setInputGain(_ g: Float) { if g != inputGain { inputGain = g } }
+    func setOutputGain(_ g: Float) { if g != outputGain { outputGain = g } }
+
+    private func teardownCapture() {
+        txOwner = nil; txSub = nil
+        captureSource?.stopPlayback()
+        captureSource?.stop()
+        captureSource = nil
+        micFallbackWanted = false
+    }
+
+    private func reportError(_ m: String) {
+        subLock.lock(); let subs = Array(subscribers.values); subLock.unlock()
+        for s in subs { s.deliverError(m) }
+    }
+
+    /// Audio-thread fan-out to every subscriber. Handlers must be non-blocking (they hop
+    /// to their own queues). Also accumulates a peak for the shared level meter.
+    private nonisolated func fanOut(_ frames: [Float]) {
+        subLock.lock(); let subs = Array(subscribers.values); subLock.unlock()
+        for s in subs { s.deliver(frames) }
+        var peak: Float = 0
+        for s in frames { let a = abs(s); if a > peak { peak = a } }
+        levelLock.lock(); if peak > levelPeak { levelPeak = peak }; levelLock.unlock()
+    }
+
+    // MARK: Shared input-level meter (for the monitor/voice card)
+    @Published private(set) var inputLevel: Float = 0
+    private nonisolated(unsafe) var levelPeak: Float = 0
+    private nonisolated(unsafe) let levelLock = NSLock()
+    private var levelTimer: DispatchSourceTimer?
+
+    /// Start/stop a lightweight meter (used by the remote-audio card while it's on screen).
+    func startLevelMeter() {
+        guard levelTimer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + 0.1, repeating: 0.1)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            let p = self.levelLock.withLock { () -> Float in let v = self.levelPeak; self.levelPeak = 0; return v }
+            self.inputLevel = max(p, self.inputLevel * 0.75)
+        }
+        t.resume()
+        levelTimer = t
+    }
+    func stopLevelMeter() { levelTimer?.cancel(); levelTimer = nil; inputLevel = 0 }
+}
+
+/// A subscriber's handle onto the shared capture. Conforms to `AudioSource` so existing
+/// consumers (FT4, SSTV, recorder) use it exactly like a standalone source. It holds its
+/// own frame/pull closures; the hub stores a reference to it and calls back on the audio
+/// thread, so no non-Sendable closure crosses the actor boundary. All `AudioSource` methods
+/// are invoked from the main actor by the consumers.
+final class AudioSubscription: AudioSource, @unchecked Sendable {
+    private weak var hub: AudioHub?
+    let id: String
+    let allowMicFallback: Bool
+    private var started = false
+
+    private nonisolated(unsafe) var framesHandler: (([Float]) -> Void)?
+    private nonisolated(unsafe) var pullHandler: ((Int) -> [Float])?
+    private nonisolated(unsafe) var cachedRate: Double = 48_000
+
+    init(hub: AudioHub, id: String, allowMicFallback: Bool) {
+        self.hub = hub; self.id = id; self.allowMicFallback = allowMicFallback
+    }
+
+    /// Audio-thread callbacks from the hub.
+    nonisolated func deliver(_ frames: [Float]) { framesHandler?(frames) }
+    nonisolated func pullTX(_ n: Int) -> [Float] { pullHandler?(n) ?? [] }
+    nonisolated func deliverError(_ m: String) { onError?(m) }
+
+    // Gain proxies to the shared capture (one hardware gain).
+    var inputGain: Float = 1 { didSet { MainActor.assumeIsolated { hub?.setInputGain(inputGain) } } }
+    var outputGain: Float = 1 { didSet { MainActor.assumeIsolated { hub?.setOutputGain(outputGain) } } }
+    nonisolated(unsafe) var onError: ((String) -> Void)?
+    var sampleRate: Double { cachedRate }
+    var isAvailable: Bool { MainActor.assumeIsolated { hub?.audioAvailable ?? false } }
+
+    func start(onFrames: @escaping ([Float]) -> Void) throws {
+        framesHandler = onFrames
+        try MainActor.assumeIsolated {
+            try hub?.attachSubscriber(self)
+            cachedRate = hub?.captureSampleRate ?? 48_000
+        }
+        started = true
+    }
+    func stop() {
+        guard started else { return }
+        started = false
+        MainActor.assumeIsolated { hub?.detachSubscriber(self) }
+        framesHandler = nil; pullHandler = nil
+    }
+    func startPlayback(pull: @escaping (Int) -> [Float]) throws {
+        pullHandler = pull
+        try MainActor.assumeIsolated { try hub?.beginTX(self) }
+    }
+    func stopPlayback() {
+        MainActor.assumeIsolated { hub?.endTX(self) }
+        pullHandler = nil
+    }
+}
+
+// ===========================================================================
+//  PhoneAudioBridge — the phone's own mic + speaker for remote voice
+//
+//  A local AVAudioEngine (voice-chat mode, echo-cancelled) that plays the radio's
+//  received audio to the phone speaker/headset and captures the phone mic for
+//  transmit. It bridges the network radio audio (via an AudioHub subscription) to
+//  the operator: RX PCM in → speaker; mic in → RX-rate mono for TX. Ring-buffered so
+//  the network and hardware clocks don't have to line up. Engine work runs on a
+//  private queue, never the main thread.
+// ===========================================================================
+final class PhoneAudioBridge: @unchecked Sendable {
+    private let engine = AVAudioEngine()
+    private let q = DispatchQueue(label: "org.orbitdeck.voice")
+    private var rate: Double = 16_000
+    private var sourceNode: AVAudioSourceNode?
+    private var converter: AVAudioConverter?
+    private var monoFormat: AVAudioFormat?
+    private var running = false
+    private var capturing = false
+    var onError: ((String) -> Void)?
+
+    private let rxLock = NSLock(); private var rxBuf: [Float] = []
+    private let txLock = NSLock(); private var txBuf: [Float] = []
+    /// Live mic peak (0…1) for the TX meter.
+    private let peakLock = NSLock(); private var micPeak: Float = 0
+    var micPeakLevel: Float { peakLock.withLock { let v = micPeak; micPeak = 0; return v } }
+
+    /// Start the local engine (speaker output; mic tap added on demand). Requests mic
+    /// permission first, then configures the session and engine off the main thread.
+    func start(rate: Double) {
+        self.rate = rate
+        AVAudioApplication.requestRecordPermission { [weak self] granted in
+            guard let self else { return }
+            guard granted else { self.report("Microphone permission is required for remote voice."); return }
+            self.q.async { self.begin() }
+        }
+    }
+
+    private func begin() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+            try session.setActive(true)
+            guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
+                                           channels: 1, interleaved: false) else { report("Unsupported audio format."); return }
+            monoFormat = mono
+            let node = AVAudioSourceNode(format: mono) { [weak self] _, _, frameCount, ablPtr -> OSStatus in
+                let abl = UnsafeMutableAudioBufferListPointer(ablPtr)
+                let n = Int(frameCount)
+                let out = self?.drainRX(n) ?? []
+                for buffer in abl {
+                    guard let base = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                    for i in 0..<n { base[i] = i < out.count ? out[i] : 0 }
+                }
+                return noErr
+            }
+            sourceNode = node
+            engine.attach(node)
+            engine.connect(node, to: engine.mainMixerNode, format: mono)
+            engine.prepare()
+            try engine.start()
+            running = true
+        } catch {
+            report("Could not start remote voice audio: \(error.localizedDescription)")
+        }
+    }
+
+    func stop() {
+        q.async { [weak self] in
+            guard let self else { return }
+            if self.capturing { self.engine.inputNode.removeTap(onBus: 0); self.capturing = false }
+            if let node = self.sourceNode { self.engine.detach(node); self.sourceNode = nil }
+            self.engine.stop()
+            self.converter = nil; self.running = false
+            self.rxLock.withLock { self.rxBuf.removeAll() }
+            self.txLock.withLock { self.txBuf.removeAll() }
+            try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        }
+    }
+
+    /// Radio RX audio (mono Float at `rate`) → speaker ring buffer.
+    func enqueueRX(_ frames: [Float]) {
+        rxLock.lock()
+        rxBuf.append(contentsOf: frames)
+        // Cap latency: keep at most ~1 s buffered.
+        let cap = Int(rate)
+        if rxBuf.count > cap { rxBuf.removeFirst(rxBuf.count - cap) }
+        rxLock.unlock()
+    }
+
+    private func drainRX(_ n: Int) -> [Float] {
+        rxLock.lock(); defer { rxLock.unlock() }
+        guard !rxBuf.isEmpty else { return [] }
+        let take = min(n, rxBuf.count)
+        let out = Array(rxBuf[0..<take])
+        rxBuf.removeFirst(take)
+        return out
+    }
+
+    /// Begin capturing the phone mic into the TX ring (converted to mono at `rate`).
+    func startMic() {
+        q.async { [weak self] in
+            guard let self, self.running, !self.capturing, let mono = self.monoFormat else { return }
+            let input = self.engine.inputNode
+            input.removeTap(onBus: 0)
+            input.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, _ in
+                self?.handleMic(buffer, mono: mono)
+            }
+            self.capturing = true
+        }
+    }
+
+    func stopMic() {
+        q.async { [weak self] in
+            guard let self, self.capturing else { return }
+            self.engine.inputNode.removeTap(onBus: 0)
+            self.capturing = false
+            self.txLock.withLock { self.txBuf.removeAll() }
+        }
+    }
+
+    private func handleMic(_ buffer: AVAudioPCMBuffer, mono: AVAudioFormat) {
+        if converter == nil || converter?.inputFormat != buffer.format {
+            converter = AVAudioConverter(from: buffer.format, to: mono)
+        }
+        guard let converter else { return }
+        let ratio = mono.sampleRate / buffer.format.sampleRate
+        let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
+        guard let out = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: cap) else { return }
+        var consumed = false; var err: NSError?
+        converter.convert(to: out, error: &err) { _, status in
+            if consumed { status.pointee = .noDataNow; return nil }
+            consumed = true; status.pointee = .haveData; return buffer
+        }
+        guard err == nil, let ch = out.floatChannelData, out.frameLength > 0 else { return }
+        let n = Int(out.frameLength)
+        let samples = Array(UnsafeBufferPointer(start: ch[0], count: n))
+        var p: Float = 0; for s in samples { let a = abs(s); if a > p { p = a } }
+        peakLock.withLock { if p > micPeak { micPeak = p } }
+        txLock.lock()
+        txBuf.append(contentsOf: samples)
+        let capN = Int(rate)      // cap ~1 s
+        if txBuf.count > capN { txBuf.removeFirst(txBuf.count - capN) }
+        txLock.unlock()
+    }
+
+    /// TX pull: `n` mono samples of mic audio (padded with silence on underrun).
+    func drainTX(_ n: Int) -> [Float] {
+        txLock.lock(); defer { txLock.unlock() }
+        guard !txBuf.isEmpty else { return [] }
+        let take = min(n, txBuf.count)
+        let out = Array(txBuf[0..<take])
+        txBuf.removeFirst(take)
+        return out
+    }
+
+    private func report(_ m: String) { DispatchQueue.main.async { [weak self] in self?.onError?(m) } }
+}
+
+// ===========================================================================
+//  RemoteVoiceController — listen to the radio and talk (SSB voice) through the app
+//
+//  Network (RS-BA1) path only: the radio's audio streams to the phone speaker and the
+//  phone mic transmits to the radio, with PTT keyed over CAT. Listening shares the
+//  AudioHub capture (so pass recording can run alongside); it's mutually exclusive with
+//  FT4/SSTV. EXPERIMENTAL: the RS-BA1 audio path is not yet hardware-validated.
+// ===========================================================================
+@MainActor
+final class RemoteVoiceController: ObservableObject {
+    @Published private(set) var isListening = false
+    @Published private(set) var isTransmitting = false
+    @Published private(set) var micLevel: Float = 0
+    @Published var errorText = ""
+
+    private weak var rig: RigController?
+    private weak var hub: AudioHub?
+    private var sub: AudioSource?
+    private let bridge = PhoneAudioBridge()
+    private var meter: DispatchSourceTimer?
+
+    func attach(rig: RigController, hub: AudioHub) {
+        self.rig = rig; self.hub = hub
+        bridge.onError = { [weak self] m in Task { @MainActor in self?.errorText = m; self?.stopListen() } }
+    }
+
+    /// Remote voice is a network-radio feature (phone mic → radio, radio audio → phone).
+    var available: Bool { hub?.icomAudioReady ?? false }
+    var pttOverCAT: Bool { rig?.pttSupported ?? false }
+
+    func startListen() {
+        guard !isListening, let hub, available else { return }
+        guard AudioActivity.claimMode("Remote voice") else {
+            errorText = "Audio is in use by \(AudioActivity.modeHolder ?? "another feature"). Stop it first."; return
+        }
+        guard let s = hub.makeSource() else {
+            errorText = "No network audio available."; AudioActivity.releaseMode("Remote voice"); return
+        }
+        sub = s
+        errorText = ""
+        s.onError = { [weak self] m in Task { @MainActor in self?.errorText = m } }
+        bridge.start(rate: hub.captureSampleRate)
+        do {
+            try s.start(onFrames: { [weak self] f in self?.bridge.enqueueRX(f) })
+        } catch {
+            errorText = error.localizedDescription
+            bridge.stop(); sub = nil; AudioActivity.releaseMode("Remote voice"); return
+        }
+        isListening = true
+        AudioActivity.begin()
+        hub.startLevelMeter()
+        startMeter()
+    }
+
+    func stopListen() {
+        guard isListening else { return }
+        if isTransmitting { stopTX() }
+        sub?.stop(); sub = nil
+        bridge.stop()
+        hub?.stopLevelMeter()
+        meter?.cancel(); meter = nil; micLevel = 0
+        AudioActivity.end()
+        AudioActivity.releaseMode("Remote voice")
+        isListening = false
+    }
+
+    /// Push-to-talk down: mic → radio, key PTT.
+    func startTX() {
+        guard isListening, !isTransmitting, let s = sub else { return }
+        isTransmitting = true
+        bridge.startMic()
+        do { try s.startPlayback(pull: { [weak self] n in self?.bridge.drainTX(n) ?? [] }) }
+        catch { errorText = error.localizedDescription }
+        Task { await rig?.setPTT(true) }
+    }
+
+    /// Push-to-talk up: unkey, stop sending mic.
+    func stopTX() {
+        guard isTransmitting else { return }
+        isTransmitting = false
+        Task { await rig?.setPTT(false) }
+        sub?.stopPlayback()
+        bridge.stopMic()
+    }
+
+    private func startMeter() {
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + 0.1, repeating: 0.1)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            // Show the mic level while transmitting, else the received-audio level.
+            let p = self.isTransmitting ? self.bridge.micPeakLevel : (self.hub?.inputLevel ?? 0)
+            self.micLevel = max(p, self.micLevel * 0.75)
+        }
+        t.resume()
+        meter = t
     }
 }
