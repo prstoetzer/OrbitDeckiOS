@@ -71,6 +71,7 @@
                 <div class="note">
                     <strong>FT4 runs at nearly 100% duty cycle.</strong> On a shared linear transponder, reduce power out of respect for other operators — the app shows this reminder on the FT4 card.
                 </div>
+                <p><strong>IC-9700 owners:</strong> there's a step-by-step guide to working FT4 on the 9700 entirely over its network connection (CAT and audio, no PC or USB interface) — see <a href="ft4-ic9700-network.html">FT4 on the IC-9700 over the network</a>.</p>
 
                 <h3>Doppler correction (on by default)</h3>
                 <p>The downlink Doppler drift is common to every signal on a linear transponder, so OrbitDeck flattens it in the audio domain. Two toggles under the FT4 card's setup — <strong>Doppler-correct RX audio</strong> and <strong>Doppler-correct TX audio</strong> — are <strong>on by default</strong>. RX de-chirps each received 7.5-second slot before decoding; TX pre-compensates your transmitted burst so the signal the satellite hears stays on one frequency. Both need a configured transponder.</p>

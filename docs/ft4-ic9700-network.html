@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FT4 on the IC-9700 over the network — OrbitDeck for iOS</title>
+    <meta name="description" content="Step-by-step setup for working satellite FT4 on an Icom IC-9700 over its network connection with OrbitDeck for iOS — radio menu settings and OrbitDeck configuration.">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="site-header">
+        <nav class="nav">
+            <a class="brand" href="index.html"><span class="dot"></span>OrbitDeck</a>
+            <a class="navlink" href="index.html">Home</a>
+            <a class="navlink" href="documentation.html">Documentation</a>
+            <a class="navlink" href="tinybasic.html">Tiny BASIC</a>
+            <a class="navlink" href="catcontrol.html">Rig Control</a>
+            <a class="navlink" href="rotator.html">Rotator</a>
+            <a class="navlink" href="logging.html">Logging</a>
+            <a class="navlink" href="digitalmodes.html" aria-current="page">Digital Modes</a>
+            <a class="navlink" href="source.html">Source</a>
+            <a class="navlink" href="privacy.html">Privacy</a>
+        </nav>
+    </header>
+
+    <section class="container">
+        <p><a href="digitalmodes.html">&larr; Digital Modes</a></p>
+        <h1>FT4 on the IC-9700 over the network</h1>
+        <p class="section-intro">A complete walk-through for working satellite FT4 on an <strong>Icom IC-9700</strong> using OrbitDeck's network connection — no PC, no USB audio interface, no extra software. OrbitDeck drives the radio's CAT (Doppler) <em>and</em> carries the receive/transmit audio over Icom's RS-BA1 network stream, so the phone and the radio talk directly over your LAN.</p>
+
+        <div class="note">
+            <strong>Maturity:</strong> CAT (Doppler) over the IC-9700 network is validated. The RS-BA1 <strong>network-audio</strong> path (RX/TX audio over the LAN) is newer and still being validated on-air — if TX audio won't modulate, see <a href="#audio-check">Audio not going out</a>, and note that a <a href="digitalmodes.html#audio">USB audio interface</a> is the proven alternative.
+        </div>
+
+        <div class="doc">
+            <aside class="toc">
+                <h4>Contents</h4>
+                <a href="#need">What you need</a>
+                <a href="#radio">On the radio</a>
+                <a href="#network">Find the radio's IP</a>
+                <a href="#orbitdeck">In OrbitDeck</a>
+                <a href="#operate">Working a pass</a>
+                <a href="#trouble">Troubleshooting</a>
+            </aside>
+
+            <div class="doc-body">
+                <h2 id="need">What you need</h2>
+                <ul>
+                    <li>An <strong>IC-9700</strong> connected to your network by its rear <strong>Ethernet (LAN)</strong> jack.</li>
+                    <li>The IC-9700 on the <strong>same subnet</strong> as your iPhone/iPad's Wi-Fi (the router must route Wi-Fi and the wired LAN together, with no client isolation / "AP isolation").</li>
+                    <li>Your <strong>callsign and grid</strong> set in OrbitDeck (for transmit, logging and PSKReporter).</li>
+                    <li>A linear transponder configured for the satellite you'll work (e.g. RS-44).</li>
+                </ul>
+
+                <h2 id="radio">On the radio (IC-9700 menus)</h2>
+                <p>Set these once. Menu paths are for the IC-9700's <strong>MENU &rarr; SET</strong>.</p>
+
+                <h3>Network</h3>
+                <p><strong>SET &rarr; Network:</strong></p>
+                <ul>
+                    <li><strong>Network Control</strong> — <strong>ON</strong>. (The radio reboots its network function.)</li>
+                    <li><strong>Network User1</strong> — set an <strong>ID</strong> (username) and <strong>Password</strong>. You'll enter these in OrbitDeck.</li>
+                    <li><strong>Control Port (UDP)</strong> — leave the default <strong>50001</strong> unless you have a reason to change it.</li>
+                    <li>Note the radio's <strong>DHCP</strong>/IP settings; a fixed IP (or a DHCP reservation) is convenient so the address doesn't change.</li>
+                </ul>
+
+                <h3>CI-V</h3>
+                <p><strong>SET &rarr; Connectors &rarr; CI-V:</strong></p>
+                <ul>
+                    <li><strong>CI-V Transceive</strong> — <strong>ON</strong>.</li>
+                    <li>Leave the <strong>CI-V address</strong> at the 9700 default (<strong>A2</strong>); leave OrbitDeck's address override blank.</li>
+                </ul>
+
+                <h3>Audio routing for the data path</h3>
+                <p>OrbitDeck runs FT4 in the radio's <strong>data sub-mode</strong> (USB-D) so the audio uses the data path rather than the mic. Point that data path at the network:</p>
+                <p><strong>SET &rarr; Connectors &rarr; MOD Input &rarr; DATA MOD</strong> — set to <strong>LAN</strong>, so data-mode transmit audio comes from the network stream (OrbitDeck) instead of the mic/USB.</p>
+                <div class="note">If you prefer to leave the audio wiring alone and feed audio another way, you can turn <strong>Use data mode for FT4</strong> off in OrbitDeck (Settings &rarr; Audio features) — but then the radio transmits mic audio, which the network path doesn't supply, so LAN + data mode is the combination you want here.</div>
+
+                <h3>Satellite mode</h3>
+                <p>You do <strong>not</strong> need to pre-set satellite mode or the MAIN/SUB bands — when it connects, OrbitDeck commands the 9700 into <strong>satellite mode</strong> and assigns <strong>MAIN = downlink (RX)</strong> and <strong>SUB = uplink (TX)</strong> for you, then Doppler-tunes both. Just make sure only one program uses the radio's single network session at a time (close RS-BA1 Remote Utility / wfview).</p>
+
+                <h2 id="network">Find the radio's IP address</h2>
+                <p>On the radio: <strong>MENU &rarr; SET &rarr; Network</strong> shows the current IP address (or read it from your router's client list). You'll enter this in OrbitDeck. A DHCP reservation on your router keeps it from changing.</p>
+
+                <h2 id="orbitdeck">In OrbitDeck</h2>
+                <ol>
+                    <li><strong>Operator identity</strong> — Settings &rarr; Operator identity: enter your <strong>callsign</strong> and <strong>grid</strong>.</li>
+                    <li><strong>CAT / rig control</strong> — Settings &rarr; CAT / rig control:
+                        <ul>
+                            <li>Turn on <strong>Enable CAT control</strong>; choose <strong>one radio</strong> and pick <strong>IC-9700</strong>.</li>
+                            <li>Connection: <strong>Icom network</strong>. Enter the radio's <strong>IP</strong>, <strong>control port 50001</strong>, and the <strong>User1 ID/Password</strong> (stored in the iOS Keychain).</li>
+                            <li>Leave the <strong>CI-V address</strong> blank (uses A2). Keep <strong>Track Doppler</strong> on. <strong>Command satellite mode</strong> and <strong>assign MAIN/SUB bands</strong> apply automatically on the 9700.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Data mode</strong> — Settings &rarr; Audio features: leave <strong>Use data mode for FT4</strong> <strong>on</strong> (it sets USB-D so audio uses the LAN data path you configured above).</li>
+                    <li><strong>Pick the satellite &amp; transponder</strong> on Home, and make sure a <strong>linear transponder</strong> is selected (the FT4 downlink/uplink centres come from it).</li>
+                    <li><strong>Connect CAT</strong> — on the Home <strong>Rig control (CAT)</strong> card tap <strong>Connect</strong>. The dot turns green and the live dials appear. Because the radio now presents network audio, the <strong>FT4</strong> card appears on Home.</li>
+                </ol>
+                <div class="note">If the FT4 card doesn't appear, set <strong>FT4</strong> to <strong>Always</strong> in Settings &rarr; Audio features, or confirm the CAT card is connected (network audio is only offered while the radio's network session is up).</div>
+
+                <h2 id="operate">Working a pass</h2>
+                <ol>
+                    <li>Open the <strong>FT4</strong> card. You'll see the waterfall, the slot clock, and the Doppler readout.</li>
+                    <li>Set your <strong>TX audio frequency</strong> to a clear spot on the waterfall (the <strong>Clear spot</strong> button picks one).</li>
+                    <li>Check the <strong>input level</strong> meter rides in the green as signals come through; adjust input/output gain in the card's setup.</li>
+                    <li>Tap <strong>Call CQ</strong>, or tap a decoded station to answer it — the auto-sequencer runs the exchange and logs the QSO. PTT is keyed automatically over the network.</li>
+                </ol>
+                <p>OrbitDeck holds the dial steady within each 7.5-second slot and corrects the residual Doppler in the audio domain, so decodes stay clean through the fast Doppler near closest approach. For the why, see the <a href="digitalmodes.html#doppler">Doppler deep dive</a>. Remember FT4 is near-100% duty cycle — <strong>keep power modest</strong> out of respect for others on the transponder.</p>
+
+                <h2 id="trouble">Troubleshooting</h2>
+                <ul>
+                    <li><strong>Won't connect</strong> — confirm Network Control is ON and the User1 ID/Password match; the 9700 uses its <strong>wired Ethernet</strong> and must be on the same subnet as your Wi-Fi (no client isolation); and no other program holds the radio's single network session (power-cycle the radio if a previous session hung). OrbitDeck reports <em>where</em> the handshake stalled (no reply / login rejected / connection refused).</li>
+                    <li><strong>Connects, then drops</strong> — OrbitDeck now detects a silently dead network link and reconnects automatically; a brief Wi-Fi blip should recover on its own.</li>
+                    <li id="audio-check"><strong>Audio not going out (no decode of you)</strong> — confirm <strong>DATA MOD = LAN</strong> on the radio and <strong>Use data mode for FT4</strong> is on in OrbitDeck (so the radio is in USB-D and takes modulation from the network). Watch the FT4 <strong>TX level</strong> meter to confirm OrbitDeck is emitting audio. If network TX audio still won't modulate, use a <a href="digitalmodes.html#audio">USB audio interface</a> to the radio's data port as the proven path.</li>
+                    <li><strong>Downlink/uplink modes look swapped</strong> — the 9700's satellite layout is fixed <strong>MAIN = RX (downlink)</strong>, <strong>SUB = TX (uplink)</strong>; OrbitDeck sets the modes to match. On an inverting bird like RS-44 you should see the downlink in <strong>USB</strong> and the uplink in <strong>LSB</strong>.</li>
+                    <li><strong>Capture a log</strong> — Settings &rarr; Diagnostics &rarr; Diagnostic logs, reproduce the problem, then share the file. It records each connection stage, PTT, and the FT4 slot timing.</li>
+                </ul>
+
+                <p>See also: <a href="catcontrol.html">Rig Control (CAT)</a> and <a href="digitalmodes.html#ft4">Full-duplex FT4</a>.</p>
+            </div>
+        </div>
+    </section>
+
+    <footer class="site-footer">
+        <div class="container">
+            <span>&copy; 2026 Paul Stoetzer, N8HM</span>
+            <span>
+                <a href="index.html">Home</a> &nbsp;·&nbsp;
+                <a href="documentation.html">Documentation</a> &nbsp;·&nbsp;
+                <a href="https://www.amsat.org" rel="noopener">Support AMSAT</a>
+            </span>
+        </div>
+    </footer>
+</body>
+</html>
