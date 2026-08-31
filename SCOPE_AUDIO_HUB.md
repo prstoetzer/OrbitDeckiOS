@@ -107,7 +107,9 @@ keys to one `orbitdeck.capture.inputGain`.
   #5‑coexistence.)
 - **P1** — Live monitor on the **network** path only (safe output). (#4, partial)
 - **P2** — Reconnect re‑bind for network audio. (#1)
-- **P3** — USB‑path monitor with careful output routing. (#4, full) — behind on‑device testing.
+- **P3** — USB‑path monitor: **shelved.** On a bidirectional USB interface the monitor output
+  would feed back into the radio (the same interface FT4 TX uses), and forcing the built‑in
+  speaker would break FT4 TX routing. Not worth the risk; USB users monitor on the radio.
 - **P4** — Gain‑key migration + UI consolidation.
 
 ## 8. Test matrix

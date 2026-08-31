@@ -10,8 +10,8 @@ the network.
   recording can run at the same time as FT4 or SSTV**. FT4 and SSTV remain mutually
   exclusive (only one decoder at a time), with a clear message if you try to start a second.
 - **Remote audio (voice) — NEW.** On an Icom **network (RS-BA1)** radio, a new Home card
-  lets you **listen to the radio on the phone and hold-to-talk** for an SSB QSO, with PTT
-  keyed over CAT.
+  lets you **listen to the radio on the phone and hold-to-talk** for an SSB or FM voice QSO,
+  with PTT keyed over CAT.
 
 > Experimental: remote voice rides the RS-BA1 network-audio path, which isn't yet
 > hardware-validated. Feedback from real on-air use is exactly what's needed.
@@ -30,7 +30,7 @@ the network.
 - On the new **Remote audio (voice)** Home card, tap **Listen** — you should hear the
   radio's receive audio on the phone (**use earphones** to avoid feedback).
 - **Hold TRANSMIT** to talk: the button turns "ON AIR," PTT keys the radio, and your mic
-  audio is sent. Release to stop. Confirm you can complete an SSB QSO.
+  audio is sent. Release to stop. Confirm you can complete an SSB or FM voice QSO.
 - Confirm PTT keys/unkeys cleanly and never sticks on release or when you tap **Stop**.
 
 ### 3. Regression — FT4 / SSTV / recording still work solo
@@ -48,8 +48,11 @@ the network.
 Log categories: `cat` (connect/drop/reconnect, `setPTT`), `audio`, `ft4` (`FT4 TX dT=…`).
 
 ## Notes & limits
-- Remote voice is **network-path only** (a USB interface wires the radio's audio to the
-  phone, not the phone's mic to the radio). If both USB and a network radio are connected,
-  the shared capture prefers USB — use the network radio alone for remote voice.
-- A USB-interface live monitor (hearing USB audio on the phone speaker) is not included yet.
+- Remote voice is **network-path only.** iOS captures only one audio input at a time, and
+  with a USB interface that input is the radio's receive audio — so the phone mic isn't
+  available to transmit (FT4 works over USB because its TX audio is generated in software,
+  not from the mic). If both USB and a network radio are connected, the shared capture
+  prefers USB — use the network radio alone for remote voice.
+- A USB-interface live monitor (hearing USB audio on the phone speaker) is not included: on
+  a bidirectional interface that output would feed back into the radio.
 - Half-duplex single-radio FT4 is still planned (`SCOPE_HALFDUPLEX_FT4.md`).

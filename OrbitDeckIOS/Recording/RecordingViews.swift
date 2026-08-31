@@ -103,7 +103,7 @@ struct HomeRemoteAudioCard: View {
                     }
                 }
 
-                Text("Listen to the radio and hold TRANSMIT to talk — an SSB QSO through the phone over your Icom network (RS-BA1) radio. Use earphones to avoid feedback. Experimental: validate the network audio on your radio.")
+                Text("Listen to the radio and hold TRANSMIT to talk — an SSB or FM voice QSO through the phone over your Icom network (RS-BA1) radio. Network only: with a USB interface iOS can capture just one input at a time (the USB input is the radio's receive audio), so the phone mic isn't available to transmit. Use earphones to avoid feedback. Experimental: validate the network audio on your radio.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
