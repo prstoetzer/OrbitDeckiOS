@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage(FeatureVisibility.sstvKey) private var featureSSTV = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.ft4Key) private var featureFT4 = FeatureVisibility.auto
     @AppStorage(PSKReporterSettings.enabledKey) private var pskReporterEnabled = false
+    @AppStorage(FT4Settings.dataModeKey) private var ft4DataMode = true
     @AppStorage("orbitdeck.spacetrack.identity") private var spaceTrackIdentity = ""
     @State private var spaceTrackPassword = ""
     @State private var spaceTrackLoaded = false
@@ -197,6 +198,9 @@ struct SettingsView: View {
                 } label: { Label("FT4", systemImage: "dot.radiowaves.left.and.right") }
                 .pickerStyle(.menu)
                 Text("These Home cards normally appear only when a USB or network audio interface is connected. Set one to \u{201C}Always show\u{201D} to use it without an interface (it still prefers USB or network audio, falling back to the built-in microphone — hold the phone near your receiver), or \u{201C}Hidden\u{201D} to keep it off the Home screen even with an interface plugged in.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+                Toggle("Use data mode for FT4", isOn: $ft4DataMode)
+                Text("When FT4 starts on a data-mode-capable radio, OrbitDeck sets the DATA sub-mode so audio uses the rig's ACC/USB data port, and restores plain SSB when FT4 stops: CI-V USB-D/LSB-D (IC-9700/9100/705/905/7100/7000), Hamlib PKTUSB/PKTLSB via rigctld (any supported radio), and DIG on the Yaesu FT-817/818/857/897. Turn this off if you feed audio through the mic/headphone jack instead.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 

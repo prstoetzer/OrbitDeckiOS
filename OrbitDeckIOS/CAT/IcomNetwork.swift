@@ -220,7 +220,20 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
             ODLog.shared.log("icom-net control socket error: \(e.localizedDescription)", category: "cat")
             self?.handleSocketError(e)
         }
+        // The control stream is our liveness signal — the radio pings it periodically, so a
+        // watchdog timeout here means the radio is gone even when the socket reports no error.
+        s.onStale = { [weak self] in self?.handleStale() }
         s.start()
+    }
+
+    /// Watchdog fired on the control stream: the link is silently dead. Same recovery as a
+    /// socket error — tear down cleanly (free the radio's session) and signal the owner to
+    /// reconnect. Runs on the network queue; guarded so the two error paths act once.
+    private func handleStale() {
+        guard connected else { return }
+        ODLog.shared.log("icom-net live drop (watchdog) — freeing session and signalling reconnect", category: "cat")
+        teardown()
+        onDisconnect?()
     }
 
     /// A socket error during the handshake fails the pending connect; one AFTER connect is
@@ -398,6 +411,15 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     }
 }
 
+/// RS-BA1 keepalive/watchdog timing, from wfview (packettypes.h). The keepalive timer runs
+/// at 100 ms (IDLE_PERIOD); we ping every 5th tick → 500 ms (PING_PERIOD) and check the
+/// watchdog every 5th tick → 500 ms (WATCHDOG_PERIOD). The link is declared dead after this
+/// many seconds with no inbound datagram. wfview uses 2 s on the constant-traffic audio/CIV
+/// streams; we watch the CONTROL stream (the radio pings it every ~1–2 s) and use a more
+/// forgiving 5 s so a brief Wi-Fi hiccup doesn't trip a needless reconnect.
+private let kRSStaleSeconds: TimeInterval = 5.0
+private let kRSPingEveryTicks = 5
+
 // MARK: - RSStream: one RS-BA1 UDP stream (control or serial)
 
 /// A single RS-BA1 UDP stream. All access is serialized on the shared queue, so
@@ -419,14 +441,23 @@ final class RSStream: @unchecked Sendable {
     private var lastTrackedSend = Date()
 
     private var keepalive: DispatchSourceTimer?
+    private var keepaliveTick = 0
     private var bootstrapTimer: DispatchSourceTimer?
     private var bootstrapStage = 0
+
+    // Liveness watchdog (mirrors wfview's per-stream lastReceived + WATCHDOG_PERIOD timer).
+    private var lastReceived = Date()
+    private var watchdogTimer: DispatchSourceTimer?
+    private var staleFired = false
 
     var onReady: (() -> Void)?
     var onBootstrapped: (() -> Void)?
     var onPacket: (([UInt8]) -> Void)?
     var onCIV: (([UInt8]) -> Void)?
     var onError: ((Error) -> Void)?
+    /// Fired once when no datagram has arrived for `kRSStaleSeconds` — a silently dead link
+    /// (Wi-Fi dropped, radio powered off) that the UDP socket won't report as an error.
+    var onStale: (() -> Void)?
 
     init(host: String, port: UInt16, queue: DispatchQueue) {
         self.host = host; self.port = port; self.queue = queue
@@ -450,6 +481,7 @@ final class RSStream: @unchecked Sendable {
 
     func close() {
         keepalive?.cancel(); keepalive = nil
+        watchdogTimer?.cancel(); watchdogTimer = nil
         bootstrapTimer?.cancel(); bootstrapTimer = nil
         // Best-effort disconnect (pkt5 ×2).
         let p = header(len: 16, type: 0x0005, seq: 0)
@@ -460,7 +492,7 @@ final class RSStream: @unchecked Sendable {
     private func receiveLoop() {
         conn?.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
-            if let data, !data.isEmpty { self.handle([UInt8](data)) }
+            if let data, !data.isEmpty { self.lastReceived = Date(); self.handle([UInt8](data)) }
             if error == nil { self.receiveLoop() }
         }
     }
@@ -549,11 +581,15 @@ final class RSStream: @unchecked Sendable {
         onOpen()
     }
 
-    /// Send a TX audio datagram (EXPERIMENTAL). Layout: [0:2] total length (LE),
-    /// [6:8] tracked seq (LE), [8:12] localSID / [12:16] remoteSID (BE), [16]=0x80,
-    /// [18:20] audio seq (BE), [22:24] sample count (BE), [24:] 16-bit LE PCM.
+    /// Send a TX audio datagram, tracked (retransmittable). Wire layout is wfview's
+    /// `audio_packet` (packettypes.h): [0:4] len (LE, 24+payload), [6:8] tracked seq (LE),
+    /// [8:12] localSID / [12:16] remoteSID, [16:18] ident 0x0080 (LE ⇒ byte 16 = 0x80),
+    /// [18:20] audio sendseq (BE), [20:22] unused, [22:24] datalen (BE), [24:] 16-bit LE PCM.
+    /// `datalen` is the payload BYTE count — NOT the sample count (the earlier clean-room
+    /// version sent samples, i.e. half, so the radio misparsed every packet).
     func sendAudio(_ pcm: [Int16]) {
-        let total = 24 + pcm.count * 2
+        let byteLen = pcm.count * 2
+        let total = 24 + byteLen
         var p = [UInt8](repeating: 0, count: total)
         p[0] = UInt8(total & 0xFF); p[1] = UInt8((total >> 8) & 0xFF)
         let seq = nextTracked(); p[6] = UInt8(seq & 0xFF); p[7] = UInt8((seq >> 8) & 0xFF)
@@ -561,7 +597,7 @@ final class RSStream: @unchecked Sendable {
         p[16] = 0x80
         _audioSeq &+= 1
         p[18] = UInt8((_audioSeq >> 8) & 0xFF); p[19] = UInt8(_audioSeq & 0xFF)
-        p[22] = UInt8((pcm.count >> 8) & 0xFF); p[23] = UInt8(pcm.count & 0xFF)
+        p[22] = UInt8((byteLen >> 8) & 0xFF); p[23] = UInt8(byteLen & 0xFF)
         var idx = 24
         for s in pcm { let u = UInt16(bitPattern: s); p[idx] = UInt8(u & 0xFF); p[idx + 1] = UInt8((u >> 8) & 0xFF); idx += 2 }
         store(p, seq: seq); rawSend(p)
@@ -599,17 +635,32 @@ final class RSStream: @unchecked Sendable {
     }
 
     private func startKeepalive() {
+        // Fresh liveness baseline as the link comes up, so the watchdog doesn't count the
+        // handshake gap against us.
+        lastReceived = Date(); staleFired = false; keepaliveTick = 0
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 0.1, repeating: 0.1)
         t.setEventHandler { [weak self] in
             guard let self else { return }
-            // idle pkt0 (backs off to 1 s after quiet), plus a ping
+            self.keepaliveTick += 1
+            // idle pkt0 (backs off to 1 s after quiet)
             let quiet = Date().timeIntervalSince(self.lastTrackedSend) > 1.0
             if !quiet || Int(Date().timeIntervalSinceReferenceDate * 10) % 10 == 0 {
-                var idle = self.header(len: 16, type: 0x0000, seq: self.nextTracked())
-                self.rawSend(idle); _ = idle
+                let idle = self.header(len: 16, type: 0x0000, seq: self.nextTracked())
+                self.rawSend(idle)
             }
-            self.sendPing()
+            // Ping every 500 ms (PING_PERIOD), not every tick — matches wfview and spares
+            // the link.
+            if self.keepaliveTick % kRSPingEveryTicks == 0 { self.sendPing() }
+            // Watchdog: same cadence. If the radio has gone silent past the stale window,
+            // the socket may never error (Wi-Fi dropped / radio powered off), so declare it
+            // dead ourselves — once — and let the owner tear down and reconnect.
+            if self.keepaliveTick % kRSPingEveryTicks == 0,
+               !self.staleFired, Date().timeIntervalSince(self.lastReceived) > kRSStaleSeconds {
+                self.staleFired = true
+                ODLog.shared.log("icom-net watchdog: no data for \(Int(kRSStaleSeconds))s — link is stale", category: "cat")
+                self.onStale?()
+            }
         }
         t.resume()
         keepalive = t

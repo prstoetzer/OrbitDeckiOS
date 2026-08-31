@@ -52,6 +52,13 @@ enum CATCodec {
         return civFrame(addr: addr, payload: [0x06, civModeByte(mode)])
     }
 
+    /// Icom data-mode set (CI-V 1A 06): turns DATA on/off for the selected VFO so, with an
+    /// SSB base mode, USB→USB-D / LSB→LSB-D and the ACC/USB data port carries the audio.
+    /// `[datamode, filter]`: datamode 0x01 = DATA1 (on) / 0x00 = off; filter 0x01.
+    static func civDataMode(_ spec: RadioSpec, addr: UInt8, on: Bool) -> [UInt8] {
+        civFrame(addr: addr, payload: [0x1A, 0x06, on ? 0x01 : 0x00, on ? 0x01 : 0x00])
+    }
+
     /// MAIN/SUB band-access select (full-duplex Icom only); nil if not applicable.
     static func civSelect(_ spec: RadioSpec, addr: UInt8, sub: Bool) -> [UInt8]? {
         let sel = sub ? spec.selSub : spec.selMain
@@ -161,7 +168,7 @@ enum CATCodec {
         return yaesuBCDBigEndian(hz) + [op]
     }
 
-    static func yaesuSetMode(_ spec: RadioSpec, mode: RigMode, vfo: YaesuVFO) -> [UInt8] {
+    static func yaesuSetMode(_ spec: RadioSpec, mode: RigMode, vfo: YaesuVFO, data: Bool = false) -> [UInt8] {
         switch spec.family {
         case .yaesuFT100:
             return [0, 0, 0, yaesuFT100ModeByte(mode), 0x0C]         // mode in data[3]
@@ -173,7 +180,11 @@ enum CATCodec {
             return [yaesuBinModeByte(mode), 0, 0, 0, op]
         default:
             let op: UInt8 = vfo == .satRX ? 0x17 : vfo == .satTX ? 0x27 : 0x07
-            return [yaesuBinModeByte(mode), 0, 0, 0, op]
+            // FT-817/818/857/897 DIG (0x0A) for the data path — its sideband (USER-U/L) is a
+            // radio menu setting, so DIG stands in for USB-D/LSB-D. Only used when the caller
+            // has confirmed the model supports it.
+            let modeByte: UInt8 = data ? 0x0A : yaesuBinModeByte(mode)
+            return [modeByte, 0, 0, 0, op]
         }
     }
 
@@ -315,8 +326,12 @@ enum CATCodec {
 
     static func rigctldSetFreq(hz: UInt64) -> [UInt8] { Array("F \(hz)\n".utf8) }
     static func rigctldSetSplitFreq(hz: UInt64) -> [UInt8] { Array("I \(hz)\n".utf8) }
-    static func rigctldSetMode(_ mode: RigMode) -> [UInt8] { Array("M \(hamlibMode(mode)) 0\n".utf8) }
-    static func rigctldSetSplitMode(_ mode: RigMode) -> [UInt8] { Array("X \(hamlibMode(mode)) 0\n".utf8) }
+    static func rigctldSetMode(_ mode: RigMode, data: Bool = false) -> [UInt8] {
+        Array("M \(data ? hamlibDataMode(mode) : hamlibMode(mode)) 0\n".utf8)
+    }
+    static func rigctldSetSplitMode(_ mode: RigMode, data: Bool = false) -> [UInt8] {
+        Array("X \(data ? hamlibDataMode(mode) : hamlibMode(mode)) 0\n".utf8)
+    }
     static func rigctldSetSplit(on: Bool) -> [UInt8] { Array("S \(on ? 1 : 0) VFOB\n".utf8) }
     static func rigctldReadFreq() -> [UInt8] { Array("f\n".utf8) }
     /// Read the split (TX) VFO frequency — for follow-uplink on a full-duplex split link.
@@ -338,6 +353,14 @@ enum CATCodec {
         switch m {
         case .lsb: "LSB"; case .usb: "USB"; case .cw: "CW"
         case .fm: "FM"; case .am: "AM"; case .data: "PKTUSB"
+        }
+    }
+
+    /// Hamlib DATA (packet) variant — routes audio over the rig's data port on any
+    /// Hamlib-supported radio that has one. USB→PKTUSB, LSB→PKTLSB, FM→PKTFM.
+    private static func hamlibDataMode(_ m: RigMode) -> String {
+        switch m {
+        case .lsb: "PKTLSB"; case .fm: "PKTFM"; default: "PKTUSB"
         }
     }
 }

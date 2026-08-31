@@ -105,6 +105,11 @@ final class SSTVDecoder: ObservableObject {
 
     func start(source: AudioSource, satellite: String) {
         guard !isListening else { return }
+        // Only one input capture at a time (FT4/SSTV/recording each open their own engine).
+        guard AudioActivity.claimCapture("SSTV") else {
+            errorText = "Audio is in use by \(AudioActivity.captureHolder ?? "another feature"). Stop it first."
+            return
+        }
         errorText = ""; image = nil; modeName = ""; status = "Listening…"
         self.source = source; self.rate = source.sampleRate; self.satName = satellite
         let forced = manualMode
@@ -121,7 +126,11 @@ final class SSTVDecoder: ObservableObject {
         source.onError = { [weak self] m in self?.errorText = m }
         do {
             try source.start(onFrames: { [weak self] frames in self?.ingest(frames) })
-        } catch { errorText = error.localizedDescription; self.source = nil; return }
+        } catch {
+            errorText = error.localizedDescription; self.source = nil
+            AudioActivity.releaseCapture("SSTV")
+            return
+        }
         isListening = true
         AudioActivity.begin()
         scheduleLevelTimer()
@@ -151,6 +160,7 @@ final class SSTVDecoder: ObservableObject {
         levelSmoothed = 0; inputLevel = 0
         isListening = false
         AudioActivity.end()
+        AudioActivity.releaseCapture("SSTV")
         lock.lock(); let decoded = !rgba.isEmpty && currentLine > 0; lock.unlock()
         status = decoded ? "Stopped — decoded \(modeName)" : "Stopped"
     }

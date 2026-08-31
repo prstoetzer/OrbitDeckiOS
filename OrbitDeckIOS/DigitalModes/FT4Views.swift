@@ -86,6 +86,7 @@ struct HomeFT4Card: View {
     @EnvironmentObject private var qso: QSOStore
     @AppStorage(FeatureVisibility.ft4Key) private var visibility = FeatureVisibility.auto
     @AppStorage(PSKReporterSettings.enabledKey) private var pskEnabled = false
+    @AppStorage(FT4Settings.dataModeKey) private var ft4DataMode = true
     @State private var showSetup = false
     let satellite: SatelliteRecord
 
@@ -455,6 +456,7 @@ struct HomeFT4Card: View {
     private func toggleRun() {
         if ft4.isRunning {
             ft4.stop()
+            rig.setDigitalDataMode(false)     // restore the rig's plain SSB mode
         } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
             let transponder = rig.transponder(for: satellite)
             ft4.dopplerProvider = Self.makeDopplerProvider(satellite: satellite,
@@ -494,6 +496,9 @@ struct HomeFT4Card: View {
             } else {
                 ft4.pskReporter = nil
             }
+            // Command the data sub-mode (USB-D/LSB-D) so audio uses the rig's data port,
+            // unless the operator opted out (feeding audio via mic/headphone instead).
+            rig.setDigitalDataMode(rig.connected && ft4DataMode)
             ft4.start(source: source, myCall: qso.config.myCall, myGrid: store.operatorGrid6, satellite: satellite.name)
         } else {
             ft4.errorText = "No audio interface available."

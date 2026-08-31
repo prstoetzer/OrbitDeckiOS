@@ -27,6 +27,12 @@ final class PassRecorder: ObservableObject {
     private var source: AudioSource?
     private var file: AVAudioFile?
     private var processingFormat: AVAudioFormat?
+    // The AAC file is created lazily on the first captured frame (see write): creating it
+    // in start() runs before the AudioSource has activated a recording-capable audio
+    // session, so on a cold launch the encoder fails with '!dat' (OSStatus 560226676).
+    private var recordURL: URL?
+    private var recordRate: Double = 48_000
+    private var fileCreateTried = false
     private let writeQueue = DispatchQueue(label: "org.orbitdeck.recorder.write")
     private var startDate: Date?
     private var sat = ""
@@ -40,32 +46,22 @@ final class PassRecorder: ObservableObject {
 
     func start(source: AudioSource, satellite: String) {
         guard !isRecording else { return }
+        // One input capture at a time until a shared hub lands (each feature opens its own
+        // audio engine). Recording can't yet coexist with FT4/SSTV — surface why.
+        guard AudioActivity.claimCapture("Recording") else {
+            errorText = "Audio is in use by \(AudioActivity.captureHolder ?? "another feature"). Stop it first."
+            return
+        }
         errorText = ""
         self.source = source
         self.sat = satellite
         self.startDate = Date()
         filename = "\(safe(satellite))_\(stamp(Date())).m4a"
-        let url = QSOStore.recordingsDir.appendingPathComponent(filename)
-        let rate = source.sampleRate
-
-        // Compressed AAC mono — small files, plenty of fidelity for pass audio.
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: rate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64_000,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
+        recordURL = QSOStore.recordingsDir.appendingPathComponent(filename)
+        recordRate = source.sampleRate
+        fileCreateTried = false
+        file = nil; processingFormat = nil
         source.inputGain = inputGain
-        do {
-            let f = try AVAudioFile(forWriting: url, settings: settings)
-            file = f
-            processingFormat = f.processingFormat
-        } catch {
-            errorText = "Could not create the recording file: \(error.localizedDescription)"
-            self.source = nil
-            return
-        }
 
         source.onError = { [weak self] m in self?.errorText = m; self?.stop() }
         do {
@@ -73,6 +69,7 @@ final class PassRecorder: ObservableObject {
         } catch {
             errorText = error.localizedDescription
             file = nil; self.source = nil
+            AudioActivity.releaseCapture("Recording")
             return
         }
 
@@ -86,15 +83,20 @@ final class PassRecorder: ObservableObject {
         source?.stop()
         source = nil
         AudioActivity.end()
+        AudioActivity.releaseCapture("Recording")
         meterTimer?.cancel(); meterTimer = nil
         let duration = elapsed
         let sat = self.sat, filename = self.filename, start = startDate ?? Date()
         writeQueue.async { [weak self] in
             self?.file = nil     // finalize (AVAudioFile flushes on dealloc)
+            // Only register a clip that was actually created (the lazy AAC create may have
+            // failed, or no frames ever arrived).
+            let exists = FileManager.default.fileExists(
+                atPath: QSOStore.recordingsDir.appendingPathComponent(filename).path)
             DispatchQueue.main.async {
                 self?.isRecording = false
                 self?.level = 0
-                if duration >= 0.5 {
+                if duration >= 0.5, exists {
                     self?.qso?.addRecording(RecordingEntry(sat: sat, start: start, duration: duration, filename: filename))
                 }
             }
@@ -105,7 +107,38 @@ final class PassRecorder: ObservableObject {
 
     private func write(_ frames: [Float]) {
         writeQueue.async { [weak self] in
-            guard let self, let file = self.file, let fmt = self.processingFormat,
+            guard let self else { return }
+            // Lazily create the AAC file now that the AudioSource has an active,
+            // recording-capable session (frames only flow once its engine is running), so
+            // the encoder doesn't fail with '!dat' on a cold start. Try once.
+            if self.file == nil {
+                guard !self.fileCreateTried, let url = self.recordURL else { return }
+                self.fileCreateTried = true
+                // Belt-and-suspenders for the network-audio path, which brings up no
+                // hardware session: ensure one is active before the encoder initializes.
+                // Re-activating an already-active session (USB path) is a no-op.
+                let session = AVAudioSession.sharedInstance()
+                try? session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
+                try? session.setActive(true)
+                let settings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: self.recordRate,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 64_000,
+                    AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                ]
+                do {
+                    let f = try AVAudioFile(forWriting: url, settings: settings)
+                    self.file = f
+                    self.processingFormat = f.processingFormat
+                } catch {
+                    let msg = "Could not create the recording file: \(error.localizedDescription)"
+                    ODLog.shared.log("recording: AAC file create failed: \(error)", category: "audio")
+                    DispatchQueue.main.async { [weak self] in self?.errorText = msg; self?.stop() }
+                    return
+                }
+            }
+            guard let file = self.file, let fmt = self.processingFormat,
                   let buffer = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames.count)) else { return }
             buffer.frameLength = AVAudioFrameCount(frames.count)
             if let ch = buffer.floatChannelData {

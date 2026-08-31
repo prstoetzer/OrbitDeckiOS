@@ -175,6 +175,11 @@ final class FT4Engine: ObservableObject {
 
     func start(source: AudioSource, myCall: String, myGrid: String, satellite: String = "") {
         guard !isRunning else { return }
+        // Only one input capture at a time (FT4/SSTV/recording each open their own engine).
+        guard AudioActivity.claimCapture("FT4") else {
+            errorText = "Audio is in use by \(AudioActivity.captureHolder ?? "another feature"). Stop it first."
+            return
+        }
         errorText = ""; decodes.removeAll()
         self.source = source
         self.satName = satellite
@@ -198,7 +203,11 @@ final class FT4Engine: ObservableObject {
                 self.lock.lock(); self.rxBuffer.append(contentsOf: frames); self.lock.unlock()
                 self.ingestAnalysis(frames)
             })
-        } catch { errorText = error.localizedDescription; self.source = nil; return }
+        } catch {
+            errorText = error.localizedDescription; self.source = nil
+            AudioActivity.releaseCapture("FT4")
+            return
+        }
         isRunning = true; status = "Listening…"
         AudioActivity.begin()
         // Slot-gate CAT Doppler while FT4 runs: hold the continuous loop and step the
@@ -237,6 +246,7 @@ final class FT4Engine: ObservableObject {
         isTransmitting = false
         isRunning = false
         AudioActivity.end()
+        AudioActivity.releaseCapture("FT4")
         specLock.lock(); specWindow.removeAll(keepingCapacity: true); rxPeak = 0; specLock.unlock()
         rxLevel = 0
         status = "Idle"
@@ -893,6 +903,14 @@ final class FT4Engine: ObservableObject {
 /// Settings keys for PSKReporter (opt-in).
 enum PSKReporterSettings {
     static let enabledKey = "orbitdeck.pskreporter.enabled"
+}
+
+/// FT4 settings.
+enum FT4Settings {
+    /// Command the rig's DATA sub-mode (USB-D/LSB-D) while FT4 runs so audio uses the
+    /// ACC/USB data port. Default on; operators feeding audio via the mic/headphone jack
+    /// can turn it off. Only affects data-capable CI-V rigs.
+    static let dataModeKey = "orbitdeck.ft4.dataMode"
 }
 
 /// One reception report.

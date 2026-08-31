@@ -79,6 +79,35 @@ final class RigController: ObservableObject {
     /// Identifies the current satellite/transponder/mode so mode + step are
     /// re-applied whenever any of them changes (not just at connect).
     private var lastEngageKey = ""
+    /// Command the rig's DATA sub-mode (USB-D/LSB-D) for the digital audio path. Set by an
+    /// FT4 session when "Use data mode for FT4" is on, so the ACC/USB data port carries the
+    /// audio rather than the mic. Only affects data-capable CI-V rigs.
+    private(set) var useDataModeForDigital = false
+    private var dataModeApplied = false     // we turned DATA on and must turn it back off
+
+    /// Data-mode-capable CI-V transceivers (USB-D via CI-V 1A 06). Older rigs (IC-820/821/
+    /// 910/970, IC-2xx/4xx, IC-706 family) have no data mode and are left on plain SSB.
+    private static let dataModeModels: Set<String> = ["IC-9700", "IC-9100", "IC-705", "IC-905", "IC-7100", "IC-7000"]
+    /// Yaesu rigs with a DIG data mode (0x0A). The FT-847/736R have no CAT data mode.
+    private static let yaesuDataModels: Set<String> = ["FT-817", "FT-818", "FT-857", "FT-897"]
+    /// Whether this radio can be put in a DATA sub-mode for the digital audio path.
+    private func isDataModeCapable(_ spec: RadioSpec) -> Bool {
+        switch spec.family {
+        case .civ:         return Self.dataModeModels.contains(spec.id)
+        case .rigctld:     return true      // Hamlib maps to PKT* on radios that have it
+        case .yaesuBinary: return Self.yaesuDataModels.contains(spec.id)
+        default:           return false     // Kenwood/FT-736R/FT-847: no clean CAT data mode
+        }
+    }
+
+    /// Turn the digital DATA sub-mode on/off and force the modes to be re-applied on the
+    /// next tick (the engage key includes this flag).
+    func setDigitalDataMode(_ on: Bool) {
+        guard on != useDataModeForDigital else { return }
+        useDataModeForDigital = on
+        lastEngageKey = ""     // force applyModes() to run again
+        if connected, holdDoppler { Task { await stepDopplerNow() } }   // FT4 is slot-gated
+    }
     /// Last "why the loop can't tune" message, so we log it only when it changes.
     private var lastTickBail = ""
     /// Throttle for per-tick frequency-send logging (diagnostics).
@@ -346,7 +375,7 @@ final class RigController: ObservableObject {
     /// canAssignBand rigs; other rigs are unaffected.
     private func applyBandAssignment(tp: TransponderRecord) async {
         for link in links where link.spec.canAssignBand && link.leg == .both {
-            let mainIsUp = config.tuning.mainIsUplink
+            let mainIsUp = mainCarriesUplink(link.spec)
             let mainHz = UInt64(max(0, mainIsUp ? tp.uplinkCenter : tp.downlinkCenter))
             let subHz  = UInt64(max(0, mainIsUp ? tp.downlinkCenter : tp.uplinkCenter))
             let frames = CATCodec.civAssignBands(link.spec, addr: civAddr(link), mainHz: mainHz, subHz: subHz)
@@ -418,7 +447,7 @@ final class RigController: ObservableObject {
 
         // Re-apply mode + step (and tone) whenever the satellite, transponder or
         // mode changes — the frequency band changes with them.
-        let key = "\(sat.id)|\(tp.id)|\(dlMode.rawValue)|\(ulMode.rawValue)"
+        let key = "\(sat.id)|\(tp.id)|\(dlMode.rawValue)|\(ulMode.rawValue)|\(useDataModeForDigital)"
         if key != lastEngageKey {
             lastEngageKey = key
             lastSentRx = 0; lastSentTx = 0; uplinkDeferTicks = 0
@@ -549,7 +578,7 @@ final class RigController: ObservableObject {
         guard link.spec.canReadFreq else { return nil }
         switch link.spec.family {
         case .civ:
-            if link.spec.fullDuplex, let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: leg)) {
+            if link.spec.fullDuplex, let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: leg, spec: link.spec)) {
                 await sendRaw(link, sel)
             }
             await sendRaw(link, CATCodec.civReadFreq(addr: civAddr(link)))
@@ -584,10 +613,19 @@ final class RigController: ObservableObject {
         link.slot.civAddrOverride > 0 ? UInt8(link.slot.civAddrOverride) : link.spec.civAddr
     }
 
-    /// For a full-duplex CI-V rig, which VFO is a given leg (per VFO Type).
-    private func useSub(for leg: RigRole) -> Bool {
-        // Default VFO_MAIN_UP_SUB_DOWN: MAIN = uplink, SUB = downlink.
-        let mainIsUplink = config.tuning.mainIsUplink
+    /// Whether MAIN carries the uplink for this radio. The IC-9100/9700 satellite mode is
+    /// a FIXED Main=RX(downlink) / Sub=TX(uplink) layout (per OscarWatch RigSatModeHelper
+    /// and Icom's SAT design), so band-assign (07 D2) and MAIN/SUB select must put the
+    /// downlink on MAIN — regardless of the generic VFO-Type setting. Using the setting
+    /// there sent RS-44's modes to the wrong VFOs (downlink came out LSB, uplink USB).
+    private func mainCarriesUplink(_ spec: RadioSpec) -> Bool {
+        if spec.canAssignBand { return false }     // 9100/9700: Main = downlink (RX)
+        return config.tuning.mainIsUplink
+    }
+
+    /// For a full-duplex CI-V rig, which VFO (SUB?) a given leg is on.
+    private func useSub(for leg: RigRole, spec: RadioSpec) -> Bool {
+        let mainIsUplink = mainCarriesUplink(spec)
         switch leg {
         case .downlink: return mainIsUplink        // downlink on SUB when MAIN is uplink
         case .uplink:   return !mainIsUplink
@@ -605,7 +643,7 @@ final class RigController: ObservableObject {
     /// on receive after an uplink write. No-op for rigs without CI-V band access.
     private func reselectDownlink(_ link: LiveLink) async {
         guard link.spec.family == .civ, link.spec.fullDuplex,
-              let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: .downlink)) else { return }
+              let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: .downlink, spec: link.spec)) else { return }
         await sendRaw(link, sel)
     }
 
@@ -614,7 +652,7 @@ final class RigController: ObservableObject {
         let u = UInt64(hz)
         switch link.spec.family {
         case .civ:
-            if link.spec.fullDuplex, let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: leg)) {
+            if link.spec.fullDuplex, let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: leg, spec: link.spec)) {
                 await sendRaw(link, sel)
             }
             await sendRaw(link, CATCodec.civSetFreq(link.spec, addr: civAddr(link), hz: u))
@@ -644,26 +682,41 @@ final class RigController: ObservableObject {
     }
 
     private func sendModeCIVorOther(_ link: LiveLink, mode: RigMode, leg: RigRole) async {
+        // Whether to command the DATA sub-mode for this SSB leg (FT4 digital audio path).
+        let wantData = useDataModeForDigital && (mode == .usb || mode == .lsb) && isDataModeCapable(link.spec)
         switch link.spec.family {
         case .civ:
-            if link.spec.fullDuplex, let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: leg)) {
+            if link.spec.fullDuplex, let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: leg, spec: link.spec)) {
                 await sendRaw(link, sel)
             }
             await sendRaw(link, CATCodec.civSetMode(link.spec, addr: civAddr(link), mode: mode))
+            // FT4 data path: with an SSB base mode, toggle the rig's DATA sub-mode (USB-D/
+            // LSB-D) on the selected VFO so audio routes over the ACC/USB port. Only touch
+            // it on data-capable rigs, and only when we want it on or previously set it on
+            // (so a non-FT4 session never disturbs the operator's manual data mode).
+            if isDataModeCapable(link.spec), mode == .usb || mode == .lsb,
+               useDataModeForDigital || dataModeApplied {
+                await sendRaw(link, CATCodec.civDataMode(link.spec, addr: civAddr(link), on: useDataModeForDigital))
+                dataModeApplied = useDataModeForDigital
+            }
         case .yaesuBinary, .yaesuVR5000, .yaesuFT736:
-            await sendRaw(link, CATCodec.yaesuSetMode(link.spec, mode: mode, vfo: yaesuVFO(link, leg: leg)))
+            // FT-817/818/857/897 use DIG for the data path (wantData); FT-847/736R aren't
+            // data-capable so wantData is false and the base mode is sent.
+            await sendRaw(link, CATCodec.yaesuSetMode(link.spec, mode: mode, vfo: yaesuVFO(link, leg: leg), data: wantData))
         case .yaesuFT100:
             await sendRaw(link, CATCodec.yaesuSetMode(link.spec, mode: mode, vfo: .plain))
         case .kenwoodBase:
-            await sendRaw(link, CATCodec.kwSetMode(mode))
+            await sendRaw(link, CATCodec.kwSetMode(mode))     // no clean CAT data mode
         case .kenwoodHandheld:
             for f in CATCodec.khtStep(for: mode) { await sendRaw(link, f); await pace(20) }
             await sendRaw(link, CATCodec.khtSetMode(mode))
         case .rigctld:
+            // Hamlib PKTUSB/PKTLSB/PKTFM when the data path is wanted (works on any
+            // Hamlib-supported radio that has a data mode).
             if link.leg == .both, leg == .uplink, config.tuning.rigctldUseSplit {
-                await sendRaw(link, CATCodec.rigctldSetSplitMode(mode))
+                await sendRaw(link, CATCodec.rigctldSetSplitMode(mode, data: wantData))
             } else {
-                await sendRaw(link, CATCodec.rigctldSetMode(mode))
+                await sendRaw(link, CATCodec.rigctldSetMode(mode, data: wantData))
             }
         }
     }

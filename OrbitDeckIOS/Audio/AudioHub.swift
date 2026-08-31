@@ -22,6 +22,21 @@ enum AudioActivity {
     static var isActive: Bool { count > 0 }
     static func begin() { count += 1 }
     static func end() { count = max(0, count - 1) }
+
+    // Exclusive input capture. FT4, SSTV and pass recording each open their OWN audio
+    // engine on the shared session, so only one may capture the input at a time (a shared
+    // capture hub — future work — will let recording coexist with a decoder). The holder's
+    // display name is surfaced so the blocked feature can explain why it won't start.
+    private nonisolated(unsafe) static var captureOwner: String?
+    static var captureHolder: String? { captureOwner }
+    /// Claim the capture for `who`; false (with `captureHolder` set) if another holds it.
+    static func claimCapture(_ who: String) -> Bool {
+        if let o = captureOwner, o != who { return false }
+        captureOwner = who; return true
+    }
+    static func releaseCapture(_ who: String) {
+        if captureOwner == who { captureOwner = nil }
+    }
 }
 
 /// Per-feature visibility for the audio-driven Home cards (pass recording, SSTV,
