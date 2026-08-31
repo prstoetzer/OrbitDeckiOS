@@ -56,25 +56,33 @@
                 <p>Set these once. Menu paths are for the IC-9700's <strong>MENU &rarr; SET</strong>.</p>
 
                 <h3>Network</h3>
-                <p><strong>SET &rarr; Network:</strong></p>
+                <p><strong>MENU &rarr; SET &rarr; Network:</strong></p>
                 <ul>
-                    <li><strong>Network Control</strong> — <strong>ON</strong>. (The radio reboots its network function.)</li>
-                    <li><strong>Network User1</strong> — set an <strong>ID</strong> (username) and <strong>Password</strong>. You'll enter these in OrbitDeck.</li>
-                    <li><strong>Control Port (UDP)</strong> — leave the default <strong>50001</strong> unless you have a reason to change it.</li>
-                    <li>Note the radio's <strong>DHCP</strong>/IP settings; a fixed IP (or a DHCP reservation) is convenient so the address doesn't change.</li>
+                    <li><strong>Network Control</strong> &rarr; <strong>ON</strong>. This is "valid after restart," so <strong>power-cycle the radio</strong> after changing it.</li>
+                    <li><strong>Default Gateway</strong> &rarr; your router's IP address. Icom <em>requires</em> a Default Gateway for remote control, even on a local network — without it the radio won't accept the connection.</li>
+                    <li><strong>Network Radio Name</strong> / <strong>Network Name</strong> — optional; any name.</li>
+                    <li><strong>Control Port (UDP)</strong> — leave the default <strong>50001</strong>. (OrbitDeck uses the serial and audio ports, 50002 and 50003, automatically.)</li>
+                    <li>An IP address: <strong>DHCP ON</strong> works; a <strong>DHCP reservation</strong> or a static IP is convenient so the address doesn't change.</li>
+                </ul>
+                <p><strong>MENU &rarr; SET &rarr; Network &rarr; Network User1:</strong></p>
+                <ul>
+                    <li>Set a <strong>User1 ID</strong> and <strong>Password</strong> (the password must be <strong>8–16 characters</strong> and not all the same character). You'll enter these in OrbitDeck. (The <strong>Administrator</strong> setting can stay <strong>NO</strong>.)</li>
                 </ul>
 
                 <h3>CI-V</h3>
-                <p><strong>SET &rarr; Connectors &rarr; CI-V:</strong></p>
+                <p><strong>MENU &rarr; SET &rarr; Connectors &rarr; CI-V:</strong></p>
                 <ul>
-                    <li><strong>CI-V Transceive</strong> — <strong>ON</strong>.</li>
-                    <li>Leave the <strong>CI-V address</strong> at the 9700 default (<strong>A2</strong>); leave OrbitDeck's address override blank.</li>
+                    <li><strong>CI-V Transceive</strong> — <strong>ON</strong> (this is the default).</li>
+                    <li>Leave the <strong>CI-V Address</strong> at the 9700 default (<strong>A2h</strong>); leave OrbitDeck's address override blank.</li>
                 </ul>
 
-                <h3>Audio routing for the data path</h3>
-                <p>OrbitDeck runs FT4 in the radio's <strong>data sub-mode</strong> (USB-D) so the audio uses the data path rather than the mic. Point that data path at the network:</p>
-                <p><strong>SET &rarr; Connectors &rarr; MOD Input &rarr; DATA MOD</strong> — set to <strong>LAN</strong>, so data-mode transmit audio comes from the network stream (OrbitDeck) instead of the mic/USB.</p>
-                <div class="note">If you prefer to leave the audio wiring alone and feed audio another way, you can turn <strong>Use data mode for FT4</strong> off in OrbitDeck (Settings &rarr; Audio features) — but then the radio transmits mic audio, which the network path doesn't supply, so LAN + data mode is the combination you want here.</div>
+                <h3>Audio over the network (RX and TX)</h3>
+                <p>OrbitDeck runs FT4 in the radio's <strong>data sub-mode</strong> (USB-D) and carries the audio over the RS-BA1 network stream, so point the data path at the LAN:</p>
+                <ul>
+                    <li><strong>Transmit:</strong> <strong>MENU &rarr; SET &rarr; Connectors &rarr; MOD Input &rarr; DATA MOD</strong> &rarr; <strong>LAN</strong> (the default is ACC), so data-mode transmit audio comes from the network stream (OrbitDeck) instead of the mic. You can trim <strong>LAN MOD Level</strong> (same menu) if you over- or under-modulate.</li>
+                    <li><strong>Receive:</strong> <strong>MENU &rarr; SET &rarr; Connectors &rarr; LAN AF/IF Output &rarr; AF SQL</strong> &rarr; <strong>OFF (Open)</strong>, so received audio always flows to the network for decoding (the default, ON, gates it on squelch).</li>
+                </ul>
+                <div class="note">If you'd rather feed audio another way, you can turn <strong>Use data mode for FT4</strong> off in OrbitDeck (Settings &rarr; Audio features) — but the network path only supplies audio through the data mode, so <strong>DATA MOD = LAN</strong> + data mode is the combination you want here.</div>
 
                 <h3>Satellite mode</h3>
                 <p>You do <strong>not</strong> need to pre-set satellite mode or the MAIN/SUB bands — when it connects, OrbitDeck commands the 9700 into <strong>satellite mode</strong> and assigns <strong>MAIN = downlink (RX)</strong> and <strong>SUB = uplink (TX)</strong> for you, then Doppler-tunes both. Just make sure only one program uses the radio's single network session at a time (close RS-BA1 Remote Utility / wfview).</p>
@@ -109,7 +117,7 @@
 
                 <h2 id="trouble">Troubleshooting</h2>
                 <ul>
-                    <li><strong>Won't connect</strong> — confirm Network Control is ON and the User1 ID/Password match; the 9700 uses its <strong>wired Ethernet</strong> and must be on the same subnet as your Wi-Fi (no client isolation); and no other program holds the radio's single network session (power-cycle the radio if a previous session hung). OrbitDeck reports <em>where</em> the handshake stalled (no reply / login rejected / connection refused).</li>
+                    <li><strong>Won't connect</strong> — confirm Network Control is ON (and that you power-cycled the radio after enabling it), a <strong>Default Gateway</strong> is set (Icom requires one even on a LAN), and the User1 ID/Password match. The 9700 uses its <strong>wired Ethernet</strong> and must be on the same subnet as your Wi-Fi (no client isolation); and no other program can hold the radio's single network session (power-cycle the radio if a previous session hung). OrbitDeck reports <em>where</em> the handshake stalled (no reply / login rejected / connection refused).</li>
                     <li><strong>Connects, then drops</strong> — OrbitDeck now detects a silently dead network link and reconnects automatically; a brief Wi-Fi blip should recover on its own.</li>
                     <li id="audio-check"><strong>Audio not going out (no decode of you)</strong> — confirm <strong>DATA MOD = LAN</strong> on the radio and <strong>Use data mode for FT4</strong> is on in OrbitDeck (so the radio is in USB-D and takes modulation from the network). Watch the FT4 <strong>TX level</strong> meter to confirm OrbitDeck is emitting audio. If network TX audio still won't modulate, use a <a href="digitalmodes.html#audio">USB audio interface</a> to the radio's data port as the proven path.</li>
                     <li><strong>Downlink/uplink modes look swapped</strong> — the 9700's satellite layout is fixed <strong>MAIN = RX (downlink)</strong>, <strong>SUB = TX (uplink)</strong>; OrbitDeck sets the modes to match. On an inverting bird like RS-44 you should see the downlink in <strong>USB</strong> and the uplink in <strong>LSB</strong>.</li>
