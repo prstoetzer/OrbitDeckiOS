@@ -1,7 +1,23 @@
 # Scope — Half-Duplex FT4 (single-radio, non-full-duplex rigs)
 
-Status: **planning** · Target: a future 0.9.x · Author aid: cross-audit of `FT4Engine`,
-`RigController`, `RadioCatalog`, `AudioSource`.
+Status: **OUT OF SCOPE — will not implement** (decision 2026-08-31). The technical plan
+below is retained for reference only.
+
+## Decision & rationale
+
+We will **not** add half-duplex, single-radio FT4 (a mono rig alternating bands per slot).
+Amateur-satellite operating convention is to work linear transponders **full duplex** so you
+can **monitor the quality of your own downlink** in real time. A linear transponder is a
+**shared resource**: an operator who cannot hear their own signal has no way to know they're
+running excess power or otherwise degrading the passband for everyone else. Half-duplex
+single-radio operation makes that self-monitoring impossible, so building it would encourage
+poor operating practice on a shared bird. OrbitDeck therefore requires a full-duplex radio or
+a two-radio station for FT4 transmit. (Receiving/decoding on any rig is of course fine.)
+
+---
+
+_Original planning notes (reference only):_ cross-audit of `FT4Engine`, `RigController`,
+`RadioCatalog`, `AudioSource`.
 
 ## 1. Goal
 

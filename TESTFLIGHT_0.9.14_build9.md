@@ -55,4 +55,6 @@ Log categories: `cat` (connect/drop/reconnect, `setPTT`), `audio`, `ft4` (`FT4 T
   prefers USB — use the network radio alone for remote voice.
 - A USB-interface live monitor (hearing USB audio on the phone speaker) is not included: on
   a bidirectional interface that output would feed back into the radio.
-- Half-duplex single-radio FT4 is still planned (`SCOPE_HALFDUPLEX_FT4.md`).
+- FT4 transmit needs a full-duplex radio or a two-radio station. Half-duplex single-radio
+  FT4 will not be added — satellite convention is full duplex so you can monitor your own
+  downlink on a shared linear transponder (receiving/decoding on any radio is fine).
