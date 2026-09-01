@@ -42,10 +42,16 @@ enum CATCodec {
     }
 
     static func civModeByte(_ m: RigMode) -> UInt8 {
-        switch m { case .lsb: 0x00; case .usb: 0x01; case .am: 0x02; case .cw: 0x03; case .fm: 0x05; case .data: 0x01 }
+        switch m { case .lsb: 0x00; case .usb: 0x01; case .am: 0x02; case .cw: 0x03; case .fm, .fmn: 0x05; case .data: 0x01 }
     }
 
     static func civSetMode(_ spec: RadioSpec, addr: UInt8, mode: RigMode) -> [UInt8] {
+        // Narrow FM (FM-N): FM mode byte with the rig's narrow-FM filter byte
+        // (`06 05 <fmNarrowFilter>`), even on rigs that don't normally send a filter byte
+        // (e.g. IC-910 → `06 05 02`, matching OscarWatch). Falls back to plain FM if unknown.
+        if mode == .fmn, spec.fmNarrowFilter != 0 {
+            return civFrame(addr: addr, payload: [0x06, 0x05, spec.fmNarrowFilter])
+        }
         if spec.modeFilter {
             return civFrame(addr: addr, payload: [0x06, civModeByte(mode), 0x01])
         }
@@ -152,13 +158,15 @@ enum CATCodec {
     }
 
     static func yaesuBinModeByte(_ m: RigMode) -> UInt8 {
-        switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .fm: 0x08; case .data: 0x0A }
+        // FT-817/847/857/897: FM = 0x08. Narrow FM isn't a distinct CAT mode byte on these
+        // (it's a radio menu setting), so FM-N maps to FM.
+        switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .fm, .fmn: 0x08; case .data: 0x0A }
     }
     static func yaesuVR5000ModeByte(_ m: RigMode) -> UInt8 {
-        switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .fm: 0x88; case .data: 0x01 }
+        switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .fm, .fmn: 0x88; case .data: 0x01 }
     }
     static func yaesuFT100ModeByte(_ m: RigMode) -> UInt8 {
-        switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .data: 0x05; case .fm: 0x06 }
+        switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .data: 0x05; case .fm, .fmn: 0x06 }
     }
 
     /// Frequency frame. `vfo` selects the SAT VFO. FT-847 uses 0x11/0x21; the FT-736R
@@ -249,7 +257,8 @@ enum CATCodec {
     // MARK: Kenwood base (TS-711/811/790/2000) — ASCII
 
     static func kwModeDigit(_ m: RigMode) -> Character {
-        switch m { case .lsb: "1"; case .usb: "2"; case .cw: "3"; case .fm: "4"; case .am: "5"; case .data: "6" }
+        // TS-2000/790 FM = '4'; narrow FM is a filter/menu setting, so FM-N maps to FM.
+        switch m { case .lsb: "1"; case .usb: "2"; case .cw: "3"; case .fm, .fmn: "4"; case .am: "5"; case .data: "6" }
     }
     /// vfo = "FA" (VFO A / downlink) or "FB" (VFO B / uplink). 11 digits.
     static func kwSetFreq(vfo: String, hz: UInt64) -> [UInt8] {
@@ -264,6 +273,29 @@ enum CATCodec {
         guard let i = CTCSS.index(hz: toneHz) else { return [] }
         return [Array(String(format: "TN%02d;", i + 1).utf8), Array("TO1;".utf8)]
     }
+    // MARK: Kenwood satellite (TS-2000 / TS-790) — SATL entry/exit
+    //
+    // Ported from OscarWatch's KenwoodCatCodec. `SA P1..P7`: P1 on, P2 mem(0), P3 layout
+    // (Main=downlink/Sub=uplink), P4 CTRL band, P5/P6 TRACE/TRACE-REV. TRACE is left OFF
+    // (`SA1010000`) because OrbitDeck drives Doppler over CAT — the radio must not also
+    // apply its own tracking. `DC P1 P2` is dual-control: P1 = TX band, P2 = CTRL band
+    // (0 = main, 1 = sub). Autoinfo is turned off so follow-mode reads aren't polluted by
+    // unsolicited status.
+
+    /// SATL entry handshake: CTRL main, satellite on (trace off), encode off, sat entry, AI off.
+    static func kwSatEntry() -> [[UInt8]] {
+        [Array("DC00;".utf8), Array("SA1010000;".utf8), Array("TO0;".utf8),
+         Array("TS1;".utf8), Array("AI0;".utf8)]
+    }
+    /// SATL exit: stop TX, clear encode tone, satellite off, AI off.
+    static func kwSatExit() -> [[UInt8]] {
+        [Array("RX;".utf8), Array("TO0;".utf8), Array("SA0010000;".utf8), Array("AI0;".utf8)]
+    }
+    /// Dual-control select before an `MD`/tone in SATL (MD applies to the CTRL band):
+    /// uplink work on SUB (`DC11` = TX sub, CTRL sub); downlink work on MAIN with TX still
+    /// on SUB (`DC10`) — which is also the operating state (transmit uplink, monitor downlink).
+    static func kwSatControl(uplink: Bool) -> [UInt8] { Array((uplink ? "DC11;" : "DC10;").utf8) }
+
     /// Parse "FA<digits>;" (or "FB…" for VFO B) → Hz. Base stations answer 11 digits.
     static func kwParseFreq(_ buf: [UInt8], digits: Int = 11, vfoB: Bool = false) -> UInt64? {
         guard let s = String(bytes: buf, encoding: .ascii), let r = s.range(of: vfoB ? "FB" : "FA") else { return nil }
@@ -279,7 +311,7 @@ enum CATCodec {
 
     static func khtModeDigit(_ m: RigMode) -> Character {
         switch m {
-        case .fm, .data: "6"   // NFM (band B refuses plain FM/DV)
+        case .fm, .fmn, .data: "6"   // NFM (band B refuses plain FM/DV)
         case .am: "2"; case .lsb: "3"; case .usb: "4"; case .cw: "5"
         }
     }
@@ -360,7 +392,7 @@ enum CATCodec {
     private static func hamlibMode(_ m: RigMode) -> String {
         switch m {
         case .lsb: "LSB"; case .usb: "USB"; case .cw: "CW"
-        case .fm: "FM"; case .am: "AM"; case .data: "PKTUSB"
+        case .fm: "FM"; case .fmn: "FMN"; case .am: "AM"; case .data: "PKTUSB"
         }
     }
 

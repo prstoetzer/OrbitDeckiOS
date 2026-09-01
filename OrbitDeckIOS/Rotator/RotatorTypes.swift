@@ -18,8 +18,10 @@ enum RotatorProtocolKind: String, Codable, Sendable, CaseIterable, Identifiable 
     case easycomm2    // Easycomm II (decimal ASCII)
     case easycomm3    // Easycomm III (II grammar; velocity ignored)
     case spid         // SPID Rot2Prog / MD-01/02 (binary)
+    case saebrtrack   // SAEBRTrack (Arduino/SatPC32 compact ASCII, serial)
     case rotctld      // Hamlib NET rotctl over TCP
     case pstRotator   // PstRotator over UDP
+    case urc          // OZ9AAR URC (TCP/JSON)
 
     var id: String { rawValue }
     var label: String {
@@ -29,14 +31,18 @@ enum RotatorProtocolKind: String, Codable, Sendable, CaseIterable, Identifiable 
         case .easycomm2: "Easycomm II"
         case .easycomm3: "Easycomm III"
         case .spid: "SPID Rot2Prog (MD-01/02)"
+        case .saebrtrack: "SAEBRTrack (serial)"
         case .rotctld: "rotctld (Hamlib NET, TCP)"
         case .pstRotator: "PstRotator (UDP)"
+        case .urc: "OZ9AAR URC (TCP/JSON)"
         }
     }
-    var isNetwork: Bool { self == .rotctld || self == .pstRotator }
+    var isNetwork: Bool { self == .rotctld || self == .pstRotator || self == .urc }
     var isSerial: Bool { !isNetwork }
-    var usesTCP: Bool { self == .rotctld }
-    var defaultPort: Int { self == .rotctld ? 4533 : 12000 }
+    var usesTCP: Bool { self == .rotctld || self == .urc }
+    var defaultPort: Int {
+        switch self { case .rotctld: 4533; case .urc: 1111; default: 12000 }
+    }
 }
 
 /// Azimuth-axis convention of the rotator (matches Gpredict's rotator setting).
@@ -64,6 +70,7 @@ struct RotatorConfig: Codable, Sendable, Equatable {
     var port = 4533
     // Behavior / tuning (CardSat parity)
     var leadSec = 120               // pre-position lead before AOS (s; 0 = off)
+    var trackLeadSec = 0            // aim this far ahead while tracking (mechanical slew lag; 0 = off)
     var azLookSec = 3               // 450° overlap az lookahead (s; 0 = off)
     var azRange: RotAzRange = .az360
     var azOffsetDeg = 0             // alignment offset added to commanded azimuth
@@ -96,7 +103,7 @@ private extension KeyedDecodingContainer {
 extension RotatorConfig {
     enum CK: String, CodingKey {
         case enabled, proto, bleIdentifier, bleName, baud, host, port
-        case leadSec, azLookSec, azRange, azOffsetDeg, elOffsetDeg, deadbandDeg
+        case leadSec, trackLeadSec, azLookSec, azRange, azOffsetDeg, elOffsetDeg, deadbandDeg
         case magCorrect, parkAz, parkEl, flip, minElevationDeg, updateMs
     }
     init(from decoder: Decoder) throws {
@@ -110,6 +117,7 @@ extension RotatorConfig {
         r.host = c.value(String.self, .host, r.host)
         r.port = c.value(Int.self, .port, r.port)
         r.leadSec = c.value(Int.self, .leadSec, r.leadSec)
+        r.trackLeadSec = c.value(Int.self, .trackLeadSec, r.trackLeadSec)
         r.azLookSec = c.value(Int.self, .azLookSec, r.azLookSec)
         r.azRange = c.value(RotAzRange.self, .azRange, r.azRange)
         r.azOffsetDeg = c.value(Int.self, .azOffsetDeg, r.azOffsetDeg)
@@ -133,6 +141,7 @@ extension RotatorConfig {
         try c.encode(host, forKey: .host)
         try c.encode(port, forKey: .port)
         try c.encode(leadSec, forKey: .leadSec)
+        try c.encode(trackLeadSec, forKey: .trackLeadSec)
         try c.encode(azLookSec, forKey: .azLookSec)
         try c.encode(azRange, forKey: .azRange)
         try c.encode(azOffsetDeg, forKey: .azOffsetDeg)

@@ -168,8 +168,14 @@ final class RotatorController: ObservableObject {
         if look.elevation >= config.minElevationDeg, look.elevation >= 0 {
             // --- Tracking ---
             parked = false
-            var az = look.azimuth + Double(config.azOffsetDeg)
-            var el = look.elevation + Double(config.elOffsetDeg)
+            // Slew-rate lead: aim where the satellite WILL be after the mechanical lag, so
+            // the antenna arrives with it on a fast overhead pass. Gate stays on the current
+            // look (visibility); only the aim point looks ahead. 0 = off (unchanged behavior).
+            let aim = (config.trackLeadSec > 0
+                       ? (try? OrbitPredictor.look(sat, observer: observer, at: now.addingTimeInterval(Double(config.trackLeadSec))))
+                       : nil) ?? look
+            var az = aim.azimuth + Double(config.azOffsetDeg)
+            var el = aim.elevation + Double(config.elOffsetDeg)
             if config.flip, flipPass { az += 180; el = 180 - el }
             // 450° overlap: pre-commit to the upper turn if a North wrap is imminent.
             if config.azRange == .az450, config.azLookSec > 0, !(config.flip && flipPass),

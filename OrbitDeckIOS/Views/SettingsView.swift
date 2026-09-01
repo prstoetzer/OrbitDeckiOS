@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage(FeatureVisibility.remoteAudioKey) private var featureRemoteAudio = FeatureVisibility.auto
     @AppStorage(PSKReporterSettings.enabledKey) private var pskReporterEnabled = false
     @AppStorage(FT4Settings.dataModeKey) private var ft4DataMode = true
+    @AppStorage(FT4Settings.autoCalibrateKey) private var ft4AutoCal = false
     @AppStorage("orbitdeck.spacetrack.identity") private var spaceTrackIdentity = ""
     @State private var spaceTrackPassword = ""
     @State private var spaceTrackLoaded = false
@@ -206,6 +207,9 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
                 Toggle("Use data mode for FT4", isOn: $ft4DataMode)
                 Text("When FT4 starts on a data-mode-capable radio, OrbitDeck sets the DATA sub-mode so audio uses the rig's ACC/USB data port, and restores plain SSB when FT4 stops: CI-V USB-D/LSB-D (IC-9700/9100/705/905/7100/7000), Hamlib PKTUSB/PKTLSB via rigctld (any supported radio), and DIG on the Yaesu FT-817/818/857/897. Turn this off if you feed audio through the mic/headphone jack instead.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+                Toggle("Auto-calibrate transponder from FT4", isOn: $ft4AutoCal)
+                Text("While transmitting FT4 full duplex, OrbitDeck measures where your own decoded signal lands versus your TX audio frequency and folds the difference into this satellite's saved calibration, refining it on every decode of your own signal. Linear transponders only; off by default. Edits the per-satellite calibration you can see on the Calibrations screen.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 

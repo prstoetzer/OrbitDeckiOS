@@ -27,6 +27,16 @@ enum RotatorCodec {
             var a = az; if a < 0 { a += 360 }; if a > 360 { a -= 360 }
             var e = el; if e < 0 { e = 0 }; if e > 180 { e = 180 }
             return spidFrame(cmd: 0x2F, az: a, el: e)
+        case .saebrtrack:
+            // Compact whole-degree "AZnnnELnnn", LF-terminated (Arduino/SatPC32 style).
+            var a = az; if a < 0 { a += 360 }; if a > 360 { a -= 360 }
+            var e = el; if e < 0 { e = 0 }; if e > 180 { e = 180 }
+            return ascii(String(format: "AZ%03dEL%03d\n", Int(a.rounded()), Int(e.rounded())))
+        case .urc:
+            // OZ9AAR URC TCP/JSON GOTO (degrees, up to 1 dp).
+            var a = az; if a < 0 { a += 360 }
+            var e = el; if e < 0 { e = 0 }
+            return ascii(String(format: "{\"GOTO\":[%.1f,%.1f]}", a, e))
         case .rotctld:
             var e = el; if e < 0 { e = 0 }
             return ascii(String(format: "P %.1f %.1f\n", az, e))
@@ -53,8 +63,10 @@ enum RotatorCodec {
         case .gs232: ascii("S\r")
         case .easycomm1, .easycomm2, .easycomm3: ascii("SA SE\r")
         case .spid: spidFrame(cmd: 0x0F, az: 0, el: 0)
+        case .saebrtrack: []            // no stop command (fire-and-forget); AZ/EL would goto 0
         case .rotctld: ascii("S\n")
         case .pstRotator: ascii("<PST><STOP>1</STOP></PST>")
+        case .urc: []                   // URC has no stop request (POLL/GOTO only)
         }
     }
 
@@ -64,8 +76,10 @@ enum RotatorCodec {
         case .gs232: ascii("C2\r")
         case .easycomm1, .easycomm2, .easycomm3: ascii("AZ EL\r")
         case .spid: spidFrame(cmd: 0x1F, az: 0, el: 0)
+        case .saebrtrack: nil            // fire-and-forget; a bare AZ/EL query is misread as goto-0
         case .rotctld: ascii("p\n")
         case .pstRotator: nil            // reply comes on port+1; not used by the loop
+        case .urc: ascii("{\"POLL\"}")
         }
     }
 
@@ -120,6 +134,23 @@ enum RotatorCodec {
             let az = leadingNumber(after: ar.upperBound, in: s)
             let el = leadingNumber(after: er.upperBound, in: s)
             if let az, let el { return (az, el) }
+            return nil
+        case .saebrtrack:
+            // "AZnnnELnnn" (or spaced). Split on EL; read the leading number of each part.
+            guard let ar = s.range(of: "AZ"), let er = s.range(of: "EL") else { return nil }
+            let az = Double(s[ar.upperBound..<er.lowerBound].filter { $0.isNumber || $0 == "." || $0 == "-" })
+            let el = leadingNumber(after: er.upperBound, in: s)
+            if let az, let el { return (az, el) }
+            return nil
+        case .urc:
+            // JSON status {"AZ":123.4,"EL":45.6}: find each key, read the number after its colon.
+            func jsonNum(_ key: String) -> Double? {
+                guard let kr = s.range(of: key) else { return nil }
+                guard let colon = s[kr.upperBound...].firstIndex(of: ":") else { return nil }
+                return leadingNumber(after: s.index(after: colon), in: s)
+            }
+            if let az = jsonNum("\"AZ\"") ?? jsonNum("\"az\""),
+               let el = jsonNum("\"EL\"") ?? jsonNum("\"el\"") { return (az, el) }
             return nil
         case .spid: return nil
         }

@@ -96,6 +96,12 @@ final class FT4Engine: ObservableObject {
     /// CAT, or the transponder downlink center. A decode's reported frequency is this plus
     /// its audio offset. Called on the main actor. Returns 0 when unknown (then no spot).
     var rxBaseHzProvider: (() -> Double)?
+    /// Automatic transponder calibration (opt-in). When set, each time we decode our OWN
+    /// FT4 signal via full duplex the engine reports the measured downlink-frequency error
+    /// (Hz) — the gap between where our signal landed and our TX audio frequency, which is
+    /// the transponder's LO offset (downlink-referred). The view folds it into the
+    /// per-satellite calibration. Nil = off. See `advanceCalibration`.
+    var ownSignalCalibration: ((_ errHz: Double) -> Void)?
 
     // Nonisolated mirrors read from the slot queue (onSlotBoundary is nonisolated).
     private nonisolated(unsafe) var rxDeDopplerEnabled = false
@@ -451,6 +457,7 @@ final class FT4Engine: ObservableObject {
                 self.decodes.append(FT4DecodedMessage(text: f.text, snr: f.snr, freqHz: f.freq, atSlot: endedSlotIndex))
             }
             if self.decodes.count > 100 { self.decodes.removeFirst(self.decodes.count - 100) }
+            self.advanceCalibration(found)
             // Persist the full activity log (reviewable later on the Log screen).
             if !found.isEmpty {
                 let when = Date(timeIntervalSince1970: Double(endedSlotIndex) * kFT4SlotSeconds)
@@ -555,6 +562,24 @@ final class FT4Engine: ObservableObject {
     func isFromMe(_ text: String) -> Bool {
         guard !myCallSeq.isEmpty, let f = FT4Engine.parse(text) else { return false }
         return f.de == myCallSeq
+    }
+
+    /// Automatic transponder calibration. On a properly-netted linear transponder your OWN
+    /// signal returns at ~the audio frequency you transmit — inverting or not, because
+    /// OrbitDeck sets the uplink sideband to match. So when we decode our own callsign via
+    /// full duplex, the gap between the decoded audio frequency and our TX audio frequency is
+    /// the residual transponder LO error (downlink-referred, after the current calibration).
+    /// Report it to the sink (the view damps it into the per-satellite calibration). The RX
+    /// de-Doppler anchors positions to the slot start, so it doesn't bias this measurement.
+    private func advanceCalibration(_ found: [(text: String, snr: Int, freq: Double)]) {
+        guard let sink = ownSignalCalibration, txEnabled else { return }
+        for f in found where isFromMe(f.text) {
+            let errHz = f.freq - txAudioFreq
+            guard abs(errHz) < 3000 else { continue }   // reject an implausible/mis-decoded outlier
+            sink(errHz)
+            ODLog.shared.log(String(format: "FT4 auto-cal: own signal %.0f Hz (tx %.0f) → err %+.0f Hz",
+                                    f.freq, txAudioFreq, errHz), category: "ft4")
+        }
     }
 
     /// Advance the exchange based on messages addressed to us this slot.
@@ -765,7 +790,8 @@ final class FT4Engine: ObservableObject {
 
         // Noise floor from the waterfall ft8_lib already built (computed once, reused
         // for every candidate) — no extra FFT, so measuring SNR is essentially free.
-        let noiseDb = FT4Engine.waterfallNoiseFloorDb(mon.wf)
+        let noiseDb = FT4Engine.waterfallNoiseFloorDb(mon.wf, minBin: Int(mon.min_bin),
+                                                      symbolPeriod: Double(mon.symbol_period))
 
         var result = SlotResult(blocks: Int(mon.wf.num_blocks), candidates: Int(n))
         var seen = Set<UInt16>()
@@ -795,14 +821,33 @@ final class FT4Engine: ObservableObject {
         return result
     }
 
-    /// Noise floor (dB) = the 25th percentile of the whole waterfall, via a cheap
-    /// 256-bin histogram of the uint8 magnitudes ft8_lib already stored.
-    private nonisolated static func waterfallNoiseFloorDb(_ wf: ftx_waterfall_t) -> Float {
-        guard let mag = wf.mag, wf.num_blocks > 0, wf.block_stride > 0 else { return -110 }
+    /// Noise floor (dB), a low percentile of the waterfall magnitudes — but computed ONLY
+    /// over the SSB audio passband (~300–2700 Hz), not the full 100–3600 Hz monitor range.
+    /// The filter skirts outside the passband are near-silent; including them dragged a
+    /// whole-spectrum percentile ~10–20 dB below the true floor, which inflated every SNR
+    /// (the "reports read high" bug). Restricting to the passband tracks the real floor, so
+    /// the 2500 Hz-referenced report lands close to WSJT-X. The innermost mag dimension is
+    /// the frequency bin (width `num_bins`), so `index % num_bins` recovers the bin.
+    private nonisolated static func waterfallNoiseFloorDb(_ wf: ftx_waterfall_t, minBin: Int, symbolPeriod: Double) -> Float {
+        guard let mag = wf.mag, wf.num_blocks > 0, wf.block_stride > 0, wf.num_bins > 0, symbolPeriod > 0 else { return -110 }
+        let numBins = Int(wf.num_bins)
         let total = Int(wf.num_blocks) * Int(wf.block_stride)
+        // bin = freq·symbolPeriod − minBin (inverse of the decode's freq formula).
+        let kLo = max(0, Int(300.0 * symbolPeriod) - minBin)
+        let kHi = min(numBins - 1, Int(2700.0 * symbolPeriod) - minBin)
         var hist = [Int](repeating: 0, count: 256)
-        for i in 0..<total { hist[Int(mag[i])] += 1 }
-        let target = total / 4
+        var counted = 0
+        if kHi > kLo {
+            var i = 0
+            while i < total {
+                let bin = i % numBins
+                if bin >= kLo && bin <= kHi { hist[Int(mag[i])] += 1; counted += 1 }
+                i += 1
+            }
+        }
+        // Fallback to the whole array if the band came out empty (unexpected geometry).
+        if counted == 0 { for i in 0..<total { hist[Int(mag[i])] += 1 }; counted = total }
+        let target = Int(Double(counted) * 0.30)
         var cum = 0, floorByte = 0
         for v in 0..<256 { cum += hist[v]; if cum >= target { floorByte = v; break } }
         return Float(floorByte) * 0.5 - 120.0        // ft8_lib byte → dB
@@ -911,6 +956,9 @@ enum FT4Settings {
     /// ACC/USB data port. Default on; operators feeding audio via the mic/headphone jack
     /// can turn it off. Only affects data-capable CI-V rigs.
     static let dataModeKey = "orbitdeck.ft4.dataMode"
+    /// Automatically refine the per-satellite transponder calibration from our own decoded
+    /// FT4 signal (full duplex). Opt-in — it edits the saved calibration for the satellite.
+    static let autoCalibrateKey = "orbitdeck.ft4.autoCalibrate"
 }
 
 /// One reception report.

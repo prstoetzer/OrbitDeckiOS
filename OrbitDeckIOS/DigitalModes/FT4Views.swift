@@ -87,6 +87,7 @@ struct HomeFT4Card: View {
     @AppStorage(FeatureVisibility.ft4Key) private var visibility = FeatureVisibility.auto
     @AppStorage(PSKReporterSettings.enabledKey) private var pskEnabled = false
     @AppStorage(FT4Settings.dataModeKey) private var ft4DataMode = true
+    @AppStorage(FT4Settings.autoCalibrateKey) private var ft4AutoCal = false
     @State private var showSetup = false
     let satellite: SatelliteRecord
 
@@ -109,6 +110,7 @@ struct HomeFT4Card: View {
                         .buttonStyle(.bordered)
                 }
                 SatelliteStatusLine(satellite: satellite)
+                DopplerFrequencyLine(satellite: satellite, transponderOverride: rig.transponder(for: satellite))
                 if ft4.isRunning { dopplerLine }
 
                 nextTxPanel
@@ -456,6 +458,7 @@ struct HomeFT4Card: View {
     private func toggleRun() {
         if ft4.isRunning {
             ft4.stop()
+            ft4.ownSignalCalibration = nil
             rig.setDigitalDataMode(false)     // restore the rig's plain SSB mode
         } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
             let transponder = rig.transponder(for: satellite)
@@ -484,6 +487,23 @@ struct HomeFT4Card: View {
             ft4.rxBaseHzProvider = { [weak rig] in
                 let dial = Double(rig?.downlinkDialHz ?? 0)
                 return dial > 0 ? dial : calibratedCenter
+            }
+            // Automatic transponder calibration (opt-in): fold the error between our own
+            // decoded FT4 signal and our TX audio frequency into the saved per-satellite
+            // calibration, damped and clamped so a stray decode can't yank it. Only for a
+            // linear transponder — FM birds don't need audio-domain calibration.
+            if ft4AutoCal, transponder?.isLinear == true {
+                let norad = satellite.id
+                ft4.ownSignalCalibration = { [weak store] errHz in
+                    guard let store else { return }
+                    var cal = store.calibration(for: norad)
+                    let step = max(-2000.0, min(2000.0, errHz)) * 0.4    // damped residual
+                    cal.downlinkHz = max(-20_000, min(20_000, cal.downlinkHz + step))
+                    store.setCalibration(cal, for: norad)
+                    ODLog.shared.log(String(format: "FT4 auto-cal: sat %u downlink cal → %+.0f Hz", norad, cal.downlinkHz), category: "ft4")
+                }
+            } else {
+                ft4.ownSignalCalibration = nil
             }
             // Opt-in PSKReporter reporting (needs callsign + grid).
             if pskEnabled {

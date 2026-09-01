@@ -659,3 +659,49 @@ struct SatelliteStatusLine: View {
         }
     }
 }
+
+/// Live Doppler-corrected downlink/uplink frequency readout for the FT4 and SSTV cards, so
+/// an operator tuning by hand (no CAT) knows where to set the radio right now. Pure ephemeris
+/// plus the satellite's saved calibration; updates once a second. Shown below the az/el line.
+struct DopplerFrequencyLine: View {
+    @EnvironmentObject private var store: OrbitStore
+    let satellite: SatelliteRecord
+    /// Optionally pin to a specific transponder (FT4 passes the one CAT is tracking); else the
+    /// first two-way transponder, else the first.
+    var transponderOverride: TransponderRecord? = nil
+
+    private var transponder: TransponderRecord? {
+        transponderOverride
+            ?? satellite.transponders.first(where: { $0.uplinkCenter > 0 })
+            ?? satellite.transponders.first
+    }
+
+    var body: some View {
+        if let tp = transponder, tp.downlinkCenter > 0 {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                HStack(spacing: 6) {
+                    Image(systemName: "dial.medium").font(.system(size: 9)).foregroundStyle(ODTheme.muted)
+                    Text(readout(tp: tp, at: context.date))
+                    Spacer(minLength: 4)
+                }
+                .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+            }
+        }
+    }
+
+    private func readout(tp: TransponderRecord, at date: Date) -> String {
+        guard let look = try? OrbitPredictor.look(satellite, observer: store.preferences.observer, at: date) else {
+            return "Tune \(mhz(tp.downlinkCenter)) MHz"
+        }
+        let cal = store.downlinkCalibrationHz(for: satellite.id, invert: tp.invert)
+        let c = OrbitPredictor.dopplerFrequencies(downlinkHz: tp.downlinkCenter, uplinkHz: tp.uplinkCenter,
+                                                  rangeRateKmS: look.rangeRateKmS,
+                                                  downlinkCalibrationHz: cal, uplinkCalibrationHz: 0)
+        if tp.uplinkCenter > 0, c.tx > 0 {
+            return "Tune  RX \(mhz(c.rx)) · TX \(mhz(c.tx)) MHz"
+        }
+        return "Tune  RX \(mhz(c.rx)) MHz"
+    }
+
+    private func mhz(_ hz: Int64) -> String { String(format: "%.4f", Double(hz) / 1_000_000) }
+}

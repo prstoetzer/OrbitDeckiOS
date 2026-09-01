@@ -14,7 +14,7 @@ struct RotatorSettingsView: View {
         Form {
             Section {
                 Toggle("Enable rotator control", isOn: b(\.enabled))
-                Text("Point your az/el rotator at the selected satellite over a BLE serial adapter (GS-232, Easycomm, SPID) or a network connection (rotctld, PstRotator). Bluetooth Classic (SPP) adapters are not supported on iOS.")
+                Text("Point your az/el rotator at the selected satellite over a BLE serial adapter (GS-232, Easycomm, SPID, SAEBRTrack) or a network connection (rotctld, PstRotator, OZ9AAR URC). Bluetooth Classic (SPP) adapters are not supported on iOS. Green Heron RT-21 Az/El needs two independent serial links (one per axis), which a single BLE adapter can't drive, so it isn't offered.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
@@ -61,9 +61,7 @@ struct RotatorSettingsView: View {
                                 .frame(width: 90)
                                 .textFieldStyle(.odField)
                         }
-                        Text(rot.config.proto == .rotctld
-                             ? "Hamlib rotctld TCP server (default port 4533)."
-                             : "PstRotator UDP (default port 12000).")
+                        Text(networkHelp)
                             .font(.caption).foregroundStyle(ODTheme.muted)
                     }
                 }
@@ -92,6 +90,9 @@ struct RotatorSettingsView: View {
                     }
                     Stepper(value: b(\.leadSec), in: 0...600, step: 15) {
                         Text(verbatim: rot.config.leadSec == 0 ? "Pre-position lead: off" : "Pre-position lead: \(rot.config.leadSec) s")
+                    }
+                    Stepper(value: b(\.trackLeadSec), in: 0...10) {
+                        Text(verbatim: rot.config.trackLeadSec == 0 ? "Slew lead: off" : "Slew lead: \(rot.config.trackLeadSec) s")
                     }
                     Stepper(value: b(\.updateMs), in: 200...5000, step: 100) {
                         Text(verbatim: "Update rate: \(rot.config.updateMs) ms")
@@ -126,6 +127,14 @@ struct RotatorSettingsView: View {
                     rot.config.bleName = dev.name
                 }
             }
+        }
+    }
+
+    private var networkHelp: String {
+        switch rot.config.proto {
+        case .rotctld: "Hamlib rotctld TCP server (default port 4533)."
+        case .urc: "OZ9AAR URC controller, TCP/JSON (default port 1111)."
+        default: "PstRotator UDP (default port 12000)."
         }
     }
 

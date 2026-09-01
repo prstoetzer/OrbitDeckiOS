@@ -239,6 +239,10 @@ struct RigControlSettingsView: View {
                 }
                 Text("Reads the radio so tuning you do on the dial is honored: the followed leg leads and the other leg stays mapped through the transponder, both Doppler-corrected. Requires a radio that reports its frequency (most supported radios do).")
                     .font(.caption).foregroundStyle(ODTheme.muted)
+                Stepper("Dial settle: \(rig.config.tuning.followSettleMs) ms", value: bindTuning(\.followSettleMs), in: 0...1500, step: 50)
+                Stepper("Uplink resume: \(rig.config.tuning.followUplinkResumeMs) ms", value: bindTuning(\.followUplinkResumeMs), in: 0...3000, step: 100)
+                Text("How long Doppler pauses on the leg you just tuned so it doesn't fight you mid-turn, then resumes.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Stepper("Update rate: \(rig.config.tuning.updateMs) ms", value: bindTuning(\.updateMs), in: 100...2000, step: 50)
             Stepper("Command delay: \(rig.config.tuning.commandDelayMs) ms", value: bindTuning(\.commandDelayMs), in: 0...500, step: 10)
@@ -247,6 +251,7 @@ struct RigControlSettingsView: View {
             Toggle("Assign MAIN/SUB bands (IC-9100/9700)", isOn: bindTuning(\.assignBands))
             Stepper("FM deadband: \(rig.config.tuning.fmDeadbandHz) Hz", value: bindTuning(\.fmDeadbandHz), in: 0...2000, step: 50)
             Stepper("Linear deadband: \(rig.config.tuning.linearDeadbandHz) Hz", value: bindTuning(\.linearDeadbandHz), in: 0...500, step: 10)
+            Toggle("Narrow FM on FM satellites", isOn: bindTuning(\.narrowFM))
             Stepper("Predictive lead: \(rig.config.tuning.leadMs) ms", value: bindTuning(\.leadMs), in: 0...500, step: 10)
             HStack {
                 Text("Downlink transverter LO")

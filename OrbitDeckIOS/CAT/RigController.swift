@@ -91,6 +91,12 @@ final class RigController: ObservableObject {
     private static let dataModeModels: Set<String> = ["IC-9700", "IC-705", "IC-905", "IC-7100"]
     /// Yaesu rigs with a DIG data mode (0x0A). The FT-847/736R have no CAT data mode.
     private static let yaesuDataModels: Set<String> = ["FT-817", "FT-818", "FT-857", "FT-897"]
+    /// A full-duplex Kenwood with satellite mode (TS-2000/TS-790) — needs the SATL
+    /// entry handshake and dual-control (DC) band select for per-leg mode/tone.
+    private func kenwoodSat(_ spec: RadioSpec) -> Bool {
+        spec.family == .kenwoodBase && spec.fullDuplex && spec.hasSatMode
+    }
+
     /// Whether this radio can be put in a DATA sub-mode for the digital audio path.
     private func isDataModeCapable(_ spec: RadioSpec) -> Bool {
         switch spec.family {
@@ -118,6 +124,9 @@ final class RigController: ObservableObject {
     /// Doppler-slew estimate. Reset in startLoop().
     private var lastTickRxReal: Int64 = 0
     private var lastTickTime = Date.distantPast
+    /// While the operator is turning the dial on the followed leg, Doppler on that leg is
+    /// paused until this time (a short settle window) so we don't fight them mid-turn.
+    private var followSettleUntil = Date.distantPast
 
     private struct LiveLink {
         let slot: RigSlot
@@ -238,7 +247,16 @@ final class RigController: ObservableObject {
         wantConnection = false
         reconnectAttempts = 0
         statuses.removeAll()
-        Task { await teardown(); statusText = "Not connected." }
+        // Leave the radio the way we found it: take a Kenwood back out of SATL on an
+        // operator-initiated disconnect (best-effort; the link is still up here).
+        Task { await sendKenwoodSatExit(); await teardown(); statusText = "Not connected." }
+    }
+
+    /// Best-effort SATL exit for a full-duplex Kenwood before teardown.
+    private func sendKenwoodSatExit() async {
+        for link in links where kenwoodSat(link.spec) && link.leg == .both {
+            for f in CATCodec.kwSatExit() { await sendRaw(link, f) }
+        }
     }
 
     private func teardown() async {
@@ -329,6 +347,13 @@ final class RigController: ObservableObject {
             }
             if link.spec.family == .kenwoodHandheld {
                 for f in CATCodec.khtSession() { await sendRaw(link, f); await pace(30) }
+            }
+            // Kenwood TS-2000/790: enter satellite (SATL) mode so the MAIN=downlink /
+            // SUB=uplink split tracks. TRACE is left off (OrbitDeck drives Doppler). This
+            // is the fix for the "Kenwood never enters sat mode" defect. Idempotent.
+            if kenwoodSat(link.spec), link.leg == .both {
+                for f in CATCodec.kwSatEntry() { await sendRaw(link, f); await pace(60) }
+                ODLog.shared.log("Kenwood SATL entry → \(link.spec.name)", category: "cat")
             }
             // Satellite mode. The IC-9100/9700 (canAssignBand) REQUIRE satellite mode for
             // full-duplex MAIN/SUB tuning to take effect, so command it automatically for
@@ -444,7 +469,11 @@ final class RigController: ObservableObject {
         let observer = store.preferences.observer
         let isFM = tp.mode.uppercased().contains("FM")
         var deadband = Int64(isFM ? config.tuning.fmDeadbandHz : config.tuning.linearDeadbandHz)   // adapted near TCA (D2)
-        let dlMode = RigMode.parse(tp.mode)
+        var dlMode = RigMode.parse(tp.mode)
+        // Amateur FM satellites are narrow-band, so command FM-N on FM birds (the rig picks
+        // its narrow FM filter). Settable; falls back to plain FM on rigs without a CAT
+        // narrow-FM filter byte. Doesn't touch modes the DB already marks narrow.
+        if dlMode == .fm, config.tuning.narrowFM { dlMode = .fmn }
         let ulMode = uplinkMode(dlMode, invert: tp.invert, linear: tp.isLinear)
 
         // Re-apply mode + step (and tone) whenever the satellite, transponder or
@@ -468,12 +497,20 @@ final class RigController: ObservableObject {
             let last = (followLeg == .downlink) ? lastSentRx : lastSentTx
             if last != 0, let fl = followLink(for: followLeg),
                let obs = await readLegFreq(fl, leg: followLeg) {
-                let delta = Int64(obs) - last
+                let obsHz = Int64(obs)
+                let delta = obsHz - last
                 let thresh = max(Int64(30), deadband)
-                if abs(delta) >= thresh, abs(delta) < 1_000_000 {
+                // Band-plausibility guard: only fold a read that's on the SAME band we last
+                // commanded for this leg (a wrong-VFO or garbled reply on a cross-band rig
+                // would otherwise corrupt the passband offset). Replaces the old 1 MHz cap.
+                if abs(delta) >= thresh, sameBand(obsHz, last) {
                     let d = Double(delta)
                     config.tuning.passbandOffsetHz += (followLeg == .downlink) ? d : (tp.invert ? -d : d)
-                    if followLeg == .downlink { lastSentRx = Int64(obs) } else { lastSentTx = Int64(obs) }
+                    if followLeg == .downlink { lastSentRx = obsHz } else { lastSentTx = obsHz }
+                    // Pause Doppler on the followed leg for a short settle window so we don't
+                    // fight the operator while they're still turning (uplink gets a touch longer).
+                    let windowMs = followLeg == .uplink ? config.tuning.followUplinkResumeMs : config.tuning.followSettleMs
+                    followSettleUntil = Date().addingTimeInterval(Double(max(0, windowMs)) / 1000.0)
                 }
             }
         }
@@ -491,7 +528,12 @@ final class RigController: ObservableObject {
         let baseLeadSec = (Double(config.tuning.leadMs) + Double(config.tuning.updateMs) * 0.5) / 1000.0
         let rrNow = (try? OrbitPredictor.look(sat, observer: observer, at: Date()))?.rangeRateKmS ?? 0
         let leadTaper = min(1.0, abs(rrNow) / 0.35)
-        let leadSec = baseLeadSec * leadTaper
+        var leadSec = baseLeadSec * leadTaper
+        // Post-TCA receding-leg assist (from the OscarWatch cross-audit): on the outbound
+        // half of the pass (range rate > 0, satellite departing) the dial tends to lag as
+        // Doppler falls away, so add a modest extra lead (up to +25%), ramped in with the
+        // receding rate. The inbound/approaching leg and the TCA region are left unchanged.
+        if rrNow > 0 { leadSec *= 1.0 + 0.25 * min(1.0, rrNow / 1.5) }
         let when = Date().addingTimeInterval(leadSec)
         guard let look = try? OrbitPredictor.look(sat, observer: observer, at: when) else { return }
         let offset = tp.isLinear ? Int64(config.tuning.passbandOffsetHz.rounded()) : 0
@@ -535,14 +577,18 @@ final class RigController: ObservableObject {
             ODLog.shared.log("tune rx=\(rxRig) tx=\(txRig) dl=\(dlMode.rawValue) ul=\(ulMode.rawValue)", category: "cat")
         }
 
+        // During the settle window, hold Doppler off the followed leg (see follow block).
+        let settling = config.tuning.followRadio && Date() < followSettleUntil
+        let settleDown = settling && config.tuning.followLeg == .downlink
+        let settleUp = settling && config.tuning.followLeg == .uplink
         for link in links {
             switch link.leg {
             case .both:
                 // Downlink first (CardSat driveDownlink), then uplink.
                 let followUplink = config.tuning.followRadio && config.tuning.followLeg == .uplink
                 let dlMoved = abs(rxRig - lastSentRx) >= deadband
-                if dlMoved { await sendFreq(link, leg: .downlink, hz: rxRig, mode: dlMode); lastSentRx = rxRig }
-                if uplink > 0, abs(txRig - lastSentTx) >= deadband {
+                if dlMoved, !settleDown { await sendFreq(link, leg: .downlink, hz: rxRig, mode: dlMode); lastSentRx = rxRig }
+                if uplink > 0, !settleUp, abs(txRig - lastSentTx) >= deadband {
                     if followUplink {
                         // OTR-uplink: write the uplink immediately (no defer) and LEAVE
                         // band access on the uplink, so the followed-uplink read stays
@@ -562,9 +608,9 @@ final class RigController: ObservableObject {
                     }
                 }
             case .downlink:
-                if abs(rxRig - lastSentRx) >= deadband { await sendFreq(link, leg: .downlink, hz: rxRig, mode: dlMode); lastSentRx = rxRig }
+                if !settleDown, abs(rxRig - lastSentRx) >= deadband { await sendFreq(link, leg: .downlink, hz: rxRig, mode: dlMode); lastSentRx = rxRig }
             case .uplink:
-                if uplink > 0, abs(txRig - lastSentTx) >= deadband { await sendFreq(link, leg: .uplink, hz: txRig, mode: ulMode); lastSentTx = txRig }
+                if uplink > 0, !settleUp, abs(txRig - lastSentTx) >= deadband { await sendFreq(link, leg: .uplink, hz: txRig, mode: ulMode); lastSentTx = txRig }
             }
         }
     }
@@ -613,6 +659,31 @@ final class RigController: ObservableObject {
 
     private func civAddr(_ link: LiveLink) -> UInt8 {
         link.slot.civAddrOverride > 0 ? UInt8(link.slot.civAddrOverride) : link.spec.civAddr
+    }
+
+    /// Two frequencies (rig units) on the same amateur band — the follow-dial
+    /// band-plausibility guard. Compares against the last-commanded value for the leg, so
+    /// it stays self-consistent even with a transverter IF. Unknown bands never match.
+    private func sameBand(_ a: Int64, _ b: Int64) -> Bool {
+        func band(_ hz: Int64) -> Int {
+            switch hz {
+            case 1_800_000...2_000_000: return 160
+            case 3_500_000...4_000_000: return 80
+            case 7_000_000...7_300_000: return 40
+            case 14_000_000...14_350_000: return 20
+            case 21_000_000...21_450_000: return 15
+            case 28_000_000...29_700_000: return 10
+            case 50_000_000...54_000_000: return 6
+            case 144_000_000...148_000_000: return 2
+            case 220_000_000...225_000_000: return 122
+            case 430_000_000...450_000_000: return 70
+            case 902_000_000...928_000_000: return 33
+            case 1_240_000_000...1_300_000_000: return 23
+            default: return -1
+            }
+        }
+        let ba = band(a)
+        return ba != -1 && ba == band(b)
     }
 
     /// Whether MAIN carries the uplink for this radio. The IC-9100/9700 satellite mode is
@@ -712,7 +783,13 @@ final class RigController: ObservableObject {
         case .yaesuFT100:
             await sendRaw(link, CATCodec.yaesuSetMode(link.spec, mode: mode, vfo: .plain))
         case .kenwoodBase:
-            await sendRaw(link, CATCodec.kwSetMode(mode))     // no clean CAT data mode
+            // TS-2000/790 in SATL: MD applies to the CTRL band, so select it first
+            // (uplink → SUB, downlink → MAIN with TX left on SUB). Non-sat Kenwoods
+            // (TS-711/811) just get MD. No clean CAT data mode either way.
+            if kenwoodSat(link.spec), link.leg == .both {
+                await sendRaw(link, CATCodec.kwSatControl(uplink: leg == .uplink))
+            }
+            await sendRaw(link, CATCodec.kwSetMode(mode))
         case .kenwoodHandheld:
             for f in CATCodec.khtStep(for: mode) { await sendRaw(link, f); await pace(20) }
             await sendRaw(link, CATCodec.khtSetMode(mode))

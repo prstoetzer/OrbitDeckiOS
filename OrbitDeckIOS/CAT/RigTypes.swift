@@ -17,14 +17,16 @@ import Foundation
 
 /// Operating mode, mapped to each family's wire encoding by `CATCodec`.
 enum RigMode: String, Codable, Sendable, CaseIterable, Identifiable {
-    case lsb, usb, cw, fm, am, data
+    case lsb, usb, cw, fm, fmn, am, data
     var id: String { rawValue }
     var label: String {
         switch self {
         case .lsb: "LSB"; case .usb: "USB"; case .cw: "CW"
-        case .fm: "FM"; case .am: "AM"; case .data: "Data"
+        case .fm: "FM"; case .fmn: "FM-N"; case .am: "AM"; case .data: "Data"
         }
     }
+    /// True for both wide and narrow FM (deadband, tone, "is this an FM bird" checks).
+    var isFM: Bool { self == .fm || self == .fmn }
 
     /// Best-effort parse of a transponder/mode string ("USB", "FM", "CW", …).
     static func parse(_ text: String) -> RigMode {
@@ -32,6 +34,8 @@ enum RigMode: String, Codable, Sendable, CaseIterable, Identifiable {
         if t.contains("LSB") { return .lsb }
         if t.contains("USB") { return .usb }
         if t.contains("CW") { return .cw }
+        // Narrow FM ("FM-N", "FMN", "NFM") before plain FM (all contain "FM").
+        if t.contains("FMN") || t.contains("FM-N") || t.contains("NFM") { return .fmn }
         if t.contains("FM") { return .fm }
         if t.contains("AM") { return .am }
         if t.contains("DATA") || t.contains("DIG") || t.contains("FSK") || t.contains("RTTY") { return .data }
@@ -72,6 +76,10 @@ struct RadioSpec: Identifiable, Sendable, Hashable {
     let selSub: [UInt8]     // CI-V SUB band-access bytes
     let canAssignBand: Bool // CI-V 07 D2 band assignment (9100/9700)
     let wideFreq: Bool      // 6-byte CI-V frequency above 5.85 GHz (IC-905)
+    /// CI-V filter byte for narrow FM (FM-N), or 0 if the rig can't select it over CAT.
+    /// Amateur FM satellites are narrow-band, so FM birds are commanded with `06 05 <this>`
+    /// (e.g. IC-910/9100/9700 → 0x02 = FIL2). 0 falls back to plain FM.
+    var fmNarrowFilter: UInt8 = 0
 }
 
 // MARK: - Radio catalog
@@ -82,13 +90,13 @@ enum RadioCatalog {
         civ("IC-820", 0x42, 9600, selMain: [0x07,0xD1], selSub: [0x07,0xD0], sat: false),
         civ("IC-821", 0x4C, 9600, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: false),
         civ("IC-910", 0x60, 19200, selMain: [0x07,0xD1], selSub: [0x07,0xD0], sat: true,
-            satCmd: 0x1A, satSub: 0x07, tone: true, toneSub: 0x43, modeFilter: false),
+            satCmd: 0x1A, satSub: 0x07, tone: true, toneSub: 0x43, modeFilter: false, fmNarrow: 0x02),
         civ("IC-970", 0x2E, 9600, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: false,
             satCmd: 0x16, satSub: 0x5A),
         civ("IC-9100", 0x7C, 19200, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: true,
-            satCmd: 0x16, satSub: 0x5A, tone: true, toneSub: 0x42, assignBand: true),
+            satCmd: 0x16, satSub: 0x5A, tone: true, toneSub: 0x42, assignBand: true, fmNarrow: 0x02),
         civ("IC-9700", 0xA2, 19200, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: true,
-            satCmd: 0x16, satSub: 0x5A, tone: true, toneSub: 0x42, assignBand: true, lan: true),
+            satCmd: 0x16, satSub: 0x5A, tone: true, toneSub: 0x42, assignBand: true, lan: true, fmNarrow: 0x02),
         RadioSpec(id: "FT-847", name: "FT-847", family: .yaesuBinary, civAddr: 0, defaultBaud: 57600,
                   fullDuplex: true, rxOnly: false, hasLan: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: true, satModeCmd: 0, satModeSub: 0, hasTone: true, toneEncSub: 0,
@@ -184,11 +192,12 @@ enum RadioCatalog {
                             satCmd: UInt8 = 0, satSub: UInt8 = 0,
                             tone: Bool = false, toneSub: UInt8 = 0,
                             modeFilter: Bool = true, assignBand: Bool = false,
-                            lan: Bool = false) -> RadioSpec {
+                            lan: Bool = false, fmNarrow: UInt8 = 0) -> RadioSpec {
         RadioSpec(id: name, name: name, family: .civ, civAddr: addr, defaultBaud: baud,
                   fullDuplex: true, rxOnly: false, hasLan: lan, canReadFreq: true, modeFilter: modeFilter,
                   hasSatMode: sat, satModeCmd: satCmd, satModeSub: satSub, hasTone: tone, toneEncSub: toneSub,
-                  selMain: selMain, selSub: selSub, canAssignBand: assignBand, wideFreq: false)
+                  selMain: selMain, selSub: selSub, canAssignBand: assignBand, wideFreq: false,
+                  fmNarrowFilter: fmNarrow)
     }
     private static func civLeg(_ name: String, _ addr: UInt8, _ baud: Int,
                                rxOnly: Bool = false, lan: Bool = false, wide: Bool = false,
@@ -281,6 +290,7 @@ struct CATTuning: Codable, Sendable, Equatable {
     var assignBands = false          // send CI-V 07 D2 band assignment at engage
     var fmDeadbandHz = 300           // FM write deadband
     var linearDeadbandHz = 20        // SSB/CW write deadband (tight for FT4/CW tracking)
+    var narrowFM = true              // command narrow FM (FM-N) on FM satellites (they're narrow-band)
     var leadMs = 100                 // predictive-lead atop the auto interval-centering
     var calDownlinkHz = 0            // extra global downlink oscillator trim
     var calUplinkHz = 0              // extra global uplink oscillator trim
@@ -292,6 +302,12 @@ struct CATTuning: Codable, Sendable, Equatable {
     // the other leg mapped through the transponder. Downlink is the usual master.
     var followRadio = false
     var followLeg: RigRole = .downlink
+    // After the operator moves the dial, pause CAT Doppler on the followed leg briefly so
+    // reads settle before we resume tracking (a short window — much tighter than the
+    // ~800/2500 ms desktop trackers use — since a phone loop is faster and operators expect
+    // snappy resume). Uplink gets a little longer so a quick dial nudge isn't fought mid-QSO.
+    var followSettleMs = 250
+    var followUplinkResumeMs = 700
     // rigctld: for a full-duplex single radio (role .both), track uplink on the
     // split/TX VFO (rigctl `S 1 VFOB` + `I`/`X`). Turn off for backends without a
     // usable split.
@@ -351,8 +367,9 @@ extension RigSlot {
 extension CATTuning {
     enum CK: String, CodingKey {
         case trackDoppler, updateMs, commandDelayMs, mainIsUplink, satMode, assignBands
-        case fmDeadbandHz, linearDeadbandHz, leadMs, calDownlinkHz, calUplinkHz
-        case xvtrDownlinkHz, xvtrUplinkHz, uplinkToneHz, passbandOffsetHz, followRadio, followLeg, rigctldUseSplit
+        case fmDeadbandHz, linearDeadbandHz, narrowFM, leadMs, calDownlinkHz, calUplinkHz
+        case xvtrDownlinkHz, xvtrUplinkHz, uplinkToneHz, passbandOffsetHz, followRadio, followLeg
+        case followSettleMs, followUplinkResumeMs, rigctldUseSplit
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
@@ -365,6 +382,7 @@ extension CATTuning {
         t.assignBands = c.value(Bool.self, .assignBands, t.assignBands)
         t.fmDeadbandHz = c.value(Int.self, .fmDeadbandHz, t.fmDeadbandHz)
         t.linearDeadbandHz = c.value(Int.self, .linearDeadbandHz, t.linearDeadbandHz)
+        t.narrowFM = c.value(Bool.self, .narrowFM, t.narrowFM)
         t.leadMs = c.value(Int.self, .leadMs, t.leadMs)
         t.calDownlinkHz = c.value(Int.self, .calDownlinkHz, t.calDownlinkHz)
         t.calUplinkHz = c.value(Int.self, .calUplinkHz, t.calUplinkHz)
@@ -374,6 +392,8 @@ extension CATTuning {
         t.passbandOffsetHz = c.value(Double.self, .passbandOffsetHz, t.passbandOffsetHz)
         t.followRadio = c.value(Bool.self, .followRadio, t.followRadio)
         t.followLeg = c.value(RigRole.self, .followLeg, t.followLeg)
+        t.followSettleMs = c.value(Int.self, .followSettleMs, t.followSettleMs)
+        t.followUplinkResumeMs = c.value(Int.self, .followUplinkResumeMs, t.followUplinkResumeMs)
         t.rigctldUseSplit = c.value(Bool.self, .rigctldUseSplit, t.rigctldUseSplit)
         self = t
     }
@@ -387,6 +407,7 @@ extension CATTuning {
         try c.encode(assignBands, forKey: .assignBands)
         try c.encode(fmDeadbandHz, forKey: .fmDeadbandHz)
         try c.encode(linearDeadbandHz, forKey: .linearDeadbandHz)
+        try c.encode(narrowFM, forKey: .narrowFM)
         try c.encode(leadMs, forKey: .leadMs)
         try c.encode(calDownlinkHz, forKey: .calDownlinkHz)
         try c.encode(calUplinkHz, forKey: .calUplinkHz)
@@ -396,6 +417,8 @@ extension CATTuning {
         try c.encode(passbandOffsetHz, forKey: .passbandOffsetHz)
         try c.encode(followRadio, forKey: .followRadio)
         try c.encode(followLeg, forKey: .followLeg)
+        try c.encode(followSettleMs, forKey: .followSettleMs)
+        try c.encode(followUplinkResumeMs, forKey: .followUplinkResumeMs)
         try c.encode(rigctldUseSplit, forKey: .rigctldUseSplit)
     }
 }
