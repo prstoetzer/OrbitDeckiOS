@@ -517,7 +517,12 @@ struct HomeFT4Card: View {
                 ft4.pskReporter = nil
             }
             // Command the data sub-mode (USB-D/LSB-D) so audio uses the rig's data port,
-            // unless the operator opted out (feeding audio via mic/headphone instead).
+            // unless the operator opted out (feeding audio via mic/headphone instead). Only
+            // engaged when FT4 is started — the radio stays in plain USB/LSB for voice QSOs
+            // beforehand — and cleared again on stop. Once set, the flag persists for the FT4
+            // session, so a mid-pass RS-BA1 drop/reconnect re-applies it; but it never turns
+            // DATA on outside an active FT4 session.
+            ODLog.shared.log("FT4 start: data-mode pref=\(ft4DataMode) rigConnected=\(rig.connected)", category: "ft4")
             rig.setDigitalDataMode(rig.connected && ft4DataMode)
             ft4.start(source: source, myCall: qso.config.myCall, myGrid: store.operatorGrid6, satellite: satellite.name)
         } else {
