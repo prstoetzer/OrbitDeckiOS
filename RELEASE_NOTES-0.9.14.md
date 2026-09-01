@@ -1,6 +1,6 @@
-# OrbitDeck iOS/iPadOS 0.9.14 (7) — logging, LoTW, SSTV, full-duplex FT4, rigctl
+# OrbitDeck iOS/iPadOS 0.9.14 — logging, LoTW, SSTV, full-duplex FT4, rigctl, shared audio & CAT/rotator parity
 
-Version **0.9.14 (7)**. This release remains below 1.0. It follows 0.9.13.
+Version **0.9.14 (11)**. This release remains below 1.0. It follows 0.9.13.
 
 ## Summary
 
@@ -10,6 +10,44 @@ Version **0.9.14 (7)**. This release remains below 1.0. It follows 0.9.13.
 USB audio interface or an Icom network-audio radio. It also adds a **rigctl
 (Hamlib)** CAT path and fixes the satellite direction-of-travel arrow on
 high-elliptical orbits.
+
+## 0.9.14 (11) — CAT & rotator parity (OscarWatch cross-audit)
+
+- **Narrow FM on FM satellites.** FM birds (SO-50, …) are now commanded in **FM-N** — the rig
+  picks its narrow FM filter (IC-910/9100/9700). Settable in CAT tuning (on by default).
+- **Kenwood TS-2000 / TS-790 satellite mode.** These now enter the radio's **satellite (SATL)
+  mode** with the proper Main = downlink / Sub = uplink split handshake (previously they were
+  driven as a plain dual-VFO radio and never entered sat mode).
+- **Two more rotators.** Added **SAEBRTrack** (serial) and **OZ9AAR URC** (TCP/JSON), joining
+  GS-232, Easycomm, SPID, rotctld and PstRotator. New optional **slew lead** aims a few seconds
+  ahead of the bird to cover a rotator's mechanical lag on fast passes.
+- **FT4/SSTV tune-here readout.** A live **Doppler-corrected RX/TX frequency** line on the FT4
+  and SSTV cards shows exactly where to set the radio, so you can operate by hand without CAT.
+- **FT4 signal reports recalibrated** to read close to WSJT-X (the noise floor is now measured
+  in the SSB passband instead of across the empty filter skirts, which had inflated every SNR).
+- **Automatic transponder calibration (opt-in).** While you work FT4 full duplex, OrbitDeck can
+  measure where your own signal lands versus your TX audio frequency and fold the difference
+  into that satellite's saved calibration, refining it on every self-decode. Linear
+  transponders only; enable in Settings → Audio features.
+- **Doppler tracking refinements** — extra predictive lead on the receding half of a pass; a
+  short, adjustable dial settle/resume so CAT doesn't fight you when you tune; and a
+  band-plausibility guard on follow-dial reads.
+
+## 0.9.14 (8–10) — shared audio, remote voice, data mode & RS-BA1 robustness
+
+- **Shared audio hub.** Pass recording, a decoder (FT4/SSTV) and remote voice now share one
+  capture, so recording can run alongside FT4/SSTV; each feature keeps its own independent
+  input level.
+- **Remote SSB/FM voice** over a network (RS-BA1) radio — listen through the phone and
+  hold-to-talk with PTT over CAT (network audio path).
+- **FT4 data sub-mode.** On a data-capable radio, starting FT4 switches it to the DATA
+  sub-mode (USB-D/LSB-D via `06`+`1A 06` on the IC-9700, DIG on the Yaesu FT-8x7, Hamlib PKT
+  via rigctld) and restores plain SSB on stop. Default on; settable.
+- **IC-9700 satellite layout fix** — MAIN = downlink (RX), SUB = uplink (TX), so RS-44 no
+  longer comes out with the sidebands swapped; MAIN/SUB bands are assigned automatically.
+- **RS-BA1 network robustness** — a receive watchdog catches a silently dead link, the
+  keepalive cadence matches wfview, network audio re-establishes after a reconnect, and a
+  transient Wi-Fi path blip is ridden through instead of forcing a full re-login.
 
 ## 0.9.14 (7) — running station robustness
 

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Rotator Control — OrbitDeck for iOS</title>
-    <meta name="description" content="OrbitDeck for iOS can steer an az/el antenna rotator through a satellite pass — GS-232, Easycomm, SPID, rotctld and PstRotator — over a BLE serial adapter or a network connection: protocols, transports, alignment and pointing options.">
+    <meta name="description" content="OrbitDeck for iOS can steer an az/el antenna rotator through a satellite pass — GS-232, Easycomm, SPID, SAEBRTrack, rotctld, PstRotator and OZ9AAR URC — over a BLE serial adapter or a network connection: protocols, transports, alignment and pointing options.">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -55,18 +55,20 @@
                     <li><strong>Yaesu GS-232A/B</strong> — the ubiquitous ASCII protocol (<code>W&nbsp;aaa&nbsp;eee</code> to point) used by Yaesu GS-232 controllers and the many clones and Arduino projects that emulate it. Serial.</li>
                     <li><strong>Easycomm I / II / III</strong> — the open ASCII standard used by many home-built and open-source controllers (<code>AZ&hellip;&nbsp;EL&hellip;</code>). Easycomm&nbsp;III is accepted with the same grammar as&nbsp;II (velocity fields are not used). Serial.</li>
                     <li><strong>SPID Rot2Prog</strong> — the binary frame protocol of SPID Elektronik controllers (Rot2Prog, MD-01/02). Serial.</li>
+                    <li><strong>SAEBRTrack</strong> — the compact whole-degree ASCII format (<code>AZnnnELnnn</code>) used by SAEBRTrack and SatPC32-style Arduino controllers. Fire-and-forget (no position read-back). Serial.</li>
                     <li><strong>rotctld (Hamlib NET rotctl)</strong> — the Hamlib network rotator daemon over <strong>TCP</strong> (default port&nbsp;<strong>4533</strong>). Because <code>rotctld</code> can drive virtually every rotator Hamlib supports, this is the most flexible option — run <code>rotctld</code> on a computer near the rotator and point OrbitDeck at it. Network.</li>
                     <li><strong>PstRotator</strong> — the popular Windows rotator program's <strong>UDP</strong> control input (default port&nbsp;<strong>12000</strong>). OrbitDeck pushes the tracking bearing to PstRotator, which drives your actual rotator. Network.</li>
+                    <li><strong>OZ9AAR URC</strong> — the OZ9AAR Universal Rotator Controller over <strong>TCP</strong> with a JSON command format (<code>{"GOTO":[az,el]}</code>, default port&nbsp;<strong>1111</strong>). Network.</li>
                 </ul>
                 <div class="note">
-                    <code>rotctld</code> is the recommended path for a rotator that OrbitDeck doesn't speak natively: Hamlib's driver list covers Yaesu, SPID, Green Heron, Prosistel, M2, EA4TX and dozens more, and OrbitDeck only needs the TCP address.
+                    <code>rotctld</code> is the recommended path for a rotator that OrbitDeck doesn't speak natively: Hamlib's driver list covers Yaesu, SPID, Green Heron, Prosistel, M2, EA4TX and dozens more, and OrbitDeck only needs the TCP address. (The Green Heron RT-21 Az/El, in particular, uses two independent serial links — one per axis — so it can't be driven directly from a single BLE adapter; reach it through <code>rotctld</code> on a nearby computer instead.)
                 </div>
 
                 <h2 id="interfaces">Connections &amp; adapters</h2>
                 <p>How OrbitDeck reaches the rotator depends on the protocol:</p>
                 <ul>
-                    <li><strong>BLE serial adapter</strong> (GS-232, Easycomm, SPID) — a Bluetooth&nbsp;<em>Low Energy</em> UART adapter (Nordic UART Service or a generic write+notify pair) wired to the rotator controller's serial port. This is the same class of adapter used for wired rig control; see the <a href="catcontrol.html#adapters">adapters that work</a> on the Rig Control page.</li>
-                    <li><strong>Network</strong> (rotctld, PstRotator) — a plain TCP or UDP connection over your local Wi-Fi to the computer running the daemon. Enter its IP address and port.</li>
+                    <li><strong>BLE serial adapter</strong> (GS-232, Easycomm, SPID, SAEBRTrack) — a Bluetooth&nbsp;<em>Low Energy</em> UART adapter (Nordic UART Service or a generic write+notify pair) wired to the rotator controller's serial port. This is the same class of adapter used for wired rig control; see the <a href="catcontrol.html#adapters">adapters that work</a> on the Rig Control page.</li>
+                    <li><strong>Network</strong> (rotctld, PstRotator, OZ9AAR URC) — a plain TCP or UDP connection over your local Wi-Fi to the computer or controller running the daemon. Enter its IP address and port.</li>
                 </ul>
                 <div class="note">
                     <strong>Bluetooth Classic (SPP) adapters are not supported on iOS.</strong> Apple restricts Bluetooth Classic to MFi-certified accessories, so HC-05/HC-06-style serial adapters cannot be opened by a normal app. Use a BLE UART adapter for serial rotators, or reach the rotator over the network with <code>rotctld</code>.
@@ -76,7 +78,7 @@
                 <ol>
                     <li>Open <strong>Settings &rarr; Rotator control</strong> and turn on <strong>Enable rotator control</strong>.</li>
                     <li>Choose the <strong>protocol</strong>. Network protocols reveal a Host and Port; serial protocols reveal the BLE adapter picker and serial rate.</li>
-                    <li>For a network rotator, enter the daemon's <strong>host</strong> (IP) and <strong>port</strong> — the default fills in automatically (4533 for rotctld, 12000 for PstRotator). For a serial rotator, tap <strong>BLE adapter</strong> and pick your adapter from the scan.</li>
+                    <li>For a network rotator, enter the daemon's <strong>host</strong> (IP) and <strong>port</strong> — the default fills in automatically (4533 for rotctld, 12000 for PstRotator, 1111 for OZ9AAR URC). For a serial rotator, tap <strong>BLE adapter</strong> and pick your adapter from the scan.</li>
                     <li>Set the pointing, alignment and park options as needed, then tap <strong>Done</strong>.</li>
                 </ol>
 
@@ -87,6 +89,7 @@
                 <ul>
                     <li><strong>Minimum elevation</strong> — only track above this elevation; below it the antenna waits or parks. Set to&nbsp;0 to track the whole visible pass.</li>
                     <li><strong>Pre-position lead</strong> — how many seconds before AOS to aim at the rise bearing so the antenna is already there when the satellite appears (0 disables pre-positioning).</li>
+                    <li><strong>Slew lead</strong> — optionally aim a few seconds ahead of the satellite <em>while tracking</em>, to compensate for a rotator's mechanical lag on fast, high passes (0 disables).</li>
                     <li><strong>Deadband</strong> — the smallest change in commanded bearing that triggers a new move, so the rotator isn't nudged needlessly during slow stretches.</li>
                     <li><strong>Update rate</strong> — how often the pointing loop recomputes and sends the target.</li>
                 </ul>

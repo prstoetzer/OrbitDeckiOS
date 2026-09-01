@@ -57,6 +57,7 @@
                 <ul>
                     <li><strong>BLE serial adapter</strong> — a Bluetooth&nbsp;<em>Low Energy</em> UART adapter (Nordic UART Service or a generic write+notify pair) wired to the radio's CAT / CI-V / serial port. This is how CI-V, Yaesu and Kenwood radios are driven — for example the open-source <a href="#adapters">OrbitLinkS3</a> CI-V bridge, or the <strong>B.B.&nbsp;Link</strong> for the Kenwood TH-D74/D75.</li>
                     <li><strong>Icom network (Wi-Fi)</strong> — Icom's RS-BA1 network protocol over your local Wi-Fi, for network-capable Icoms (IC-9700, IC-705, IC-905). Enable Network Control on the radio with a User1 login.</li>
+                    <li><strong>rigctld (Hamlib, network)</strong> — a TCP connection to a Hamlib <code>rigctld</code> server (default port&nbsp;4532) running on a nearby computer, which drives any radio Hamlib supports. Handy for a USB-only rig an iPhone can't reach directly, or any radio you already run through Hamlib.</li>
                 </ul>
                 <div class="note">
                     <strong>Bluetooth Classic (SPP) adapters are not supported on iOS.</strong> Apple restricts Bluetooth Classic to MFi-certified accessories, so the inexpensive HC-05/HC-06-style serial adapters (including most generic FT-817 Bluetooth adapters) cannot be opened by a normal app. Use a BLE adapter instead. Likewise, radios whose only computer interface is USB (for example the FT-991/991A and FTX-1) cannot be reached from an iPhone or iPad and are not listed.
@@ -76,13 +77,14 @@
                 </div>
 
                 <h2 id="radios">Supported radios</h2>
-                <p>OrbitDeck speaks three CAT dialect families and their variants, covering the radios in the CardSat reference set (minus USB-only models):</p>
+                <p>OrbitDeck speaks the Icom, Yaesu and Kenwood CAT dialects directly, plus Hamlib <code>rigctld</code> over the network — covering the radios in the CardSat reference set (minus USB-only models):</p>
                 <ul>
                     <li><strong>Icom CI-V</strong> — full-duplex satellite rigs IC-820, IC-821, IC-910, IC-970, IC-9100, IC-9700; transceivers IC-705, IC-905, IC-7100, IC-7000, the IC-706 family, IC-275/471/271/475/575/1275; and CI-V receivers (IC-R10/R20/R30/R7000/R7100/R8500/R8600/R9000/R9500).</li>
                     <li><strong>Yaesu</strong> — FT-847 (full-duplex), FT-817/818/857/897, FT-100, FT-736R, and the VR-5000 receiver.</li>
-                    <li><strong>Kenwood</strong> — TS-790 and TS-2000 (full-duplex), the TS-711/TS-811 all-mode base stations, and the TH-D74/D75 handhelds (all-mode receiver on band B, via the B.B.&nbsp;Link).</li>
+                    <li><strong>Kenwood</strong> — TS-790 and TS-2000 (full-duplex — OrbitDeck puts them into the radio's satellite/SATL mode automatically, MAIN&nbsp;=&nbsp;downlink / SUB&nbsp;=&nbsp;uplink), the TS-711/TS-811 all-mode base stations, and the TH-D74/D75 handhelds (all-mode receiver on band B, via the B.B.&nbsp;Link).</li>
+                    <li><strong>rigctld (Hamlib)</strong> — any Hamlib-supported radio, driven over a network connection to a <code>rigctld</code> server, for a full-duplex split rig or a single leg.</li>
                 </ul>
-                <p>For Icom radios you can override the <strong>CI-V address</strong>; for BLE connections you can set the <strong>serial rate</strong> to match your adapter. Network CAT is available on the IC-9700, IC-705 and IC-905.</p>
+                <p>For Icom radios you can override the <strong>CI-V address</strong>; for BLE connections you can set the <strong>serial rate</strong> to match your adapter. Network CAT is available on the IC-9700, IC-705 and IC-905, and via <code>rigctld</code> for anything on Hamlib.</p>
 
                 <h2 id="stations">Station configurations</h2>
                 <ul>
@@ -107,15 +109,16 @@
                     <li><strong>Track Doppler</strong> — enable/disable the tuning loop.</li>
                     <li><strong>Update rate</strong> and <strong>command delay</strong> — how often frequencies are sent and the pause between CAT frames.</li>
                     <li><strong>MAIN = uplink, SUB = downlink</strong> — the VFO role convention for a full-duplex rig.</li>
-                    <li><strong>Command satellite mode</strong> and <strong>assign MAIN/SUB bands</strong> — for Icoms that support it over CI-V (IC-9100/9700).</li>
+                    <li><strong>Command satellite mode</strong> and <strong>assign MAIN/SUB bands</strong> — for Icoms that support it over CI-V (IC-9100/9700). Kenwood TS-2000/790 satellite mode is handled automatically.</li>
                     <li><strong>FM / linear deadbands</strong> — the smallest change that triggers a new command, so the radio isn't retuned needlessly.</li>
+                    <li><strong>Narrow FM on FM satellites</strong> — command FM-N (the narrow FM filter) on FM birds like SO-50 where the rig supports it (IC-910/9100/9700). On by default.</li>
                     <li><strong>Predictive lead</strong> — tune slightly ahead of the current geometry.</li>
                     <li><strong>Oscillator calibration</strong> — additional global downlink/uplink trims (per-satellite calibration comes from the Calibrations screen).</li>
                     <li><strong>Uplink CTCSS</strong> — a PL tone on the FM uplink.</li>
                 </ul>
 
                 <h2 id="onetrule">One True Rule (follow the dial)</h2>
-                <p>Turn on <strong>Follow radio tuning</strong> and choose whether OrbitDeck follows the <strong>downlink</strong> (the usual choice) or the <strong>uplink</strong>. OrbitDeck then reads the radio: when you spin the followed dial, it folds your change into the passband offset and keeps the <em>other</em> leg mapped correctly through the transponder — both Doppler-corrected. This is the classic full-duplex operating rule: you tune the receiver to a station and the transmitter follows automatically. It requires a radio that can report its frequency, which most supported radios can.</p>
+                <p>Turn on <strong>Follow radio tuning</strong> and choose whether OrbitDeck follows the <strong>downlink</strong> (the usual choice) or the <strong>uplink</strong>. OrbitDeck then reads the radio: when you spin the followed dial, it folds your change into the passband offset and keeps the <em>other</em> leg mapped correctly through the transponder — both Doppler-corrected. This is the classic full-duplex operating rule: you tune the receiver to a station and the transmitter follows automatically. When you turn the dial, OrbitDeck briefly pauses Doppler on that leg (a short, adjustable settle window) so it doesn't fight you mid-turn, then resumes. It requires a radio that can report its frequency, which most supported radios can.</p>
 
                 <h2 id="transverter">Transverters</h2>
                 <p>If a leg runs through a transverter, enter its <strong>local-oscillator (LO) offset</strong> for the downlink and/or uplink. OrbitDeck tracks, displays and Doppler-corrects the real on-air frequency, and sends the radio the intermediate frequency (real &minus; LO) — so a rig that only tunes a lower band can still work the microwave satellite bands.</p>
