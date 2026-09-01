@@ -52,13 +52,19 @@ enum CATCodec {
         return civFrame(addr: addr, payload: [0x06, civModeByte(mode)])
     }
 
-    /// Set operating mode + DATA sub-mode + filter in ONE command (CI-V 0x26) — the modern
-    /// Icom method (IC-9700/705/905/7100). `26 00 <mode> <data> <filter>`: selector 0x00 =
-    /// the currently selected band (set MAIN/SUB first with 07 D0/D1), data 0x01 = DATA1 /
-    /// 0x00 = off, filter 0x01 = FIL1. (The older 1A 06 data-mode command did not put these
-    /// radios into USB-D as intended.)
-    static func civSetModeWithData(_ spec: RadioSpec, addr: UInt8, mode: RigMode, data: Bool) -> [UInt8] {
-        civFrame(addr: addr, payload: [0x26, 0x00, civModeByte(mode), data ? 0x01 : 0x00, 0x01])
+    /// Set operating mode WITHOUT the filter byte (`06 <mode>`). Used for the IC-9700
+    /// satellite-mode data sequence, where the filter is carried by the following 1A 06
+    /// (matches OscarWatch's tested `Encode9700SetModeCommands`; command 0x26 is rejected
+    /// with "FA" in satellite mode, per the IC-9700 CI-V reference p.24).
+    static func civSetModeBase(addr: UInt8, mode: RigMode) -> [UInt8] {
+        civFrame(addr: addr, payload: [0x06, civModeByte(mode)])
+    }
+
+    /// Icom DATA sub-mode + filter (CI-V 1A 06): `1A 06 <data> <filter>` — data 0x01 = ON /
+    /// 0x00 = OFF; filter 0x01 = FIL1 (must be 0x00 when data is OFF), per the IC-9700 CI-V
+    /// reference p.18. With an SSB base mode this gives USB-D / LSB-D.
+    static func civDataMode(_ spec: RadioSpec, addr: UInt8, on: Bool) -> [UInt8] {
+        civFrame(addr: addr, payload: [0x1A, 0x06, on ? 0x01 : 0x00, on ? 0x01 : 0x00])
     }
 
     /// MAIN/SUB band-access select (full-duplex Icom only); nil if not applicable.

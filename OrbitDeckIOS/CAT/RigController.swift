@@ -691,15 +691,17 @@ final class RigController: ObservableObject {
             if link.spec.fullDuplex, let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: leg, spec: link.spec)) {
                 await sendRaw(link, sel)
             }
-            // FT4 data path: on a data-capable Icom, set mode + DATA sub-mode + filter in one
-            // 0x26 command (USB-D/LSB-D) so audio routes over the ACC/USB/LAN data port. Only
-            // engage it while FT4 wants data, or once more to CLEAR a data mode we set (so a
-            // non-FT4 session keeps using the plain 0x06 mode command, unchanged).
+            // FT4 data path: on a data-capable Icom, set the base mode (bare 06 <mode>, no
+            // filter byte) then the DATA sub-mode + filter (1A 06) — the sequence OscarWatch
+            // uses on the IC-9700 in satellite mode (0x26 is rejected there). Only engage it
+            // while FT4 wants data, or once more to CLEAR a data mode we set, so a non-FT4
+            // session keeps using the plain 06 <mode> [filter] command unchanged.
             if isDataModeCapable(link.spec), useDataModeForDigital || dataModeApplied {
                 let on = useDataModeForDigital && (mode == .usb || mode == .lsb)
-                await sendRaw(link, CATCodec.civSetModeWithData(link.spec, addr: civAddr(link), mode: mode, data: on))
+                await sendRaw(link, CATCodec.civSetModeBase(addr: civAddr(link), mode: mode))
+                await sendRaw(link, CATCodec.civDataMode(link.spec, addr: civAddr(link), on: on))
                 dataModeApplied = on
-                ODLog.shared.log("civ mode+data (0x26): \(link.spec.name) mode=\(mode.rawValue) data=\(on)", category: "cat")
+                ODLog.shared.log("civ data mode (1A 06): \(link.spec.name) mode=\(mode.rawValue) data=\(on)", category: "cat")
             } else {
                 await sendRaw(link, CATCodec.civSetMode(link.spec, addr: civAddr(link), mode: mode))
             }

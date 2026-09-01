@@ -5,7 +5,8 @@ command), and independent audio levels when pass recording runs alongside FT4/SS
 
 ## Headline changes
 - **IC-9700 FT4 data mode fixed.** FT4 now switches the radio into the **data sub-mode
-  (USB-D/LSB-D)** using the modern CI-V `0x26` command; the previous command didn't take.
+  (USB-D/LSB-D)** using the IC-9700's satellite-mode data sequence (`06` mode + `1A 06`),
+  verified against the IC-9700 CI-V Reference Guide and OscarWatch.
 - **Per-feature audio levels.** Pass recording and a decoder no longer share one gain, so
   running them together no longer makes the level/waterfall look wrong.
 
@@ -20,7 +21,7 @@ command), and independent audio levels when pass recording runs alongside FT4/SS
   radio) and FT4 decodes/transmits as before.
 - If data mode still doesn't appear, turn on **Settings → Diagnostics → Diagnostic logs**,
   reproduce, and share the log — look for `setDigitalDataMode(true)` and
-  `civ mode+data (0x26)` lines (they confirm what OrbitDeck sent).
+  `civ data mode (1A 06)` lines (they confirm what OrbitDeck sent).
 
 ### 2. Recording + FT4/SSTV together — independent levels
 - Start **Pass recording**, then start **FT4** (or SSTV). Adjust each one's level slider.
@@ -38,8 +39,8 @@ command), and independent audio levels when pass recording runs alongside FT4/SS
 - Any regression in solo FT4 / SSTV / recording.
 
 ## Notes
-- The FT4 data-mode command (`0x26`) is confirmed as the modern Icom method but hasn't been
-  bench-verified on a 9700 yet — this build is the on-air confirmation.
+- The FT4 data-mode sequence (`06` + `1A 06`) is now verified against the IC-9700 CI-V
+  Reference Guide and OscarWatch's tested path; this build confirms it on-air.
 - Data mode applies to CI-V IC-9700/705/905/7100, Hamlib PKT via rigctld, and Yaesu FT-8x7
   DIG; other radios stay on plain SSB.
 - FT4 transmit needs a full-duplex radio or two radios (satellite convention is full duplex
