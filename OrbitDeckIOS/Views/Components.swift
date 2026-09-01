@@ -660,11 +660,15 @@ struct SatelliteStatusLine: View {
     }
 }
 
-/// Live Doppler-corrected downlink/uplink frequency readout for the FT4 and SSTV cards, so
-/// an operator tuning by hand (no CAT) knows where to set the radio right now. Pure ephemeris
-/// plus the satellite's saved calibration; updates once a second. Shown below the az/el line.
+/// Live downlink/uplink frequency readout for the FT4 and SSTV cards, so an operator knows
+/// where the radio is (or should be) tuned right now. When CAT is connected it shows the
+/// actual corrected dials the loop is driving (Doppler + calibration + passband offset +
+/// transverter); otherwise it computes from the transponder — including the passband offset
+/// so a manually-tuned operator sees where they're operating, not just the band center.
+/// Updates once a second; shown below the az/el line.
 struct DopplerFrequencyLine: View {
     @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var rig: RigController
     let satellite: SatelliteRecord
     /// Optionally pin to a specific transponder (FT4 passes the one CAT is tracking); else the
     /// first two-way transponder, else the first.
@@ -690,11 +694,28 @@ struct DopplerFrequencyLine: View {
     }
 
     private func readout(tp: TransponderRecord, at date: Date) -> String {
+        // Prefer the live CAT dials — the ACTUAL frequency the radio is tuned to right now,
+        // already including the passband offset the operator chose within the transponder.
+        if rig.connected, rig.downlinkDialHz > 0 {
+            if rig.uplinkDialHz > 0 {
+                return "Tune  RX \(mhz(rig.downlinkDialHz)) · TX \(mhz(rig.uplinkDialHz)) MHz"
+            }
+            return "Tune  RX \(mhz(rig.downlinkDialHz)) MHz"
+        }
         guard let look = try? OrbitPredictor.look(satellite, observer: store.preferences.observer, at: date) else {
             return "Tune \(mhz(tp.downlinkCenter)) MHz"
         }
+        // No CAT: fold in the passband offset (where you're operating in the transponder),
+        // matching the CAT loop's math, so the manual-tune hint tracks your actual spot.
+        let offset = tp.isLinear ? Int64(rig.config.tuning.passbandOffsetHz.rounded()) : 0
+        let downlink = tp.downlinkCenter + offset
+        let uplink: Int64 = {
+            let u = tp.uplinkCenter
+            guard tp.isLinear, u > 0 else { return u }
+            return tp.invert ? u - offset : u + offset
+        }()
         let cal = store.downlinkCalibrationHz(for: satellite.id, invert: tp.invert)
-        let c = OrbitPredictor.dopplerFrequencies(downlinkHz: tp.downlinkCenter, uplinkHz: tp.uplinkCenter,
+        let c = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink,
                                                   rangeRateKmS: look.rangeRateKmS,
                                                   downlinkCalibrationHz: cal, uplinkCalibrationHz: 0)
         if tp.uplinkCenter > 0, c.tx > 0 {
