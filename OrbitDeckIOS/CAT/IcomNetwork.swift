@@ -444,6 +444,9 @@ final class RSStream: @unchecked Sendable {
     private var keepaliveTick = 0
     private var bootstrapTimer: DispatchSourceTimer?
     private var bootstrapStage = 0
+    /// Set on the first `.ready`; a later `.waiting`→`.ready` recovery must not re-bootstrap
+    /// or double-arm the receive loop.
+    private var didStart = false
 
     // Liveness watchdog (mirrors wfview's per-stream lastReceived + WATCHDOG_PERIOD timer).
     private var lastReceived = Date()
@@ -471,8 +474,21 @@ final class RSStream: @unchecked Sendable {
         c.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
-            case .ready: self.receiveLoop(); self.onReady?()
-            case .failed(let e), .waiting(let e): self.onError?(CATError.network(e.localizedDescription))
+            case .ready:
+                // Bootstrap only on the FIRST ready. A `.waiting`→`.ready` recovery (a Wi-Fi
+                // path blip healing) must NOT re-run the RS-BA1 handshake or start a second
+                // receive loop — the session and the armed receive survive the gap.
+                if !self.didStart { self.didStart = true; self.receiveLoop(); self.onReady?() }
+                else { ODLog.shared.log("icom-net :\(self.port) path restored (.ready)", category: "cat") }
+            case .waiting(let e):
+                // Transient — no viable network path right now; Network.framework retries to
+                // `.ready` on its own. Do NOT tear the session down here: doing so forced a
+                // full re-login on every brief Wi-Fi blip. A genuinely dead link is still
+                // caught by the 5 s data watchdog (`onStale`), which triggers a clean reconnect.
+                ODLog.shared.log("icom-net :\(self.port) waiting (transient): \(String(describing: e))", category: "cat")
+            case .failed(let e):
+                // Fatal — the socket/path failed (e.g. the radio closed its port → ENOTCONN).
+                self.onError?(CATError.network(e.localizedDescription))
             default: break
             }
         }
@@ -643,12 +659,13 @@ final class RSStream: @unchecked Sendable {
         t.setEventHandler { [weak self] in
             guard let self else { return }
             self.keepaliveTick += 1
-            // idle pkt0 (backs off to 1 s after quiet)
-            let quiet = Date().timeIntervalSince(self.lastTrackedSend) > 1.0
-            if !quiet || Int(Date().timeIntervalSinceReferenceDate * 10) % 10 == 0 {
-                let idle = self.header(len: 16, type: 0x0000, seq: self.nextTracked())
-                self.rawSend(idle)
-            }
+            // Idle keepalive every tick (100 ms), matching wfview's IDLE_PERIOD. The old code
+            // backed off to ~1 idle/s during quiet stretches — but a slot-gated FT4 pass leaves
+            // the CI-V bus silent for whole 7.5 s slots, and that sparser keepalive appears to
+            // let the radio time the session out (the drops arrive as a socket ENOTCONN, i.e.
+            // the radio closing its port). wfview sends idle at 100 ms unconditionally.
+            let idle = self.header(len: 16, type: 0x0000, seq: self.nextTracked())
+            self.rawSend(idle)
             // Ping every 500 ms (PING_PERIOD), not every tick — matches wfview and spares
             // the link.
             if self.keepaliveTick % kRSPingEveryTicks == 0 { self.sendPing() }
