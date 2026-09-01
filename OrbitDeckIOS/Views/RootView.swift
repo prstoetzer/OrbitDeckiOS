@@ -246,38 +246,47 @@ struct RootView: View {
             // Resolve a nil selection to the last real screen rather than Home, so
             // a transient nil during a heavy re-render doesn't flash the Home view.
             let shown = selection ?? lastSelection
-            destinationView(shown)
-                // Cap reading-oriented screens at a comfortable width and center
-                // them so cards/text don't stretch across a wide iPad detail pane.
-                // Full-bleed visual screens (globe, radar, ground-track map) keep
-                // the whole width. On iPhone the cap never bites (screen < 700).
-                .frame(maxWidth: isFullBleed(shown) ? .infinity : 720)
-                .frame(maxWidth: .infinity)
-                .scrollContentBackground(.hidden)
-                .background(ODTheme.background.ignoresSafeArea())
-                // Show the app name on the landing page; other screens keep their
-                // own function title.
-                .navigationTitle(shown == .home ? "OrbitDeck" : shown.title)
-                .navigationBarTitleDisplayMode(.inline)
-                // On iPhone the split view collapses to a stack; hide the default
-                // "‹ OrbitDeck" back chevron (which reads as "go back", not "open
-                // the menu") and offer an explicit hamburger instead.
-                .navigationBarBackButtonHidden(horizontalSizeClass == .compact)
-                .toolbar {
-                    if horizontalSizeClass == .compact {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button { selection = nil } label: {
-                                Image(systemName: "line.3.horizontal")
+            // The detail column gets its OWN NavigationStack. Without it, a screen that
+            // uses a NavigationLink (e.g. Log → FT4 traffic) pushes onto the split view's
+            // shared detail stack, and that push lingers when you change the sidebar
+            // selection — the detail freezes on the old screen while the menu highlight
+            // moves, needing an app restart. Keying the stack by `shown` gives each screen
+            // a fresh stack, so switching screens always discards any in-screen push.
+            NavigationStack {
+                destinationView(shown)
+                    // Cap reading-oriented screens at a comfortable width and center
+                    // them so cards/text don't stretch across a wide iPad detail pane.
+                    // Full-bleed visual screens (globe, radar, ground-track map) keep
+                    // the whole width. On iPhone the cap never bites (screen < 700).
+                    .frame(maxWidth: isFullBleed(shown) ? .infinity : 720)
+                    .frame(maxWidth: .infinity)
+                    .scrollContentBackground(.hidden)
+                    .background(ODTheme.background.ignoresSafeArea())
+                    // Show the app name on the landing page; other screens keep their
+                    // own function title.
+                    .navigationTitle(shown == .home ? "OrbitDeck" : shown.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    // On iPhone the split view collapses to a stack; hide the default
+                    // "‹ OrbitDeck" back chevron (which reads as "go back", not "open
+                    // the menu") and offer an explicit hamburger instead.
+                    .navigationBarBackButtonHidden(horizontalSizeClass == .compact)
+                    .toolbar {
+                        if horizontalSizeClass == .compact {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button { selection = nil } label: {
+                                    Image(systemName: "line.3.horizontal")
+                                }
+                                .accessibilityLabel("Menu")
                             }
-                            .accessibilityLabel("Menu")
+                        }
+                        if shown.usesSelectedSatellite {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                SatelliteSwitcherButton()
+                            }
                         }
                     }
-                    if shown.usesSelectedSatellite {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            SatelliteSwitcherButton()
-                        }
-                    }
-                }
+            }
+            .id(shown)
         }
         .navigationSplitViewStyle(.balanced)
         .tint(ODTheme.accent)
