@@ -88,13 +88,11 @@ final class AudioHub: ObservableObject {
     private nonisolated(unsafe) weak var txSub: AudioSubscription?
     private var txOwner: String?
 
-    /// Shared capture input/output gain (one hardware capture → one gain), persisted.
-    var inputGain: Float = AudioGainStore.load("orbitdeck.capture.inputGain") {
-        didSet { captureSource?.inputGain = inputGain; AudioGainStore.save("orbitdeck.capture.inputGain", inputGain) }
-    }
-    var outputGain: Float = AudioGainStore.load("orbitdeck.capture.outputGain") {
-        didSet { captureSource?.outputGain = outputGain; AudioGainStore.save("orbitdeck.capture.outputGain", outputGain) }
-    }
+    /// Shared TX (output) gain — only one subscriber transmits at a time, so this can be a
+    /// single hardware value. RX/input gain is applied PER SUBSCRIBER in `fanOut` (each of
+    /// FT4/SSTV/recording keeps its own level), so the hardware capture runs at unity and
+    /// starting one feature never changes another's audio.
+    var outputGain: Float = 1 { didSet { captureSource?.outputGain = outputGain } }
 
     /// Sample rate of the active capture (48 kHz USB, 16 kHz network).
     var captureSampleRate: Double { captureSource?.sampleRate ?? 48_000 }
@@ -149,7 +147,7 @@ final class AudioHub: ObservableObject {
             guard let src = makeRawSource(allowMicFallback: sub.allowMicFallback || micFallbackWanted) else {
                 throw AudioError.noDevice
             }
-            src.inputGain = inputGain
+            src.inputGain = 1                 // unity: per-subscriber gain is applied in fanOut
             src.outputGain = outputGain
             src.onError = { [weak self] m in Task { @MainActor in self?.reportError(m) } }
             captureSource = src
@@ -183,7 +181,6 @@ final class AudioHub: ObservableObject {
         captureSource?.stopPlayback()
     }
 
-    func setInputGain(_ g: Float) { if g != inputGain { inputGain = g } }
     func setOutputGain(_ g: Float) { if g != outputGain { outputGain = g } }
 
     private func teardownCapture() {
@@ -203,7 +200,10 @@ final class AudioHub: ObservableObject {
     /// to their own queues). Also accumulates a peak for the shared level meter.
     private nonisolated func fanOut(_ frames: [Float]) {
         subLock.lock(); let subs = Array(subscribers.values); subLock.unlock()
-        for s in subs { s.deliver(frames) }
+        for s in subs {
+            let g = s.subGain
+            s.deliver(g == 1 ? frames : frames.map { $0 * g })
+        }
         var peak: Float = 0
         for s in frames { let a = abs(s); if a > peak { peak = a } }
         levelLock.lock(); if peak > levelPeak { levelPeak = peak }; levelLock.unlock()
@@ -245,6 +245,8 @@ final class AudioSubscription: AudioSource, @unchecked Sendable {
     private nonisolated(unsafe) var framesHandler: (([Float]) -> Void)?
     private nonisolated(unsafe) var pullHandler: ((Int) -> [Float])?
     private nonisolated(unsafe) var cachedRate: Double = 48_000
+    /// Per-subscriber RX gain, applied by the hub's fanOut (read on the audio thread).
+    nonisolated(unsafe) var subGain: Float = 1
 
     init(hub: AudioHub, id: String, allowMicFallback: Bool) {
         self.hub = hub; self.id = id; self.allowMicFallback = allowMicFallback
@@ -255,8 +257,9 @@ final class AudioSubscription: AudioSource, @unchecked Sendable {
     nonisolated func pullTX(_ n: Int) -> [Float] { pullHandler?(n) ?? [] }
     nonisolated func deliverError(_ m: String) { onError?(m) }
 
-    // Gain proxies to the shared capture (one hardware gain).
-    var inputGain: Float = 1 { didSet { MainActor.assumeIsolated { hub?.setInputGain(inputGain) } } }
+    /// RX gain is this subscriber's own (applied per-subscriber). TX (output) gain is the
+    /// shared hardware TX gain (only one subscriber transmits at a time).
+    var inputGain: Float = 1 { didSet { subGain = inputGain } }
     var outputGain: Float = 1 { didSet { MainActor.assumeIsolated { hub?.setOutputGain(outputGain) } } }
     nonisolated(unsafe) var onError: ((String) -> Void)?
     var sampleRate: Double { cachedRate }

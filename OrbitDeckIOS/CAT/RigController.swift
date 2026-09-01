@@ -85,9 +85,10 @@ final class RigController: ObservableObject {
     private(set) var useDataModeForDigital = false
     private var dataModeApplied = false     // we turned DATA on and must turn it back off
 
-    /// Data-mode-capable CI-V transceivers (USB-D via CI-V 1A 06). Older rigs (IC-820/821/
-    /// 910/970, IC-2xx/4xx, IC-706 family) have no data mode and are left on plain SSB.
-    private static let dataModeModels: Set<String> = ["IC-9700", "IC-9100", "IC-705", "IC-905", "IC-7100", "IC-7000"]
+    /// Data-mode-capable CI-V transceivers (USB-D via the CI-V 0x26 mode+data command).
+    /// Older rigs (IC-820/821/910/970/9100, IC-2xx/4xx, IC-706 family, IC-7000) predate 0x26
+    /// and are left on plain SSB.
+    private static let dataModeModels: Set<String> = ["IC-9700", "IC-705", "IC-905", "IC-7100"]
     /// Yaesu rigs with a DIG data mode (0x0A). The FT-847/736R have no CAT data mode.
     private static let yaesuDataModels: Set<String> = ["FT-817", "FT-818", "FT-857", "FT-897"]
     /// Whether this radio can be put in a DATA sub-mode for the digital audio path.
@@ -106,6 +107,7 @@ final class RigController: ObservableObject {
         guard on != useDataModeForDigital else { return }
         useDataModeForDigital = on
         lastEngageKey = ""     // force applyModes() to run again
+        ODLog.shared.log("setDigitalDataMode(\(on)) connected=\(connected) hold=\(holdDoppler)", category: "cat")
         if connected, holdDoppler { Task { await stepDopplerNow() } }   // FT4 is slot-gated
     }
     /// Last "why the loop can't tune" message, so we log it only when it changes.
@@ -689,15 +691,17 @@ final class RigController: ObservableObject {
             if link.spec.fullDuplex, let sel = CATCodec.civSelect(link.spec, addr: civAddr(link), sub: useSub(for: leg, spec: link.spec)) {
                 await sendRaw(link, sel)
             }
-            await sendRaw(link, CATCodec.civSetMode(link.spec, addr: civAddr(link), mode: mode))
-            // FT4 data path: with an SSB base mode, toggle the rig's DATA sub-mode (USB-D/
-            // LSB-D) on the selected VFO so audio routes over the ACC/USB port. Only touch
-            // it on data-capable rigs, and only when we want it on or previously set it on
-            // (so a non-FT4 session never disturbs the operator's manual data mode).
-            if isDataModeCapable(link.spec), mode == .usb || mode == .lsb,
-               useDataModeForDigital || dataModeApplied {
-                await sendRaw(link, CATCodec.civDataMode(link.spec, addr: civAddr(link), on: useDataModeForDigital))
-                dataModeApplied = useDataModeForDigital
+            // FT4 data path: on a data-capable Icom, set mode + DATA sub-mode + filter in one
+            // 0x26 command (USB-D/LSB-D) so audio routes over the ACC/USB/LAN data port. Only
+            // engage it while FT4 wants data, or once more to CLEAR a data mode we set (so a
+            // non-FT4 session keeps using the plain 0x06 mode command, unchanged).
+            if isDataModeCapable(link.spec), useDataModeForDigital || dataModeApplied {
+                let on = useDataModeForDigital && (mode == .usb || mode == .lsb)
+                await sendRaw(link, CATCodec.civSetModeWithData(link.spec, addr: civAddr(link), mode: mode, data: on))
+                dataModeApplied = on
+                ODLog.shared.log("civ mode+data (0x26): \(link.spec.name) mode=\(mode.rawValue) data=\(on)", category: "cat")
+            } else {
+                await sendRaw(link, CATCodec.civSetMode(link.spec, addr: civAddr(link), mode: mode))
             }
         case .yaesuBinary, .yaesuVR5000, .yaesuFT736:
             // FT-817/818/857/897 use DIG for the data path (wantData); FT-847/736R aren't

@@ -52,11 +52,13 @@ enum CATCodec {
         return civFrame(addr: addr, payload: [0x06, civModeByte(mode)])
     }
 
-    /// Icom data-mode set (CI-V 1A 06): turns DATA on/off for the selected VFO so, with an
-    /// SSB base mode, USB→USB-D / LSB→LSB-D and the ACC/USB data port carries the audio.
-    /// `[datamode, filter]`: datamode 0x01 = DATA1 (on) / 0x00 = off; filter 0x01.
-    static func civDataMode(_ spec: RadioSpec, addr: UInt8, on: Bool) -> [UInt8] {
-        civFrame(addr: addr, payload: [0x1A, 0x06, on ? 0x01 : 0x00, on ? 0x01 : 0x00])
+    /// Set operating mode + DATA sub-mode + filter in ONE command (CI-V 0x26) — the modern
+    /// Icom method (IC-9700/705/905/7100). `26 00 <mode> <data> <filter>`: selector 0x00 =
+    /// the currently selected band (set MAIN/SUB first with 07 D0/D1), data 0x01 = DATA1 /
+    /// 0x00 = off, filter 0x01 = FIL1. (The older 1A 06 data-mode command did not put these
+    /// radios into USB-D as intended.)
+    static func civSetModeWithData(_ spec: RadioSpec, addr: UInt8, mode: RigMode, data: Bool) -> [UInt8] {
+        civFrame(addr: addr, payload: [0x26, 0x00, civModeByte(mode), data ? 0x01 : 0x00, 0x01])
     }
 
     /// MAIN/SUB band-access select (full-duplex Icom only); nil if not applicable.
