@@ -14,9 +14,14 @@ import Foundation
 // ===========================================================================
 
 final class IcomAudioSource: AudioSource, @unchecked Sendable {
-    private let transport: IcomNetworkTransport
+    // `var`, not `let`: a CAT control-link drop makes RigController tear this transport down
+    // and build a NEW one on reconnect. `rebind(to:)` re-points at the new session so audio
+    // resumes; TX follows automatically because the playback timer reads `transport` live.
+    private var transport: IcomNetworkTransport
     private(set) var sampleRate: Double
     private var pullHandler: ((Int) -> [Float])?
+    /// Retained so RX audio can be re-established on a new transport after a reconnect.
+    private var framesHandler: (([Float]) -> Void)?
     private var txTimer: DispatchSourceTimer?
     var onError: ((String) -> Void)?
     var inputGain: Float = 1
@@ -30,13 +35,30 @@ final class IcomAudioSource: AudioSource, @unchecked Sendable {
     var isAvailable: Bool { transport.isConnected }
 
     func start(onFrames: @escaping ([Float]) -> Void) throws {
+        framesHandler = onFrames
+        bindRX()
+    }
+
+    private func bindRX() {
+        guard let onFrames = framesHandler else { return }
         transport.startAudio { [weak self] pcm in
             let g = self?.inputGain ?? 1
             onFrames(pcm.map { Float($0) / 32768.0 * g })
         }
     }
 
-    func stop() { transport.stopAudio() }
+    /// Re-point at the transport RigController built on a reconnect (the old one was torn
+    /// down, closing its audio stream). Re-establishes the RX stream on the new session so
+    /// network audio doesn't stay dead for the rest of the pass. No-op if unchanged.
+    func rebind(to newTransport: IcomNetworkTransport) {
+        guard newTransport !== transport else { return }
+        transport.stopAudio()
+        transport = newTransport
+        bindRX()
+        ODLog.shared.log("network audio: re-bound to new RS-BA1 session after reconnect", category: "cat")
+    }
+
+    func stop() { framesHandler = nil; transport.stopAudio() }
 
     func startPlayback(pull: @escaping (Int) -> [Float]) throws {
         pullHandler = pull

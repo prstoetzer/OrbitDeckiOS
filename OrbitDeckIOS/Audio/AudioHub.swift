@@ -120,6 +120,12 @@ final class AudioHub: ObservableObject {
         let inAvail = (s.availableInputs ?? []).contains { $0.portType == .usbAudio }
         usbConnected = inRoute || outRoute || inAvail
         icomAudioReady = rig?.icomAudioTransport != nil
+        // If a network-audio capture is live and the RS-BA1 link just reconnected (new
+        // transport), re-point the source at it so RX audio resumes — otherwise it stays
+        // silent for the rest of the pass. rebind() is a no-op when the transport is unchanged.
+        if let icom = captureSource as? IcomAudioSource, let t = rig?.icomAudioTransport {
+            icom.rebind(to: t)
+        }
     }
 
     /// A handle onto the shared capture, usable exactly like a standalone `AudioSource`.
