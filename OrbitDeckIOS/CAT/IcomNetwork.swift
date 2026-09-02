@@ -151,6 +151,15 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
 
     private var audio: RSStream?
     private var onAudioPCM: (([Int16]) -> Void)?
+    // RX audio-stream diagnostics (throttled). The RS-BA1 audio path is unverified on
+    // hardware, so these tell us whether the radio is actually sending RX audio, how fast,
+    // and in what packet shape — turning "No RX audio this slot" into a concrete cause.
+    // All touched only on `queue`.
+    private var audioPktCount = 0
+    private var audioSampleCount = 0
+    private var audioSmallCount = 0
+    private var audioLastLog = Date()
+    private var audioLoggedFirst = false
 
     /// Sample rate negotiated in ConnInfo.
     var audioSampleRate: Double { 16_000 }
@@ -160,12 +169,15 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         queue.async {
             guard self.connected, self.audio == nil else { return }
             self.onAudioPCM = onPCM
+            self.audioPktCount = 0; self.audioSampleCount = 0; self.audioSmallCount = 0
+            self.audioLoggedFirst = false; self.audioLastLog = Date()
+            ODLog.shared.log("icom-net audio: opening stream on port \(self.basePort + 2)", category: "cat")
             let a = RSStream(host: self.host, port: self.basePort + 2, queue: self.queue)
             self.audio = a
             a.onReady = { [weak a] in a?.bootstrap() }
-            a.onBootstrapped = { }                       // audio flows after bootstrap
+            a.onBootstrapped = { ODLog.shared.log("icom-net audio: stream bootstrapped — awaiting RX audio packets", category: "cat") }
             a.onPacket = { [weak self] pkt in self?.handleAudio(pkt) }
-            a.onError = { _ in }
+            a.onError = { e in ODLog.shared.log("icom-net audio socket error: \(e.localizedDescription)", category: "cat") }
             a.start()
         }
     }
@@ -180,13 +192,36 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     }
 
     private func handleAudio(_ r: [UInt8]) {
+        // One-time dump of the first packet's header so a log reveals the radio's audio
+        // packet shape/codec (we assume 16-bit signed LE PCM starting at offset 24).
+        if !audioLoggedFirst, r.count >= 24 {
+            audioLoggedFirst = true
+            let head = r.prefix(24).map { String(format: "%02x", $0) }.joined(separator: " ")
+            ODLog.shared.log("icom-net audio: first packet len=\(r.count) head=[\(head)]", category: "cat")
+        }
         // Audio data packets are the large ones on this dedicated stream; PCM begins
         // at offset 24 (16-bit signed little-endian).
-        guard r.count >= 64 else { return }
+        guard r.count >= 64 else { audioSmallCount += 1; logAudioRateIfDue(); return }
         var pcm = [Int16](); pcm.reserveCapacity((r.count - 24) / 2)
         var i = 24
         while i + 1 < r.count { pcm.append(Int16(bitPattern: UInt16(r[i]) | (UInt16(r[i + 1]) << 8))); i += 2 }
+        audioPktCount += 1; audioSampleCount += pcm.count
+        logAudioRateIfDue()
         if !pcm.isEmpty { onAudioPCM?(pcm) }
+    }
+
+    /// Log the RX audio rate every ~2 s — packets, samples, derived samples/sec (vs the
+    /// 16 kHz we need for a full slot), and small/ignored packets — so a tester's log shows
+    /// whether audio is flowing, too slowly, or in a shape we don't parse. Zero rate logs
+    /// after "bootstrapped" means the radio isn't sending RX audio at all.
+    private func logAudioRateIfDue() {
+        let now = Date()
+        let dt = now.timeIntervalSince(audioLastLog)
+        guard dt >= 2.0 else { return }
+        let sps = dt > 0 ? Double(audioSampleCount) / dt : 0
+        ODLog.shared.log(String(format: "icom-net audio: %d pkts, %d samples (~%.0f/s, need %.0f), %d small/ignored in %.1fs",
+                                audioPktCount, audioSampleCount, sps, audioSampleRate, audioSmallCount, dt), category: "cat")
+        audioPktCount = 0; audioSampleCount = 0; audioSmallCount = 0; audioLastLog = now
     }
 
     // MARK: State machine
