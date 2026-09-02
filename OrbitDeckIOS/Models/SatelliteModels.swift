@@ -181,7 +181,7 @@ struct RadioCalibration: Codable, Sendable, Equatable {
 
 struct StorePreferences: Codable, Sendable {
     var observer = ObserverSite()
-    var minElevation = 5.0
+    var minElevation = 0.0          // default elevation mask: show the whole visible pass
     var selectedNorad: UInt?
     var favorites: Set<UInt> = []
     var sourceKind: GPSourceKind = .amsat
