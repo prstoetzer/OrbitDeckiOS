@@ -189,7 +189,6 @@ final class FT4Engine: ObservableObject {
         errorText = ""; decodes.removeAll()
         self.source = source
         self.satName = satellite
-        self.sampleRate = source.sampleRate
         rxDeDopplerEnabled = audioDopplerRX
         dopplerProviderShared = dopplerProvider
         lock.lock(); rxBuffer.removeAll(keepingCapacity: true); lock.unlock()
@@ -214,6 +213,12 @@ final class FT4Engine: ObservableObject {
             AudioActivity.releaseCapture("FT4")
             return
         }
+        // Read the sample rate AFTER start(): the shared-hub AudioSubscription only learns
+        // the real capture rate once it attaches (it defaults to 48 kHz beforehand). Reading
+        // it too early pinned network audio (16 kHz) at 48 kHz — which pushed the per-slot
+        // "have audio" threshold above a full 16 kHz slot ("No RX audio this slot") and fed
+        // the decoder the wrong rate. USB is genuinely 48 kHz, so only network audio broke.
+        self.sampleRate = source.sampleRate
         isRunning = true; status = "Listening…"
         AudioActivity.begin()
         // Slot-gate CAT Doppler while FT4 runs: hold the continuous loop and step the

@@ -495,13 +495,16 @@ final class RemoteVoiceController: ObservableObject {
         sub = s
         errorText = ""
         s.onError = { [weak self] m in Task { @MainActor in self?.errorText = m } }
-        bridge.start(rate: hub.captureSampleRate)
         do {
             try s.start(onFrames: { [weak self] f in self?.bridge.enqueueRX(f) })
         } catch {
             errorText = error.localizedDescription
-            bridge.stop(); sub = nil; AudioActivity.releaseMode("Remote voice"); return
+            sub = nil; AudioActivity.releaseMode("Remote voice"); return
         }
+        // Start the phone-audio bridge AFTER the capture attaches, so it uses the true capture
+        // rate — the hub reports the 48 kHz default until a subscriber attaches, so starting
+        // the bridge earlier ran network audio (16 kHz) at the wrong rate/pitch.
+        bridge.start(rate: hub.captureSampleRate)
         isListening = true
         AudioActivity.begin()
         hub.startLevelMeter()

@@ -111,11 +111,10 @@ final class SSTVDecoder: ObservableObject {
             return
         }
         errorText = ""; image = nil; modeName = ""; status = "Listening…"
-        self.source = source; self.rate = source.sampleRate; self.satName = satellite
+        self.source = source; self.satName = satellite
         let forced = manualMode
         lock.lock()
         freq.removeAll(keepingCapacity: true); sampleBase = 0
-        demod = StreamingDemod(rate: source.sampleRate)
         phase = .searching; mode = nil; imageStart = 0; currentLine = 0; rgba = []; lastPublishedLine = -1
         r36Cr = []; r36Cb = []
         slantMirror = slant; tuningMirror = tuningHz
@@ -131,6 +130,13 @@ final class SSTVDecoder: ObservableObject {
             AudioActivity.releaseCapture("SSTV")
             return
         }
+        // Read the capture rate AFTER start(): the shared-hub facade only reports its true
+        // rate once attached (network audio is 16 kHz, not the 48 kHz default), so reading it
+        // earlier decoded network SSTV at the wrong rate. Frame delivery is asynchronous, so
+        // re-creating the demod here — before any frame flows — is race-free (and the default
+        // 48 kHz demod harmlessly covers any gap).
+        self.rate = source.sampleRate
+        lock.lock(); demod = StreamingDemod(rate: rate); lock.unlock()
         isListening = true
         AudioActivity.begin()
         scheduleLevelTimer()

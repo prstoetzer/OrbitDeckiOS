@@ -54,7 +54,6 @@ final class PassRecorder: ObservableObject {
         self.startDate = Date()
         filename = "\(safe(satellite))_\(stamp(Date())).m4a"
         recordURL = QSOStore.recordingsDir.appendingPathComponent(filename)
-        recordRate = source.sampleRate
         fileCreateTried = false
         file = nil; processingFormat = nil
         source.inputGain = inputGain
@@ -67,6 +66,11 @@ final class PassRecorder: ObservableObject {
             file = nil; self.source = nil
             return
         }
+        // Capture rate AFTER start(): the shared-hub facade only reports its true rate once
+        // attached (network audio is 16 kHz, not the 48 kHz default); reading it earlier
+        // recorded network passes at the wrong rate/speed. The AAC file is created lazily on
+        // the first frame, so setting it here (before frames flow) is race-free.
+        recordRate = source.sampleRate
 
         isRecording = true
         AudioActivity.begin()
