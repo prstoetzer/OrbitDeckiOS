@@ -109,8 +109,26 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
 
     func disconnect() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            queue.async { self.teardown(); cont.resume() }
+            queue.async {
+                // Cleanly log out so the radio FREES its LAN session — otherwise it stays
+                // "already open" and the next connect (or another client / RS-BA1 Remote
+                // Utility) is refused or forced down the session-already-open path. wfview
+                // sends this token-removal on disconnect too. Give the UDP datagram a moment
+                // to flush before we cancel the sockets.
+                if self.connected { self.sendLogout() }
+                self.queue.asyncAfter(deadline: .now() + .milliseconds(120)) {
+                    self.teardown(); cont.resume()
+                }
+            }
         }
+    }
+
+    /// RS-BA1 session logout / token removal (auth requesttype 0x01), matching wfview's
+    /// sendToken(0x01). Sent twice for UDP reliability. Frees the radio's network session.
+    private func sendLogout() {
+        guard control != nil else { return }
+        sendAuth(magic: 0x01); sendAuth(magic: 0x01)
+        ODLog.shared.log("icom-net logout (token removal 0x01) sent", category: "cat")
     }
 
     func send(_ bytes: [UInt8]) async throws {
@@ -186,12 +204,26 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
             a.onBootstrapped = { ODLog.shared.log("icom-net audio: stream bootstrapped — awaiting RX audio packets", category: "cat") }
             a.onPacket = { [weak self] pkt in self?.handleAudio(pkt) }
             a.onError = { e in ODLog.shared.log("icom-net audio socket error: \(e.localizedDescription)", category: "cat") }
+            // Wire the audio stream's watchdog (was previously left unset): if it goes silent
+            // for the stale window while a consumer is active, re-open it on the live session
+            // so a dropped audio sub-stream recovers instead of staying dead for the pass.
+            a.onStale = { [weak self] in self?.reopenAudioIfConsuming() }
             a.start()
         }
     }
 
     func stopAudio() {
         queue.async { self.audio?.close(); self.audio = nil; self.onAudioPCM = nil }
+    }
+
+    /// The audio stream went stale (watchdog) while a consumer is still active — re-open it
+    /// on the same live session so RX audio recovers. No-op if audio was stopped (consumer
+    /// gone) or the whole link is down (the control watchdog handles that).
+    private func reopenAudioIfConsuming() {
+        guard connected, let onPCM = onAudioPCM else { return }
+        ODLog.shared.log("icom-net audio: stream stale — re-opening on the live session", category: "cat")
+        audio?.close(); audio = nil
+        startAudio(onPCM: onPCM)
     }
 
     /// Send a block of PCM (16-bit signed) as a TX audio datagram.
