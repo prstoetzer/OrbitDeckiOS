@@ -323,7 +323,17 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         }
         // Auth reply (0x40)
         if r.count >= 64, r[0] == 0x40 {
-            if r[21] == 0x05 { advance(to: .authAccepted); authOK = true; maybeSendConnInfo() }
+            if r[21] == 0x05 {
+                if connected {
+                    // A reply to a 60 s token renewal. wfview: response 0 = OK,
+                    // 0xffffffff = rejected (→ must re-login). Log it so a drop that's
+                    // actually token expiry is visible instead of looking like a random socket error.
+                    let resp = readBE(r, 48)
+                    ODLog.shared.log("icom-net token renewal reply: response=0x\(String(resp, radix: 16))", category: "cat")
+                } else {
+                    advance(to: .authAccepted); authOK = true; maybeSendConnInfo()
+                }
+            }
             return
         }
         // ConnInfo reply (0x90)
@@ -347,9 +357,17 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         p[0] = 0x40
         writeBE(&p, 8, control.localSID); writeBE(&p, 12, control.remoteSID)
         p[19] = 0x30; p[20] = 0x01; p[21] = magic
+        // innerseq is a big-endian u16 at 0x16 (matches wfview's token_packet). We previously
+        // wrote it little-endian at 23–24; for counters < 256 the bytes are identical, so this
+        // never changed the connect handshake — it only diverged on very long sessions.
         let inner = control.nextInnerSeq()
-        p[23] = UInt8(inner & 0xFF); p[24] = UInt8((inner >> 8) & 0xFF)
+        p[22] = UInt8((inner >> 8) & 0xFF); p[23] = UInt8(inner & 0xFF)
+        // authID (r[26..32] of the login reply) is wfview's tokrequest (u16 @0x1a) + token
+        // (u32 @0x1c) concatenated, so echoing it here places both correctly.
         for i in 0..<6 { p[26 + i] = authID[i] }
+        // resetcap = 0x0798 (BE) at 0x24 — wfview sends this in every token/renewal packet;
+        // we previously left it zero. Filling it matches the proven renewal packet.
+        p[36] = 0x07; p[37] = 0x98
         control.trackedSend(p)
     }
 
@@ -403,7 +421,10 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     private func startReauth() {
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 60, repeating: 60)
-        t.setEventHandler { [weak self] in self?.sendAuth(magic: 0x05) }
+        t.setEventHandler { [weak self] in
+            ODLog.shared.log("icom-net token renewal (0x05) sent", category: "cat")
+            self?.sendAuth(magic: 0x05)
+        }
         t.resume()
         reauthTimer = t
     }
