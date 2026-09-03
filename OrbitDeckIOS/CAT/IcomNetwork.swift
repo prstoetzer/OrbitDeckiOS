@@ -169,6 +169,9 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
 
     private var audio: RSStream?
     private var onAudioPCM: (([Int16]) -> Void)?
+    // When the last RX audio *data* packet arrived. Lets startAudio decide whether an
+    // existing stream is still live and can be reused across an FT4/SSTV stop→start.
+    private var audioDataAt = Date()
     // RX audio-stream diagnostics (throttled). The RS-BA1 audio path is unverified on
     // hardware, so these tell us whether the radio is actually sending RX audio, how fast,
     // and in what packet shape — turning "No RX audio this slot" into a concrete cause.
@@ -188,42 +191,60 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     /// Sample rate negotiated in ConnInfo.
     var audioSampleRate: Double { 16_000 }
 
-    /// Open the audio stream and deliver received PCM (16-bit signed) blocks.
+    /// Begin delivering received PCM (16-bit signed) blocks to `onPCM`.
+    ///
+    /// The RS-BA1 audio sub-stream is opened ONCE per session and kept alive; we only toggle
+    /// delivery. Tearing the stream down on every FT4/SSTV stop and re-opening it on the next
+    /// start confused the radio — it keeps its own audio sendseq and simply stops sending to
+    /// the "new" stream (observed as bootstrapped-but-silent re-opens). So if a live stream is
+    /// already flowing, we just swap the consumer; we only (re)open when there is no stream or
+    /// the existing one has gone silent.
     func startAudio(onPCM: @escaping ([Int16]) -> Void) {
         queue.async {
-            guard self.connected, self.audio == nil else { return }
+            guard self.connected else { return }
             self.onAudioPCM = onPCM
-            self.audioPktCount = 0; self.audioSampleCount = 0; self.audioSmallCount = 0
-            self.audioLoggedFirst = false; self.audioLastLog = Date()
-            self.audioTxPktCount = 0; self.audioTxSampleCount = 0
-            self.audioTxLoggedFirst = false; self.audioTxLastLog = Date()
-            ODLog.shared.log("icom-net audio: opening stream on port \(self.basePort + 2)", category: "cat")
-            let a = RSStream(host: self.host, port: self.basePort + 2, queue: self.queue)
-            self.audio = a
-            a.onReady = { [weak a] in a?.bootstrap() }
-            a.onBootstrapped = { ODLog.shared.log("icom-net audio: stream bootstrapped — awaiting RX audio packets", category: "cat") }
-            a.onPacket = { [weak self] pkt in self?.handleAudio(pkt) }
-            a.onError = { e in ODLog.shared.log("icom-net audio socket error: \(e.localizedDescription)", category: "cat") }
-            // Wire the audio stream's watchdog (was previously left unset): if it goes silent
-            // for the stale window while a consumer is active, re-open it on the live session
-            // so a dropped audio sub-stream recovers instead of staying dead for the pass.
-            a.onStale = { [weak self] in self?.reopenAudioIfConsuming() }
-            a.start()
+            if self.audio != nil, Date().timeIntervalSince(self.audioDataAt) < 3.0 {
+                ODLog.shared.log("icom-net audio: resuming delivery on the live stream", category: "cat")
+                return
+            }
+            self.openAudioStream()
         }
     }
 
+    /// Open (or re-open) the audio sub-stream. Must run on `queue`.
+    private func openAudioStream() {
+        audio?.close()
+        audioPktCount = 0; audioSampleCount = 0; audioSmallCount = 0
+        audioLoggedFirst = false; audioLastLog = Date(); audioDataAt = Date()
+        audioTxPktCount = 0; audioTxSampleCount = 0
+        audioTxLoggedFirst = false; audioTxLastLog = Date()
+        ODLog.shared.log("icom-net audio: opening stream on port \(basePort + 2)", category: "cat")
+        let a = RSStream(host: host, port: basePort + 2, queue: queue)
+        audio = a
+        a.onReady = { [weak a] in a?.bootstrap() }
+        a.onBootstrapped = { ODLog.shared.log("icom-net audio: stream bootstrapped — awaiting RX audio packets", category: "cat") }
+        a.onPacket = { [weak self] pkt in self?.handleAudio(pkt) }
+        a.onError = { e in ODLog.shared.log("icom-net audio socket error: \(e.localizedDescription)", category: "cat") }
+        // Watchdog: if the stream goes silent for the stale window while a consumer is active,
+        // re-open it on the live session so a genuinely dropped sub-stream recovers.
+        a.onStale = { [weak self] in self?.reopenAudioIfConsuming() }
+        a.start()
+    }
+
     func stopAudio() {
-        queue.async { self.audio?.close(); self.audio = nil; self.onAudioPCM = nil }
+        // Keep the RS-BA1 audio stream open for the session and just stop delivering — the radio
+        // keeps streaming (we ignore it), so the next FT4/SSTV start reuses the live stream
+        // instead of re-opening (which the radio mishandles). teardown() closes it on disconnect.
+        queue.async { self.onAudioPCM = nil }
     }
 
     /// The audio stream went stale (watchdog) while a consumer is still active — re-open it
-    /// on the same live session so RX audio recovers. No-op if audio was stopped (consumer
-    /// gone) or the whole link is down (the control watchdog handles that).
+    /// on the same live session so RX audio recovers. No-op if there is no consumer (stream is
+    /// idle between FT4 sessions) or the whole link is down (the control watchdog handles that).
     private func reopenAudioIfConsuming() {
-        guard connected, let onPCM = onAudioPCM else { return }
+        guard connected, onAudioPCM != nil else { return }
         ODLog.shared.log("icom-net audio: stream stale — re-opening on the live session", category: "cat")
-        audio?.close(); audio = nil
-        startAudio(onPCM: onPCM)
+        openAudioStream()
     }
 
     /// Send a block of PCM (16-bit signed) as a TX audio datagram.
@@ -266,6 +287,7 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         var pcm = [Int16](); pcm.reserveCapacity((r.count - 24) / 2)
         var i = 24
         while i + 1 < r.count { pcm.append(Int16(bitPattern: UInt16(r[i]) | (UInt16(r[i + 1]) << 8))); i += 2 }
+        audioDataAt = Date()     // stream is live — mark it reusable across a stop→start
         audioPktCount += 1; audioSampleCount += pcm.count
         logAudioRateIfDue()
         if !pcm.isEmpty { onAudioPCM?(pcm) }
@@ -279,9 +301,13 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         let now = Date()
         let dt = now.timeIntervalSince(audioLastLog)
         guard dt >= 2.0 else { return }
-        let sps = dt > 0 ? Double(audioSampleCount) / dt : 0
-        ODLog.shared.log(String(format: "icom-net audio: %d pkts, %d samples (~%.0f/s, need %.0f), %d small/ignored in %.1fs",
-                                audioPktCount, audioSampleCount, sps, audioSampleRate, audioSmallCount, dt), category: "cat")
+        // Only log while a consumer is active — between FT4/SSTV sessions the stream stays open
+        // (so it can be reused) and we still receive audio, but logging it would be noise.
+        if onAudioPCM != nil {
+            let sps = dt > 0 ? Double(audioSampleCount) / dt : 0
+            ODLog.shared.log(String(format: "icom-net audio: %d pkts, %d samples (~%.0f/s, need %.0f), %d small/ignored in %.1fs",
+                                    audioPktCount, audioSampleCount, sps, audioSampleRate, audioSmallCount, dt), category: "cat")
+        }
         audioPktCount = 0; audioSampleCount = 0; audioSmallCount = 0; audioLastLog = now
     }
 

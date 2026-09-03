@@ -18,7 +18,14 @@ struct ScheduleView: View {
     // per load instead of filtering the whole list on every render), plus the id of
     // the first pass at/after now for the open-position scroll.
     @State private var entriesByDay: [Date: [ScheduleEntry]] = [:]
+    // The first pass at/after now: its row id (for a precise snap once the list has
+    // laid out) and its UTC start-of-day (a static section row, always present). The
+    // immediate scroll uses the day to avoid targeting a pass row still being inserted
+    // as the schedule streams in — that resolved to an out-of-bounds index path and
+    // tripped UICollectionView's _validateScrollingTargetIndexPath assertion (crash).
+    // The precise row snap runs only in the deferred re-scroll, after layout settles.
     @State private var upcomingTargetID: String?
+    @State private var upcomingTargetDay: Date?
     @State private var loading = false
     // Bumped after each satellite's passes are merged in, so the view re-pins the
     // "now" row while the schedule streams in (content inserted above would
@@ -63,6 +70,30 @@ struct ScheduleView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            nowHeader
+            scheduleList
+        }
+        .task(id: scheduleKey) { await load() }
+    }
+
+    /// A live "now" reference so the operator can read the current UTC time the
+    /// schedule is pinned against. Updates every second via TimelineView.
+    private var nowHeader: some View {
+        TimelineView(.periodic(from: Date(), by: 1)) { context in
+            HStack(spacing: 6) {
+                Image(systemName: "clock").font(.caption)
+                Text("Now \(Self.nowClock.string(from: context.date)) UTC")
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                Spacer()
+            }
+            .foregroundStyle(ODTheme.accent)
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+        }
+    }
+
+    private var scheduleList: some View {
         ScrollViewReader { proxy in
             List {
                 if favorites.isEmpty {
@@ -98,27 +129,37 @@ struct ScheduleView: View {
             .onChange(of: loading) { _, isLoading in if !isLoading { pin(proxy, settle: true) } }
             .onAppear { pin(proxy, settle: true) }
         }
-        .task(id: scheduleKey) { await load() }
     }
 
     /// The first pass at or after the current instant — the row the schedule opens
     /// to. Falls back to the start of today if no upcoming pass has loaded yet.
-    private var firstUpcomingTarget: AnyHashable {
-        if let upcomingTargetID { return AnyHashable(upcomingTargetID) }
-        return AnyHashable(utcCalendar.startOfDay(for: Date()))
+    /// The day section of the next pass — a static row (from `days`), always present,
+    /// so it's a safe scroll target even while pass rows are still being inserted.
+    private var dayTarget: AnyHashable {
+        AnyHashable(upcomingTargetDay ?? utcCalendar.startOfDay(for: Date()))
     }
 
-    /// Snap the next upcoming pass to the top. `settle` repeats the scroll after a
-    /// beat so it lands once freshly-inserted rows have laid out.
+    /// The exact next-pass row when it has actually been inserted; otherwise the day.
+    private var preciseTarget: AnyHashable {
+        if let id = upcomingTargetID, passRowExists(id) { return AnyHashable(id) }
+        return dayTarget
+    }
+
+    private func passRowExists(_ id: String) -> Bool {
+        entriesByDay.values.contains { $0.contains { $0.id == id } }
+    }
+
+    /// Snap the schedule to the next upcoming pass. The immediate scroll targets the
+    /// day section (always laid out — safe while rows stream in); once `settle` lets
+    /// layout catch up, the deferred re-scrolls snap precisely to the pass row.
     private func pin(_ proxy: ScrollViewProxy, settle: Bool = false) {
         guard !favorites.isEmpty else { return }
-        let target = firstUpcomingTarget
-        withAnimation(.none) { proxy.scrollTo(target, anchor: .top) }
-        if settle {
-            for delay in [0.1, 0.35] {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    withAnimation(.none) { proxy.scrollTo(target, anchor: .top) }
-                }
+        withAnimation(.none) { proxy.scrollTo(dayTarget, anchor: .top) }
+        guard settle else { return }
+        for delay in [0.1, 0.35] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard !favorites.isEmpty else { return }
+                withAnimation(.none) { proxy.scrollTo(preciseTarget, anchor: .top) }
             }
         }
     }
@@ -172,10 +213,11 @@ struct ScheduleView: View {
         loadGeneration &+= 1
         let gen = loadGeneration
         let sats = favorites
-        guard !sats.isEmpty else { entriesByDay = [:]; upcomingTargetID = nil; loading = false; return }
+        guard !sats.isEmpty else { entriesByDay = [:]; upcomingTargetID = nil; upcomingTargetDay = nil; loading = false; return }
         loading = true
         var acc: [Date: [ScheduleEntry]] = [:]
         upcomingTargetID = nil
+        upcomingTargetDay = nil
         let observer = store.preferences.observer
         let minEl = store.preferences.minElevation
         let cal = utcCalendar
@@ -206,6 +248,7 @@ struct ScheduleView: View {
             for key in touched { acc[key]?.sort { $0.pass.aos < $1.pass.aos } }
             entriesByDay = acc
             upcomingTargetID = best?.id
+            upcomingTargetDay = best.map { cal.startOfDay(for: $0.aos) }
             streamTick &+= 1
         }
         loading = false
@@ -214,6 +257,13 @@ struct ScheduleView: View {
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "EEE, MMM d"
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
+    private static let nowClock: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
         f.timeZone = TimeZone(identifier: "UTC")
         return f
     }()
