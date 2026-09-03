@@ -160,6 +160,12 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
     private var audioSmallCount = 0
     private var audioLastLog = Date()
     private var audioLoggedFirst = false
+    // TX audio-stream diagnostics (mirror of RX). The RS-BA1 TX path is the least-validated
+    // part, so these confirm the outgoing block size and rate (should be ~16 kHz).
+    private var audioTxPktCount = 0
+    private var audioTxSampleCount = 0
+    private var audioTxLastLog = Date()
+    private var audioTxLoggedFirst = false
 
     /// Sample rate negotiated in ConnInfo.
     var audioSampleRate: Double { 16_000 }
@@ -171,6 +177,8 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
             self.onAudioPCM = onPCM
             self.audioPktCount = 0; self.audioSampleCount = 0; self.audioSmallCount = 0
             self.audioLoggedFirst = false; self.audioLastLog = Date()
+            self.audioTxPktCount = 0; self.audioTxSampleCount = 0
+            self.audioTxLoggedFirst = false; self.audioTxLastLog = Date()
             ODLog.shared.log("icom-net audio: opening stream on port \(self.basePort + 2)", category: "cat")
             let a = RSStream(host: self.host, port: self.basePort + 2, queue: self.queue)
             self.audio = a
@@ -188,7 +196,28 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
 
     /// Send a block of PCM (16-bit signed) as a TX audio datagram.
     func sendAudioPCM(_ pcm: [Int16]) {
-        queue.async { self.audio?.sendAudio(pcm) }
+        queue.async {
+            guard let a = self.audio else { return }
+            if !self.audioTxLoggedFirst {
+                self.audioTxLoggedFirst = true
+                ODLog.shared.log("icom-net audio TX: first block \(pcm.count) samples (\(pcm.count * 2)-byte payload)", category: "cat")
+            }
+            self.audioTxPktCount += 1; self.audioTxSampleCount += pcm.count
+            self.logAudioTxRateIfDue()
+            a.sendAudio(pcm)
+        }
+    }
+
+    /// Log the TX audio rate every ~2 s (mirror of the RX rate log) so a tester's log confirms
+    /// the app is streaming TX audio to the radio at ~16 kHz while transmitting FT4.
+    private func logAudioTxRateIfDue() {
+        let now = Date()
+        let dt = now.timeIntervalSince(audioTxLastLog)
+        guard dt >= 2.0 else { return }
+        let sps = dt > 0 ? Double(audioTxSampleCount) / dt : 0
+        ODLog.shared.log(String(format: "icom-net audio TX: %d pkts, %d samples (~%.0f/s) in %.1fs",
+                                audioTxPktCount, audioTxSampleCount, sps, dt), category: "cat")
+        audioTxPktCount = 0; audioTxSampleCount = 0; audioTxLastLog = now
     }
 
     private func handleAudio(_ r: [UInt8]) {
