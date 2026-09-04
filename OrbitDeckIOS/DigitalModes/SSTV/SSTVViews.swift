@@ -1,5 +1,8 @@
 import SwiftUI
 import UIKit
+import AVFoundation
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 // ===========================================================================
 //  SSTVViews.swift — Home SSTV card + image viewer
@@ -75,6 +78,14 @@ struct HomeSSTVCard: View {
     /// re-decode the current image live from the retained sample buffer.
     private var compensation: some View {
         VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: $decoder.autoTune) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Auto-tune (Doppler)").font(.caption2)
+                    Text("Tracks the sync pulse to follow satellite Doppler; Tuning below is an added trim.")
+                        .font(.caption2).foregroundStyle(ODTheme.muted)
+                }
+            }
+            .toggleStyle(.switch)
             HStack {
                 Text("Slant").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 46, alignment: .leading)
                 Spacer()
@@ -222,6 +233,8 @@ struct SSTVViewer: View {
     @Environment(\.dismiss) private var dismiss
     @State private var saved = false
     @State private var confirmDelete = false
+    @State private var editing = false
+    @State private var reDecoding = false
 
     private var url: URL { QSOStore.sstvDir.appendingPathComponent(entry.filename) }
     private var uiImage: UIImage? { UIImage(contentsOfFile: url.path) }
@@ -246,6 +259,16 @@ struct SSTVViewer: View {
                     ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }
                         .buttonStyle(.bordered)
                 }
+                Button { editing = true } label: {
+                    Label("Fix image (slant / color)", systemImage: "wand.and.stars").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered).disabled(uiImage == nil)
+                if entry.audioFile != nil {
+                    Button { reDecoding = true } label: {
+                        Label("Re-decode from recording", systemImage: "waveform.badge.magnifyingglass").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
                 Button(role: .destructive) { confirmDelete = true } label: {
                     Label("Delete image", systemImage: "trash").frame(maxWidth: .infinity)
                 }
@@ -261,6 +284,8 @@ struct SSTVViewer: View {
                 Button("Delete", role: .destructive) { qso.deleteSSTVImage(entry); dismiss() }
                 Button("Cancel", role: .cancel) {}
             }
+            .sheet(isPresented: $editing) { SSTVImageEditor(entry: entry) }
+            .sheet(isPresented: $reDecoding) { SSTVReDecodeView(entry: entry) }
         }
     }
 
@@ -268,5 +293,219 @@ struct SSTVViewer: View {
         guard let img = uiImage else { return }
         UIImageWriteToSavedPhotosAlbum(img, nil, nil, nil)
         saved = true
+    }
+}
+
+/// Post-decode raster fix-up for a saved SSTV image: straighten the diagonal slant
+/// (a horizontal shear that grows down the image), nudge the picture left/right, and
+/// adjust brightness/contrast/saturation. Non-destructive — writes a new image so the
+/// original is kept. (Geometry + cosmetic only; the Doppler frequency-offset color
+/// cast is a demod-domain error and is fixed instead by the live auto-tune / the
+/// re-decode-from-recording path.)
+struct SSTVImageEditor: View {
+    let entry: SSTVImageEntry
+    @EnvironmentObject private var qso: QSOStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var slantPx: Double = 0      // horizontal shift, top→bottom, in pixels
+    @State private var hShiftPx: Double = 0
+    @State private var brightness: Double = 0
+    @State private var contrast: Double = 1
+    @State private var saturation: Double = 1
+    @State private var preview: UIImage?
+
+    private let ciContext = CIContext(options: nil)
+    private var srcURL: URL { QSOStore.sstvDir.appendingPathComponent(entry.filename) }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 12) {
+                    if let p = preview {
+                        Image(uiImage: p).resizable().scaledToFit().cornerRadius(6)
+                    } else {
+                        ContentUnavailableView("Image unavailable", systemImage: "photo")
+                    }
+                    controls
+                }
+                .padding()
+            }
+            .navigationTitle("Fix Image")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save Copy") { saveCopy() }.disabled(preview == nil)
+                }
+            }
+            .onAppear(perform: render)
+        }
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            slider("Slant", $slantPx, -160...160, "%+.0f px")
+            slider("H-shift", $hShiftPx, -160...160, "%+.0f px")
+            slider("Brightness", $brightness, -0.5...0.5, "%+.2f")
+            slider("Contrast", $contrast, 0.4...2.2, "%.2f×")
+            slider("Saturation", $saturation, 0...2.2, "%.2f×")
+            Button("Reset") {
+                slantPx = 0; hShiftPx = 0; brightness = 0; contrast = 1; saturation = 1; render()
+            }
+            .font(.caption).buttonStyle(.borderless)
+        }
+    }
+
+    private func slider(_ name: String, _ v: Binding<Double>, _ range: ClosedRange<Double>, _ fmt: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(name).font(.caption2).foregroundStyle(ODTheme.muted)
+                Spacer()
+                Text(String(format: fmt, v.wrappedValue)).font(.caption2.monospacedDigit())
+            }
+            Slider(value: v, in: range) { editing in if !editing { render() } }
+        }
+    }
+
+    private func render() {
+        guard let ui = UIImage(contentsOfFile: srcURL.path), let cg = ui.cgImage else { preview = nil; return }
+        let ci = CIImage(cgImage: cg)
+        let extent = ci.extent
+        let color = CIFilter.colorControls()
+        color.inputImage = ci
+        color.brightness = Float(brightness)
+        color.contrast = Float(contrast)
+        color.saturation = Float(saturation)
+        var out = color.outputImage ?? ci
+        // Shear x proportional to row + horizontal offset. CIImage is bottom-left origin
+        // (y up), so the shear coefficient is negated to act top→bottom like the picture.
+        let k = extent.height > 0 ? slantPx / Double(extent.height) : 0
+        out = out.transformed(by: CGAffineTransform(a: 1, b: 0, c: CGFloat(-k), d: 1, tx: CGFloat(hShiftPx), ty: 0))
+        out = out.cropped(to: extent)
+        guard let rendered = ciContext.createCGImage(out, from: extent) else { preview = nil; return }
+        preview = UIImage(cgImage: rendered)
+    }
+
+    private func saveCopy() {
+        guard let p = preview, let data = p.pngData() else { return }
+        let name = "SSTV_\(Int(Date().timeIntervalSince1970))_fixed.png"
+        let dst = QSOStore.sstvDir.appendingPathComponent(name)
+        do {
+            try data.write(to: dst)
+            let mode = entry.mode.isEmpty ? "SSTV (fixed)" : "\(entry.mode) (fixed)"
+            qso.addSSTVImage(SSTVImageEntry(sat: entry.sat, date: Date(), mode: mode, filename: name))
+            dismiss()
+        } catch {}
+    }
+}
+
+/// Re-decode a saved image from its captured pass audio with different slant / auto-tune.
+/// Unlike the raster editor this re-runs the full demodulator, so it can recover the
+/// Doppler color cast as well as geometry. Non-destructive: saves a new image (which
+/// references the same recording, so it can be re-decoded again).
+struct SSTVReDecodeView: View {
+    let entry: SSTVImageEntry
+    @EnvironmentObject private var qso: QSOStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var slantPct: Double = 0        // ±% clock trim
+    @State private var tuningHz: Double = 0
+    @State private var autoTune = true
+    @State private var preview: UIImage?
+    @State private var decodedMode = ""
+    @State private var working = false
+    @State private var failed = false
+
+    private var audioURL: URL? { entry.audioFile.map { QSOStore.sstvDir.appendingPathComponent($0) } }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 12) {
+                    if let p = preview {
+                        Image(uiImage: p).resizable().scaledToFit().cornerRadius(6)
+                        if !decodedMode.isEmpty { Text(decodedMode).font(.caption).foregroundStyle(ODTheme.muted) }
+                    } else if working {
+                        ProgressView("Decoding…").frame(maxWidth: .infinity, minHeight: 160)
+                    } else if failed {
+                        ContentUnavailableView("Couldn't decode", systemImage: "waveform.slash",
+                                               description: Text("No SSTV image was found in the recording."))
+                    } else {
+                        ContentUnavailableView("Re-decode", systemImage: "waveform.badge.magnifyingglass",
+                                               description: Text("Adjust and tap Decode to rebuild the image from the recorded pass audio."))
+                    }
+                    controls
+                }
+                .padding()
+            }
+            .navigationTitle("Re-decode")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save Copy") { saveCopy() }.disabled(preview == nil)
+                }
+            }
+            .onAppear { decode() }
+        }
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Auto-tune (Doppler)", isOn: $autoTune).font(.caption2).toggleStyle(.switch)
+            HStack {
+                Text("Slant").font(.caption2).foregroundStyle(ODTheme.muted)
+                Spacer(); Text(String(format: "%+.3f%%", slantPct)).font(.caption2.monospacedDigit())
+            }
+            FineSlider(value: $slantPct, range: -2...2, step: 0.05)
+            HStack {
+                Text("Tuning").font(.caption2).foregroundStyle(ODTheme.muted)
+                Spacer(); Text(String(format: "%+.0f Hz", tuningHz)).font(.caption2.monospacedDigit())
+            }
+            FineSlider(value: $tuningHz, range: -400...400, step: 5)
+            Button(working ? "Decoding…" : "Decode") { decode() }
+                .buttonStyle(.borderedProminent).disabled(working)
+        }
+    }
+
+    private func decode() {
+        guard let url = audioURL, !working else { return }
+        working = true; failed = false
+        let slant = slantPct / 100.0, tuning = tuningHz, auto = autoTune
+        let startSec = entry.audioStartSec ?? 0
+        Task.detached {
+            let result: (image: UIImage, mode: String)? = {
+                guard let file = try? AVAudioFile(forReading: url) else { return nil }
+                let fmt = file.processingFormat
+                let n = AVAudioFrameCount(file.length)
+                guard n > 0, let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: n),
+                      (try? file.read(into: buf)) != nil, let ch = buf.floatChannelData else { return nil }
+                let count = Int(buf.frameLength)
+                // Skip to ~1 s before this image began (keeps its VIS header), so a session
+                // that decoded several images re-decodes this one.
+                let skip = max(0, min(count - 1, Int((startSec - 1.0) * fmt.sampleRate)))
+                var samples = [Float](repeating: 0, count: count - skip)
+                let p = ch[0]; for i in skip..<count { samples[i - skip] = p[i] }
+                return SSTVDecoder().decodeOffline(frames: samples, rate: fmt.sampleRate, forced: nil,
+                                                   slant: slant, autoTune: auto, tuning: tuning)
+            }()
+            await MainActor.run {
+                working = false
+                if let result { preview = result.image; decodedMode = result.mode; failed = false }
+                else { preview = nil; failed = true }
+            }
+        }
+    }
+
+    private func saveCopy() {
+        guard let p = preview, let data = p.pngData() else { return }
+        let name = "SSTV_\(Int(Date().timeIntervalSince1970))_redecode.png"
+        do {
+            try data.write(to: QSOStore.sstvDir.appendingPathComponent(name))
+            let mode = decodedMode.isEmpty ? "SSTV (re-decoded)" : "\(decodedMode) (re-decoded)"
+            qso.addSSTVImage(SSTVImageEntry(sat: entry.sat, date: Date(), mode: mode, filename: name,
+                                            audioFile: entry.audioFile, audioRate: entry.audioRate))
+            dismiss()
+        } catch {}
     }
 }

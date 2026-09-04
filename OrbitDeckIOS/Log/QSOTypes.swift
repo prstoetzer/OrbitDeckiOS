@@ -55,6 +55,15 @@ struct SSTVImageEntry: Identifiable, Codable, Sendable, Equatable {
     var date: Date
     var mode = ""
     var filename = ""            // file under Application Support/SSTV
+    // The pass audio captured during the live decode, so the image can be re-decoded
+    // later with different slant/tuning (a full demod-domain fix, unlike the raster
+    // editor). Optional keeps older saved blobs decodable. `audioRate` is the capture
+    // rate the file was recorded at.
+    var audioFile: String?
+    var audioRate: Double?
+    // Seconds into the recording where this image's transmission began, so a session
+    // that decoded several images re-decodes the right one.
+    var audioStartSec: Double?
 }
 
 /// One line of FT4 activity (a decode or our own transmission), persisted so the

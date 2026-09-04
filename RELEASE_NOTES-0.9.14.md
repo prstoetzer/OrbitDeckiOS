@@ -1,6 +1,6 @@
 # OrbitDeck iOS/iPadOS 0.9.14 — logging, LoTW, SSTV, full-duplex FT4, rigctl, shared audio & CAT/rotator parity
 
-Version **0.9.14 (11)**. This release remains below 1.0. It follows 0.9.13.
+Version **0.9.14 (16)**. This release remains below 1.0. It follows 0.9.13.
 
 ## Summary
 
@@ -10,6 +10,35 @@ Version **0.9.14 (11)**. This release remains below 1.0. It follows 0.9.13.
 USB audio interface or an Icom network-audio radio. It also adds a **rigctl
 (Hamlib)** CAT path and fixes the satellite direction-of-travel arrow on
 high-elliptical orbits.
+
+## 0.9.14 (16) — SSTV Doppler decoding
+
+- **Doppler-aware SSTV.** A fast 70&nbsp;cm bird shifts the whole audio band during a pass,
+  which slanted the picture and cast its colors. The decoder now re-locks each line's sync
+  pulse as a *relative* dip (it no longer gives up when Doppler pushes the sync tone up), and a
+  new **Auto-tune** (on by default) reads that sync to measure and correct the frequency offset
+  continuously — straight, true-colored images without touching a knob.
+- **Feed-forward from rig control.** When CAT is connected, OrbitDeck feeds its live Doppler
+  tuning into the SSTV decoder so the dial steps it makes mid-image don't tear the picture
+  (needed for the long PD modes). With no rig connected the decoder is completely unaffected.
+- **Fix an image after the pass.** From a saved image: **Fix image** straightens a leftover
+  slant and tweaks brightness/contrast/saturation; **Re-decode from recording** rebuilds the
+  image from the captured pass audio with new slant/Auto-tune settings, recovering the Doppler
+  color cast a picture-only edit can't. Both save a new copy, non-destructively.
+
+## 0.9.14 (12–15) — crash fix, schedule & CAT audit
+
+- **IC-9700/9100 reverse-band satellites fixed.** Working a bird whose downlink is on the
+  *other* band (e.g. AO-7 Mode B: 2&nbsp;m down / 70&nbsp;cm up) now correctly puts the downlink
+  on the radio's Main VFO by exchanging Main/Sub, instead of a command the radio ignored.
+- **CAT command cross-audit vs OscarWatch.** Fixed the FT-847 narrow-FM mode byte and its
+  uplink-VFO read, the Kenwood TS-2000 CTCSS tone number (was off by one) and its in-satellite
+  band scoping, and the IC-910 uplink-tone command.
+- **Daily Schedule** no longer crashes while passes stream in, shows an "updating…" indicator,
+  gained a live "Now HH:MM UTC" header you can tap to jump back to the current time, and still
+  snaps to the next pass. Default elevation mask is now 0°.
+- **RS-BA1 network audio** keeps the audio stream alive across FT4 restarts, and disconnecting
+  now releases the radio's LAN session.
 
 ## 0.9.14 (11) — CAT & rotator parity (OscarWatch cross-audit)
 

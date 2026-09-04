@@ -16,6 +16,18 @@ import Combine
 //  still be needed.
 // ===========================================================================
 
+/// Cross-feature hand-off of the live CAT Doppler residual (Hz) to the SSTV decoder,
+/// for feed-forward tuning. RigController publishes the current commanded-vs-parked
+/// downlink offset here each Doppler tick and clears it (0) when it stops or disconnects;
+/// the SSTV decoder subtracts it per audio buffer. Defaults to 0 so an operator WITHOUT
+/// CAT control (or with it idle) is completely unaffected. Thread-safe.
+enum SSTVDopplerFeed {
+    private nonisolated(unsafe) static var _hz = 0.0
+    private static let lock = NSLock()
+    static var currentHz: Double { lock.withLock { _hz } }
+    static func set(_ hz: Double) { lock.withLock { _hz = hz } }
+}
+
 @MainActor
 final class SSTVDecoder: ObservableObject {
     @Published private(set) var isListening = false
@@ -50,11 +62,20 @@ final class SSTVDecoder: ObservableObject {
     @Published var hShiftMs: Double = 0 {
         didSet { lock.lock(); hShiftMirror = hShiftMs; needsRedecode = true; lock.unlock(); work.async { [weak self] in self?.pump() } }
     }
+    /// Automatic Doppler frequency tracking. Each scan line's 1200 Hz horizontal-sync
+    /// pulse is a known reference; its measured frequency minus 1200 is the live audio
+    /// offset, which is folded into the color mapping per line. This tracks the Doppler
+    /// drift of a fast LEO through the pass (and each CAT dial step) so colors stay
+    /// correct without a manual tuning knob. The `tuningHz` knob remains an added trim.
+    @Published var autoTune: Bool = true {
+        didSet { lock.lock(); autoTuneMirror = autoTune; needsRedecode = true; lock.unlock(); work.async { [weak self] in self?.pump() } }
+    }
     private nonisolated(unsafe) var slantMirror: Double = 0
     private nonisolated(unsafe) var tuningMirror: Double = 0
     private nonisolated(unsafe) var contrastMirror: Double = 1
     private nonisolated(unsafe) var saturationMirror: Double = 1
     private nonisolated(unsafe) var hShiftMirror: Double = 0
+    private nonisolated(unsafe) var autoTuneMirror = true
     private nonisolated(unsafe) var needsRedecode = false
 
     /// Input gain (linear) applied to captured audio. SSTV is FM, so this doesn't
@@ -74,6 +95,19 @@ final class SSTVDecoder: ObservableObject {
     private weak var qso: QSOStore?
     private var source: AudioSource?
     private var satName = ""
+
+    // Session audio recording, so a decoded image can be re-decoded later with
+    // different slant/tuning (a full demod-domain fix). Written on `recQueue`; created
+    // lazily on the first frame (like PassRecorder) so the encoder has an active
+    // session. The whole listening session goes to one file; each image decoded in it
+    // references the same recording.
+    private let recQueue = DispatchQueue(label: "org.orbitdeck.sstv.rec")
+    private nonisolated(unsafe) var recFile: AVAudioFile?
+    private nonisolated(unsafe) var recFormat: AVAudioFormat?
+    private nonisolated(unsafe) var recURL: URL?
+    private nonisolated(unsafe) var recFilename = ""
+    private nonisolated(unsafe) var recRate: Double = 48_000
+    private nonisolated(unsafe) var recTried = false
 
     // Streaming state (touched on `work` and the audio thread; guarded by `lock`).
     private nonisolated(unsafe) var rate: Double = 48_000
@@ -96,8 +130,16 @@ final class SSTVDecoder: ObservableObject {
     // hold the most recent of each to reconstruct color for every row.
     private nonisolated(unsafe) var r36Cr: [Double] = []
     private nonisolated(unsafe) var r36Cb: [Double] = []
+    // Auto-tune (Doppler AFC) running estimate of the audio-frequency offset (Hz),
+    // tracked from each line's sync pulse. `valid` snaps it on the first good line.
+    private nonisolated(unsafe) var autoOffsetHz = 0.0
+    private nonisolated(unsafe) var autoOffsetValid = false
 
     private enum Phase { case searching, decoding, done }
+
+    /// A nonisolated init lets a throwaway instance be created off the main actor for
+    /// offline re-decoding (see `decodeOffline`). All stored properties have defaults.
+    nonisolated init() {}
 
     func attach(_ qso: QSOStore) { self.qso = qso }
 
@@ -119,6 +161,7 @@ final class SSTVDecoder: ObservableObject {
         r36Cr = []; r36Cb = []
         slantMirror = slant; tuningMirror = tuningHz
         contrastMirror = contrast; saturationMirror = saturation; hShiftMirror = hShiftMs; needsRedecode = false
+        autoTuneMirror = autoTune; autoOffsetHz = 0; autoOffsetValid = false
         forcedMode = forced
         lock.unlock()
         source.inputGain = inputGain
@@ -137,6 +180,10 @@ final class SSTVDecoder: ObservableObject {
         // 48 kHz demod harmlessly covers any gap).
         self.rate = source.sampleRate
         lock.lock(); demod = StreamingDemod(rate: rate); lock.unlock()
+        // Set up the session recording (lazy file create on the first frame).
+        recFilename = "SSTVREC_\(Int(Date().timeIntervalSince1970)).m4a"
+        recURL = QSOStore.sstvDir.appendingPathComponent(recFilename)
+        recRate = rate; recFile = nil; recFormat = nil; recTried = false
         isListening = true
         AudioActivity.begin()
         scheduleLevelTimer()
@@ -168,6 +215,13 @@ final class SSTVDecoder: ObservableObject {
         AudioActivity.end()
         AudioActivity.releaseCapture("SSTV")
         lock.lock(); let decoded = !rgba.isEmpty && currentLine > 0; lock.unlock()
+        // Finalize the AAC recording; discard it if no image was decoded (nothing
+        // references it, so it would just be an orphan file).
+        let recorded = recURL
+        recQueue.async { [weak self] in
+            self?.recFile = nil
+            if !decoded, let recorded { try? FileManager.default.removeItem(at: recorded) }
+        }
         status = decoded ? "Stopped — decoded \(modeName)" : "Stopped"
     }
 
@@ -178,10 +232,48 @@ final class SSTVDecoder: ObservableObject {
         for s in frames { let a = abs(s); if a > peak { peak = a } }
         lock.lock()
         if peak > inPeak { inPeak = peak }
-        let out = demod.process(frames)
+        var out = demod.process(frames)
+        // Feed-forward Doppler: when CAT is actively tuning this downlink, subtract its
+        // current commanded-vs-parked residual so a mid-image dial step is corrected
+        // continuously (no color tear) instead of only at the next line's sync. The feed
+        // is 0 whenever CAT isn't tuning, so a no-CAT decode is byte-for-byte unchanged.
+        // Gated by auto-tune so a fully-manual decode stays raw.
+        if autoTuneMirror {
+            let ff = SSTVDopplerFeed.currentHz
+            if ff != 0 { let f = Float(ff); for i in out.indices { out[i] -= f } }
+        }
         freq.append(contentsOf: out)
         lock.unlock()
+        recordAudio(frames)
         work.async { [weak self] in self?.pump() }
+    }
+
+    /// Append captured audio to the session recording (for later re-decode). Lazily
+    /// creates the AAC file on the first frame, when the input session is active.
+    private nonisolated func recordAudio(_ frames: [Float]) {
+        recQueue.async { [weak self] in
+            guard let self else { return }
+            if self.recFile == nil {
+                guard !self.recTried, let url = self.recURL,
+                      let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: self.recRate, channels: 1, interleaved: false) else { return }
+                self.recTried = true
+                let settings: [String: Any] = [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: self.recRate,
+                    AVNumberOfChannelsKey: 1,
+                    AVEncoderBitRateKey: 96_000
+                ]
+                self.recFile = try? AVAudioFile(forWriting: url, settings: settings)
+                self.recFormat = fmt
+            }
+            guard let file = self.recFile, let fmt = self.recFormat,
+                  let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames.count)) else { return }
+            buf.frameLength = AVAudioFrameCount(frames.count)
+            if let ch = buf.floatChannelData {
+                frames.withUnsafeBufferPointer { src in ch[0].update(from: src.baseAddress!, count: frames.count) }
+            }
+            try? file.write(from: buf)
+        }
     }
 
     private nonisolated func pump() {
@@ -207,6 +299,7 @@ final class SSTVDecoder: ObservableObject {
                 rgba = [UInt8](repeating: 0, count: m.width * m.height * 4)
                 r36Cr = [Double](repeating: 0.5, count: m.width)
                 r36Cb = [Double](repeating: 0.5, count: m.width)
+                autoOffsetHz = 0; autoOffsetValid = false
                 needsRedecode = false
                 phase = .decoding
                 lock.unlock()
@@ -233,6 +326,7 @@ final class SSTVDecoder: ObservableObject {
                 rgba = [UInt8](repeating: 0, count: m.width * m.height * 4)
                 r36Cr = [Double](repeating: 0.5, count: m.width)
                 r36Cb = [Double](repeating: 0.5, count: m.width)
+                autoOffsetHz = 0; autoOffsetValid = false
                 lastPublishedLine = -1
             }
             lock.unlock()
@@ -266,11 +360,23 @@ final class SSTVDecoder: ObservableObject {
 
             // Lock onto the horizontal sync pulse (the lowest-frequency part of the
             // line) so timing errors don't accumulate — the key to a clean image.
-            let start = refineSyncStart(nominal: nominal, mode: m, effRate: effRate, window: searchW)
+            let refined = refineSyncStart(nominal: nominal, mode: m, effRate: effRate, window: searchW)
+            let start = refined.start
             lastLineStart = start
 
+            // Auto-tune (Doppler AFC): the sync pulse is nominally 1200 Hz; its measured
+            // frequency minus 1200 is the current audio offset. Track it smoothed and add
+            // it to the tuning so colors follow Doppler through the pass. Held when this
+            // line's sync wasn't confidently located.
+            if autoTuneMirror, let syncHz = refined.syncHz {
+                let est = syncHz - 1200.0
+                if autoOffsetValid { autoOffsetHz += 0.25 * (est - autoOffsetHz) }
+                else { autoOffsetHz = est; autoOffsetValid = true }
+            }
+            let effTuning = tuning + (autoTuneMirror ? autoOffsetHz : 0)
+
             let offset = Int(start) - sampleBase
-            decodeLine(into: &rgba, mode: m, freqOffset: offset, effRate: effRate, tuning: tuning,
+            decodeLine(into: &rgba, mode: m, freqOffset: offset, effRate: effRate, tuning: effTuning,
                        contrast: contrastMirror, saturation: saturationMirror, hShift: hShiftMirror,
                        transmittedLine: currentLine)
             currentLine += 1
@@ -296,14 +402,14 @@ final class SSTVDecoder: ObservableObject {
     }
 
     /// Refine a line's start by locating the horizontal sync pulse (the lowest-
-    /// frequency ~1200 Hz interval) within ±`window` samples of `nominal`. Returns
-    /// `nominal` unchanged if no convincing sync dip is found (noise guard). Caller
-    /// holds `lock`.
-    private nonisolated func refineSyncStart(nominal: Double, mode m: SSTVMode, effRate: Double, window: Double) -> Double {
+    /// frequency ~1200 Hz interval) within ±`window` samples of `nominal`, and report
+    /// the pulse's measured frequency for the Doppler AFC. Returns `nominal` (and a nil
+    /// syncHz) if no convincing dip is found (noise guard). Caller holds `lock`.
+    private nonisolated func refineSyncStart(nominal: Double, mode m: SSTVMode, effRate: Double, window: Double) -> (start: Double, syncHz: Double?) {
         let syncMs = m.line.first(where: { $0.channel == .sync })?.ms ?? 5.0
         let syncSamples = max(2, Int(syncMs / 1000.0 * effRate))
         let W = Int(window)
-        guard W > 0 else { return nominal }
+        guard W > 0 else { return (nominal, nil) }
         let step = max(1, syncSamples / 40)
         var bestMean = Double.greatestFiniteMagnitude
         var bestOff = 0
@@ -320,13 +426,28 @@ final class SSTVDecoder: ObservableObject {
             }
             off += step
         }
-        // Accept only if the winning window really looks like a 1200 Hz sync dip.
-        return bestMean < 1400 ? nominal + Double(bestOff) : nominal
+        guard bestMean.isFinite else { return (nominal, nil) }
+        // Accept the sync as a *relative* dip below the line's own average frequency,
+        // NOT an absolute "< 1400 Hz". Doppler shifts the whole audio band, so on a
+        // fast pass the sync can read ~1500 Hz+ — an absolute test rejected it, the
+        // decoder lost per-line lock, and the picture slanted/tore. The sync is always
+        // the lowest-frequency interval in a line, so a dip below the line mean is a
+        // reliable, tuning-independent detector.
+        let lineN = max(1, Int(m.lineMs / 1000.0 * effRate))
+        let rs = Int(nominal) - sampleBase
+        var refSum = 0.0, refCnt = 0, k = max(0, rs)
+        let re = min(freq.count, rs + lineN)
+        while k < re { refSum += Double(freq[k]); k += 1; refCnt += 1 }
+        let lineMean = refCnt > 0 ? refSum / Double(refCnt) : 1900.0
+        let isDip = bestMean < lineMean - 200.0 || bestMean < 1500.0
+        guard isDip else { return (nominal, nil) }
+        return (nominal + Double(bestOff), bestMean)
     }
 
     private nonisolated func finishImage() {
         lock.lock()
         let m = mode; let snapshot = rgba; let w = m?.width ?? 0; let h = m?.height ?? 0
+        let startSec = rate > 0 ? Double(imageStart) / rate : 0
         phase = .searching; currentLine = 0; lastPublishedLine = -1
         // Keep searching for a subsequent image; drop old samples.
         let keep = Int(rate * 2.0)
@@ -337,17 +458,20 @@ final class SSTVDecoder: ObservableObject {
             guard let img = Self.image(from: snapshot, width: w, height: h) else { return }
             self.image = img
             self.status = "Decoded \(m.name)"
-            self.save(img, mode: m.name)
+            self.save(img, mode: m.name, startSec: startSec)
         }
     }
 
-    @MainActor private func save(_ img: UIImage, mode: String) {
+    @MainActor private func save(_ img: UIImage, mode: String, startSec: Double = 0) {
         guard let data = img.pngData() else { return }
         let name = "SSTV_\(Int(Date().timeIntervalSince1970)).png"
         let url = QSOStore.sstvDir.appendingPathComponent(name)
         do {
             try data.write(to: url)
-            qso?.addSSTVImage(SSTVImageEntry(sat: satName, date: Date(), mode: mode, filename: name))
+            // Reference the session recording so this image can be re-decoded later.
+            qso?.addSSTVImage(SSTVImageEntry(sat: satName, date: Date(), mode: mode, filename: name,
+                                             audioFile: recFilename.isEmpty ? nil : recFilename,
+                                             audioRate: recRate, audioStartSec: startSec))
         } catch { errorText = "Could not save image: \(error.localizedDescription)" }
     }
 
@@ -463,7 +587,7 @@ final class SSTVDecoder: ObservableObject {
         return ((Y + 1.402 * Cr) / 255.0, (Y - 0.344136 * Cb - 0.714136 * Cr) / 255.0, (Y + 1.772 * Cb) / 255.0)
     }
 
-    @MainActor static func image(from bytes: [UInt8], width: Int, height: Int) -> UIImage? {
+    nonisolated static func image(from bytes: [UInt8], width: Int, height: Int) -> UIImage? {
         guard width > 0, height > 0, bytes.count == width * height * 4 else { return nil }
         var data = bytes
         let cs = CGColorSpaceCreateDeviceRGB()
@@ -472,6 +596,57 @@ final class SSTVDecoder: ObservableObject {
                                   bytesPerRow: width * 4, space: cs, bitmapInfo: info),
               let cg = ctx.makeImage() else { return nil }
         return UIImage(cgImage: cg)
+    }
+
+    // MARK: Offline re-decode (from a recording)
+
+    /// Decode a whole buffer of captured audio in one pass, for re-decoding a saved
+    /// image with different slant / auto-tune. Reuses the same demod, sync-lock and
+    /// line-decode as the live path but runs to completion and returns the image
+    /// instead of publishing/saving. Runs on a throwaway decoder instance, so it never
+    /// touches the live decode state. Not tied to an AudioSource — no capture claim.
+    nonisolated func decodeOffline(frames: [Float], rate r: Double, forced: SSTVMode?,
+                                   slant: Double, autoTune: Bool, tuning: Double) -> (image: UIImage, mode: String)? {
+        var d = StreamingDemod(rate: r)
+        let f = d.process(frames)
+        guard let hit = Self.findStart(f, rate: r, forced: forced) else { return nil }
+        let m = forced ?? SSTVModes.mode(forVIS: hit.vis) ?? SSTVModes.all[0]
+        lock.lock()
+        rate = r; freq = f; sampleBase = 0
+        mode = m; imageStart = hit.startIndex; currentLine = 0
+        lastLineStart = Double(hit.startIndex)
+        rgba = [UInt8](repeating: 0, count: m.width * m.height * 4)
+        r36Cr = [Double](repeating: 0.5, count: m.width)
+        r36Cb = [Double](repeating: 0.5, count: m.width)
+        slantMirror = slant; tuningMirror = tuning; autoTuneMirror = autoTune
+        contrastMirror = 1; saturationMirror = 1; hShiftMirror = 0
+        autoOffsetHz = 0; autoOffsetValid = false
+
+        let effRate = r * (1.0 + slant)
+        let lineSamples = m.lineMs / 1000.0 * effRate
+        let transmitted = m.height / m.linesPerScan
+        while currentLine < transmitted {
+            let nominal = (currentLine == 0) ? Double(imageStart) : lastLineStart + lineSamples
+            let searchW = (currentLine == 0) ? max(0.030 * effRate, lineSamples * 0.04)
+                                             : max(0.006 * effRate, lineSamples * 0.02)
+            let available = sampleBase + freq.count
+            if Double(available) < nominal + searchW + lineSamples { break }
+            let refined = refineSyncStart(nominal: nominal, mode: m, effRate: effRate, window: searchW)
+            lastLineStart = refined.start
+            if autoTune, let syncHz = refined.syncHz {
+                let est = syncHz - 1200.0
+                if autoOffsetValid { autoOffsetHz += 0.25 * (est - autoOffsetHz) }
+                else { autoOffsetHz = est; autoOffsetValid = true }
+            }
+            let effTuning = tuning + (autoTune ? autoOffsetHz : 0)
+            decodeLine(into: &rgba, mode: m, freqOffset: Int(refined.start) - sampleBase, effRate: effRate,
+                       tuning: effTuning, contrast: 1, saturation: 1, hShift: 0, transmittedLine: currentLine)
+            currentLine += 1
+        }
+        let snap = rgba; let w = m.width, h = m.height
+        lock.unlock()
+        guard let img = Self.image(from: snap, width: w, height: h) else { return nil }
+        return (img, m.name)
     }
 }
 

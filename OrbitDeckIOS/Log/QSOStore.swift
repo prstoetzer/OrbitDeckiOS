@@ -79,6 +79,11 @@ final class QSOStore: ObservableObject {
     func deleteSSTVImage(_ s: SSTVImageEntry) {
         sstvImages.removeAll { $0.id == s.id }
         try? FileManager.default.removeItem(at: Self.sstvDir.appendingPathComponent(s.filename))
+        // Remove the captured re-decode audio unless another image still references it
+        // (multiple images from one listening session share the recording).
+        if let audio = s.audioFile, !sstvImages.contains(where: { $0.audioFile == audio }) {
+            try? FileManager.default.removeItem(at: Self.sstvDir.appendingPathComponent(audio))
+        }
         save(sstvImages, "SSTVImages.json")
     }
 

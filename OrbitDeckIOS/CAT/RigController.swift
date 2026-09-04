@@ -240,6 +240,7 @@ final class RigController: ObservableObject {
 
     func disconnect() {
         timer?.cancel(); timer = nil
+        SSTVDopplerFeed.set(0)      // stop feeding a stale Doppler residual to the SSTV decoder
         // Clear `connected` BEFORE tearing the transports down: closing a socket can fire
         // its onError/state handler, and handleLinkDropped() guards on `connected`, so this
         // stops a caller-initiated disconnect from being mistaken for a live drop.
@@ -260,6 +261,7 @@ final class RigController: ObservableObject {
     }
 
     private func teardown() async {
+        SSTVDopplerFeed.set(0)      // no more live Doppler residual for the SSTV decoder
         for link in links { await link.transport.disconnect() }
         links.removeAll()
     }
@@ -625,6 +627,12 @@ final class RigController: ObservableObject {
                 if uplink > 0, !settleUp, abs(txRig - lastSentTx) >= deadband { await sendFreq(link, leg: .uplink, hz: txRig, mode: ulMode); lastSentTx = txRig }
             }
         }
+        // Feed-forward the current downlink residual (commanded target vs last-sent dial)
+        // to the SSTV decoder so it can correct a mid-image Doppler step continuously. Zero
+        // unless a downlink is actually being tracked; cleared on disconnect. An operator
+        // without CAT never sets this, so SSTV decoding is unaffected.
+        let hasDownlink = links.contains { $0.leg == .both || $0.leg == .downlink }
+        SSTVDopplerFeed.set(hasDownlink ? Double(rxRig - lastSentRx) : 0)
     }
 
     // MARK: Read-back (One True Rule)
