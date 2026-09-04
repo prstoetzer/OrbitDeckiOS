@@ -90,7 +90,7 @@ enum RadioCatalog {
         civ("IC-820", 0x42, 9600, selMain: [0x07,0xD1], selSub: [0x07,0xD0], sat: false),
         civ("IC-821", 0x4C, 9600, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: false),
         civ("IC-910", 0x60, 19200, selMain: [0x07,0xD1], selSub: [0x07,0xD0], sat: true,
-            satCmd: 0x1A, satSub: 0x07, tone: true, toneSub: 0x43, modeFilter: false, fmNarrow: 0x02),
+            satCmd: 0x1A, satSub: 0x07, tone: true, toneSub: 0x42, modeFilter: false, fmNarrow: 0x02),
         civ("IC-970", 0x2E, 9600, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: false,
             satCmd: 0x16, satSub: 0x5A),
         civ("IC-9100", 0x7C, 19200, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: true,
@@ -445,8 +445,9 @@ extension CATConfig {
 }
 
 enum CTCSS {
-    /// The 39 standard EIA tones, in tenths of Hz, ascending — the shared order
-    /// used by the Yaesu code table and the Kenwood tone number (index+1).
+    /// The 39-tone list (standard 38 EIA tones plus 69.3 Hz), in tenths of Hz, ascending —
+    /// the order the Yaesu FT-847 code table (`ft847CTCSS`) is aligned to. The Kenwood tone
+    /// number uses `kenwoodTenths` (38 tones, no 69.3 Hz) instead — see below.
     static let tenths: [Int] = [
         670, 693, 719, 744, 770, 797, 825, 854, 885, 915,
         948, 974, 1000, 1035, 1072, 1109, 1148, 1188, 1230, 1273,
@@ -467,4 +468,23 @@ enum CTCSS {
     }
 
     static let availableHz: [Double] = tenths.map { Double($0) / 10.0 }
+
+    /// The Kenwood TS-2000/790 `TN`/`CN` tone list — the standard 38 EIA tones, which do
+    /// NOT include 69.3 Hz. The shared 39-tone list above carries 69.3 Hz (index 1) for the
+    /// Yaesu code table; using that list's index for the Kenwood tone *number* shifted every
+    /// tone at/above 71.9 Hz by one (e.g. 141.3 Hz was commanded as the next tone up), so the
+    /// wrong sub-audible tone went out on FM uplinks. Matches Hamlib's ts2000_ctcss_list.
+    static let kenwoodTenths: [Int] = tenths.filter { $0 != 693 }
+
+    /// 1-based Kenwood `TN`/`CN` tone number for a frequency (nearest within ~1 Hz), or nil.
+    static func kenwoodIndex(hz: Double) -> Int? {
+        guard hz > 0 else { return nil }
+        let target = Int((hz * 10).rounded())
+        var best = -1, bestErr = 9999
+        for (i, t) in kenwoodTenths.enumerated() {
+            let e = abs(t - target)
+            if e < bestErr { bestErr = e; best = i }
+        }
+        return bestErr <= 10 ? best + 1 : nil
+    }
 }

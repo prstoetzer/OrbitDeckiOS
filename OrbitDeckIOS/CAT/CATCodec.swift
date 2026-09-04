@@ -106,14 +106,13 @@ enum CATCodec {
         return 0x00
     }
 
-    /// 07 D2 band-assignment frames (IC-9100/9700). Empty if unavailable/unknown.
-    static func civAssignBands(_ spec: RadioSpec, addr: UInt8, mainHz: UInt64, subHz: UInt64) -> [[UInt8]] {
-        guard spec.canAssignBand else { return [] }
-        let mb = civBandCode(mainHz), sb = civBandCode(subHz)
-        guard mb != 0, sb != 0 else { return [] }
-        return [civFrame(addr: addr, payload: [0x07, 0xD2, 0x00, mb]),
-                civFrame(addr: addr, payload: [0x07, 0xD2, 0x01, sb])]
-    }
+    /// Exchange the MAIN and SUB bands (IC-9100/9700, CI-V `07 B0`). This is the ONLY way to
+    /// move a band onto MAIN in satellite mode — there is no "assign band X to MAIN" command
+    /// (the previously-used `07 D2` is not a real CI-V command; the radio silently ignored it,
+    /// so a cross-band swap like AO-7 Mode B — 2 m downlink — never took and the downlink
+    /// stayed on the wrong VFO). Matches OscarWatch's IcomCivDriverBase.ExchangeVfos. The
+    /// exchange is a toggle, so it must be sent exactly once when a swap is needed.
+    static func civExchangeMainSub(addr: UInt8) -> [UInt8] { civFrame(addr: addr, payload: [0x07, 0xB0]) }
 
     static func civReadFreq(addr: UInt8) -> [UInt8] { civFrame(addr: addr, payload: [0x03]) }
 
@@ -158,9 +157,10 @@ enum CATCodec {
     }
 
     static func yaesuBinModeByte(_ m: RigMode) -> UInt8 {
-        // FT-817/847/857/897: FM = 0x08. Narrow FM isn't a distinct CAT mode byte on these
-        // (it's a radio menu setting), so FM-N maps to FM.
-        switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .fm, .fmn: 0x08; case .data: 0x0A }
+        // FT-817/847/857/897: FM = 0x08, narrow FM = 0x88 (Hamlib ft847.c/ft857.c, matches
+        // OscarWatch). FM-N previously mapped to 0x08, so the narrowFM setting silently sent
+        // wide FM on Yaesu (it correctly narrows on Icom via the 06 05 filter byte).
+        switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .fm: 0x08; case .fmn: 0x88; case .data: 0x0A }
     }
     static func yaesuVR5000ModeByte(_ m: RigMode) -> UInt8 {
         switch m { case .lsb: 0x00; case .usb: 0x01; case .cw: 0x02; case .am: 0x04; case .fm, .fmn: 0x88; case .data: 0x01 }
@@ -208,7 +208,11 @@ enum CATCodec {
         switch spec.family {
         case .yaesuFT100: return [0, 0, 0, 0, 0x10]
         default:
-            let op: UInt8 = vfo == .satRX ? 0x13 : 0x03
+            // FT-847 SAT VFOs: RX read = 0x13, TX read = 0x23 (Hamlib ft847.c). The SAT-TX
+            // case previously fell through to 0x03 (main/RX read), so a follow-uplink read
+            // polled the downlink VFO and folded the wrong delta into the uplink offset.
+            let op: UInt8
+            switch vfo { case .satRX: op = 0x13; case .satTX: op = 0x23; case .plain: op = 0x03 }
             return [0, 0, 0, 0, op]
         }
     }
@@ -267,11 +271,13 @@ enum CATCodec {
     static func kwSetMode(_ m: RigMode) -> [UInt8] { Array("MD\(kwModeDigit(m));".utf8) }
     /// Read VFO A (downlink) or VFO B (uplink) on a full-duplex Kenwood.
     static func kwReadFreq(vfoB: Bool = false) -> [UInt8] { Array((vfoB ? "FB;" : "FA;").utf8) }
-    /// TS-2000 TX CTCSS: TNnn (1-based) + TO1/TO0.
+    /// TS-2000 TX CTCSS: TNnn + TO1/TO0. Uses the Kenwood 38-tone list (no 69.3 Hz) so the
+    /// tone number matches the radio's `TN` table — the shared 39-tone index was off by one
+    /// at and above 71.9 Hz.
     static func kwTone(on: Bool, toneHz: Double) -> [[UInt8]] {
         if !on || toneHz <= 0 { return [Array("TO0;".utf8)] }
-        guard let i = CTCSS.index(hz: toneHz) else { return [] }
-        return [Array(String(format: "TN%02d;", i + 1).utf8), Array("TO1;".utf8)]
+        guard let n = CTCSS.kenwoodIndex(hz: toneHz) else { return [] }
+        return [Array(String(format: "TN%02d;", n).utf8), Array("TO1;".utf8)]
     }
     // MARK: Kenwood satellite (TS-2000 / TS-790) — SATL entry/exit
     //
@@ -291,10 +297,14 @@ enum CATCodec {
     static func kwSatExit() -> [[UInt8]] {
         [Array("RX;".utf8), Array("TO0;".utf8), Array("SA0010000;".utf8), Array("AI0;".utf8)]
     }
-    /// Dual-control select before an `MD`/tone in SATL (MD applies to the CTRL band):
-    /// uplink work on SUB (`DC11` = TX sub, CTRL sub); downlink work on MAIN with TX still
-    /// on SUB (`DC10`) — which is also the operating state (transmit uplink, monitor downlink).
-    static func kwSatControl(uplink: Bool) -> [UInt8] { Array((uplink ? "DC11;" : "DC10;").utf8) }
+    /// Select the CTRL band before an `MD`/tone in SATL. On the TS-2000 `MD` (and the tone
+    /// commands) apply to the band chosen by `SA` P4 — NOT by `DC` — so the previous
+    /// `DC10/DC11` never moved where `MD` landed and the uplink mode/tone were set on the
+    /// downlink band. Use the `SA` control-band form (trace off, matching OscarWatch's
+    /// BuildSetSatelliteModeOnSubControlCommand): CTRL sub `SA1011000;` for the uplink,
+    /// CTRL main `SA1010000;` for the downlink. TX stays on the uplink (SUB) via the SATL
+    /// layout regardless. `SA` needs a settle delay before the following `MD` (see caller).
+    static func kwSatControl(uplink: Bool) -> [UInt8] { Array((uplink ? "SA1011000;" : "SA1010000;").utf8) }
 
     /// Parse "FA<digits>;" (or "FB…" for VFO B) → Hz. Base stations answer 11 digits.
     static func kwParseFreq(_ buf: [UInt8], digits: Int = 11, vfoB: Bool = false) -> UInt64? {

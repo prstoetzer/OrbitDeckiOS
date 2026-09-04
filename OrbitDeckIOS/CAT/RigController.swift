@@ -395,20 +395,32 @@ final class RigController: ObservableObject {
         }
     }
 
-    /// Assign which band is on MAIN vs SUB for radios that need it (IC-9100/9700, the
-    /// `07 D2` command). Without this the 9700's MAIN/SUB VFOs can sit on the wrong
-    /// bands, so Doppler frequency/mode writes land where the operator can't see them.
-    /// MAIN = uplink, SUB = downlink (unless the operator swapped that). Auto for
+    /// Put the downlink band on MAIN for radios with the fixed Main=RX/Sub=TX satellite
+    /// layout (IC-9100/9700). These rigs have NO command to assign a band to MAIN/SUB
+    /// directly; the only lever is exchanging MAIN and SUB (`07 B0`). So we read MAIN's
+    /// current frequency and, if its band differs from the downlink's, exchange — exactly
+    /// as OscarWatch's RigSatModeHelper.NeedsMainSubBandSwap + ExchangeVfos. This is what
+    /// makes a cross-band change like AO-7 Mode B (2 m downlink / 70 cm uplink, the reverse
+    /// of RS-44) actually land the downlink on the VFO the operator hears. Auto for
     /// canAssignBand rigs; other rigs are unaffected.
     private func applyBandAssignment(tp: TransponderRecord) async {
         for link in links where link.spec.canAssignBand && link.leg == .both {
-            let mainIsUp = mainCarriesUplink(link.spec)
-            let mainHz = UInt64(max(0, mainIsUp ? tp.uplinkCenter : tp.downlinkCenter))
-            let subHz  = UInt64(max(0, mainIsUp ? tp.downlinkCenter : tp.uplinkCenter))
-            let frames = CATCodec.civAssignBands(link.spec, addr: civAddr(link), mainHz: mainHz, subHz: subHz)
-            guard !frames.isEmpty else { continue }
-            for f in frames { await sendRaw(link, f); await pace(60) }
-            ODLog.shared.log("band assign \(link.spec.name): MAIN=\(mainHz) SUB=\(subHz)", category: "cat")
+            let dlBand = CATCodec.civBandCode(UInt64(max(0, tp.downlinkCenter)))
+            guard dlBand != 0 else { continue }
+            // MAIN carries the downlink on these rigs (mainCarriesUplink == false), so
+            // readLegFreq(.downlink) selects MAIN (07 D0) and reads its frequency.
+            guard let mainHz = await readLegFreq(link, leg: .downlink) else {
+                ODLog.shared.log("band assign \(link.spec.name): MAIN read failed — leaving bands as-is", category: "cat")
+                continue
+            }
+            let mainBand = CATCodec.civBandCode(mainHz)
+            if mainBand != 0, mainBand != dlBand {
+                await sendRaw(link, CATCodec.civExchangeMainSub(addr: civAddr(link)))
+                await pace(120)
+                ODLog.shared.log("band assign \(link.spec.name): MAIN was \(mainHz) (band 0x\(String(mainBand, radix: 16))), downlink needs band 0x\(String(dlBand, radix: 16)) — exchanged MAIN/SUB", category: "cat")
+            } else {
+                ODLog.shared.log("band assign \(link.spec.name): MAIN=\(mainHz) already on downlink band 0x\(String(dlBand, radix: 16)) — no swap", category: "cat")
+            }
         }
     }
 
@@ -688,8 +700,8 @@ final class RigController: ObservableObject {
 
     /// Whether MAIN carries the uplink for this radio. The IC-9100/9700 satellite mode is
     /// a FIXED Main=RX(downlink) / Sub=TX(uplink) layout (per OscarWatch RigSatModeHelper
-    /// and Icom's SAT design), so band-assign (07 D2) and MAIN/SUB select must put the
-    /// downlink on MAIN — regardless of the generic VFO-Type setting. Using the setting
+    /// and Icom's SAT design), so the MAIN/SUB band exchange and band-access select must put
+    /// the downlink on MAIN — regardless of the generic VFO-Type setting. Using the setting
     /// there sent RS-44's modes to the wrong VFOs (downlink came out LSB, uplink USB).
     private func mainCarriesUplink(_ spec: RadioSpec) -> Bool {
         if spec.canAssignBand { return false }     // 9100/9700: Main = downlink (RX)
@@ -788,6 +800,8 @@ final class RigController: ObservableObject {
             // (TS-711/811) just get MD. No clean CAT data mode either way.
             if kenwoodSat(link.spec), link.leg == .both {
                 await sendRaw(link, CATCodec.kwSatControl(uplink: leg == .uplink))
+                // The SA control-band change needs time to take before MD is scoped to it.
+                await pace(400)
             }
             await sendRaw(link, CATCodec.kwSetMode(mode))
         case .kenwoodHandheld:

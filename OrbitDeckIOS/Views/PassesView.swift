@@ -70,31 +70,43 @@ struct ScheduleView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            nowHeader
-            scheduleList
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                nowHeader(proxy)
+                scheduleList(proxy)
+            }
         }
         .task(id: scheduleKey) { await load() }
     }
 
     /// A live "now" reference so the operator can read the current UTC time the
-    /// schedule is pinned against. Updates every second via TimelineView.
-    private var nowHeader: some View {
+    /// schedule is pinned against (updates every second), shows an "updating…"
+    /// indicator while passes are still streaming in, and — tapped — snaps the list
+    /// back to the current time.
+    private func nowHeader(_ proxy: ScrollViewProxy) -> some View {
         TimelineView(.periodic(from: Date(), by: 1)) { context in
             HStack(spacing: 6) {
                 Image(systemName: "clock").font(.caption)
                 Text("Now \(Self.nowClock.string(from: context.date)) UTC")
                     .font(.subheadline.weight(.semibold).monospacedDigit())
+                if loading {
+                    ProgressView().controlSize(.mini).padding(.leading, 2)
+                    Text("updating…").font(.caption2).foregroundStyle(ODTheme.muted)
+                }
                 Spacer()
+                Image(systemName: "arrow.up.to.line").font(.caption2).foregroundStyle(ODTheme.muted)
             }
             .foregroundStyle(ODTheme.accent)
             .padding(.horizontal)
             .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .onTapGesture { pin(proxy, settle: true) }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("Scroll to current time")
         }
     }
 
-    private var scheduleList: some View {
-        ScrollViewReader { proxy in
+    private func scheduleList(_ proxy: ScrollViewProxy) -> some View {
             List {
                 if favorites.isEmpty {
                     Section {
@@ -128,7 +140,6 @@ struct ScheduleView: View {
             .onChange(of: streamTick) { _, _ in pin(proxy) }
             .onChange(of: loading) { _, isLoading in if !isLoading { pin(proxy, settle: true) } }
             .onAppear { pin(proxy, settle: true) }
-        }
     }
 
     /// The first pass at or after the current instant — the row the schedule opens
@@ -149,16 +160,21 @@ struct ScheduleView: View {
         entriesByDay.values.contains { $0.contains { $0.id == id } }
     }
 
-    /// Snap the schedule to the next upcoming pass. The immediate scroll targets the
-    /// day section (always laid out — safe while rows stream in); once `settle` lets
-    /// layout catch up, the deferred re-scrolls snap precisely to the pass row.
+    /// Snap the schedule to the next upcoming pass. The immediate scroll always targets
+    /// the day section — a static row whose index path is always valid, so it's safe to
+    /// scroll to even while pass rows stream in. The precise pass-row snap runs only in
+    /// the deferred re-scroll AND only once loading has finished: scrolling to a pass row
+    /// while the list is still publishing streamed rows resolved to an out-of-bounds
+    /// index path and tripped UICollectionView's _validateScrollingTargetIndexPath
+    /// assertion (crash). While loading, the day scroll keeps the position pinned; the
+    /// onChange(loading→false) settle does the precise snap once content is stable.
     private func pin(_ proxy: ScrollViewProxy, settle: Bool = false) {
         guard !favorites.isEmpty else { return }
         withAnimation(.none) { proxy.scrollTo(dayTarget, anchor: .top) }
         guard settle else { return }
         for delay in [0.1, 0.35] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard !favorites.isEmpty else { return }
+                guard !favorites.isEmpty, !loading else { return }
                 withAnimation(.none) { proxy.scrollTo(preciseTarget, anchor: .top) }
             }
         }
