@@ -31,7 +31,8 @@ DEVICES=(
 echo "▸ Building $SCHEME for the simulator…"
 xcodebuild -project "$PROJ" -scheme "$SCHEME" -configuration Release \
   -sdk iphonesimulator -derivedDataPath "$DD" \
-  -destination 'generic/platform=iOS Simulator' build >/dev/null
+  -destination 'generic/platform=iOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build >/dev/null
 APP="$(find "$DD/Build/Products" -maxdepth 3 -name '*.app' | head -1)"
 [ -n "$APP" ] || { echo "✗ Built .app not found"; exit 1; }
 echo "  app: $APP"
