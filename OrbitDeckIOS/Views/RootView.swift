@@ -193,7 +193,13 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var autoLocation = LocationProvider()
-    @State private var selection: OrbitDestination? = .home
+    // App Store screenshot automation: `-odScreen <rawValue>` (parsed into UserDefaults by
+    // iOS) opens straight to that screen on launch, so a simctl script can capture each one.
+    // No-op in normal use.
+    static var launchScreen: OrbitDestination? {
+        UserDefaults.standard.string(forKey: "odScreen").flatMap(OrbitDestination.init(rawValue:))
+    }
+    @State private var selection: OrbitDestination? = RootView.launchScreen ?? .home
     // The last non-nil selection. NavigationSplitView can briefly hand the detail
     // a nil selection while a heavy screen re-renders; falling back to `.home`
     // there made the detail flash the Home screen. Falling back to the last real
