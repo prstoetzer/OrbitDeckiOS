@@ -20,7 +20,8 @@ SCHEME="OrbitDeckIOS"
 PROJ="OrbitDeckIOS.xcodeproj"
 DD="build/screenshots"
 OUT="Screenshots"
-RENDER_WAIT="${RENDER_WAIT:-7}"     # seconds to let a screen settle before capture
+RENDER_WAIT="${RENDER_WAIT:-9}"     # seconds to let a screen settle before capture
+WARMUP_WAIT="${WARMUP_WAIT:-25}"    # first launch fetches the GP catalog from the network
 
 SCREENS=(home track globe radar passes schedule groundtrack)
 DEVICES=(
@@ -53,9 +54,15 @@ for entry in "${DEVICES[@]}"; do
     --time "9:41" --batteryState charged --batteryLevel 100 \
     --cellularBars 4 --wifiBars 3 --dataNetwork wifi 2>/dev/null || true
 
+  # Warm-up launch: seed demo favorites (-odDemo) and let the GP catalog download + cache,
+  # so the data screens have content and later launches load instantly from the cache.
+  echo "  … warming up catalog"
+  xcrun simctl launch "$UDID" "$BUNDLE_ID" -odScreen home -odDemo 1 >/dev/null
+  sleep "$WARMUP_WAIT"
+
   for S in "${SCREENS[@]}"; do
     xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
-    xcrun simctl launch "$UDID" "$BUNDLE_ID" -odScreen "$S" >/dev/null
+    xcrun simctl launch "$UDID" "$BUNDLE_ID" -odScreen "$S" -odDemo 1 >/dev/null
     sleep "$RENDER_WAIT"
     xcrun simctl io "$UDID" screenshot "$OUT/$TAG/$S.png" >/dev/null
     echo "  ✓ $TAG/$S.png"

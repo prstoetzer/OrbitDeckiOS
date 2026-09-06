@@ -77,6 +77,22 @@ final class OrbitStore: ObservableObject {
 
     init() {
         loadPreferences()
+        seedDemoIfRequested()
+    }
+
+    /// App Store screenshot automation: with `-odDemo 1` on the launch command, seed a set
+    /// of well-known amateur satellites as favorites and select one, so the data-driven
+    /// screens (Track, Passes, Schedule, Ground Track) render with content. No-op otherwise,
+    /// so normal launches and real installs are untouched.
+    private func seedDemoIfRequested() {
+        guard UserDefaults.standard.bool(forKey: "odDemo") else { return }
+        // ISS, SO-50, AO-91, RS-44, AO-73, IO-117 (GreenCube).
+        let demo: [UInt] = [25544, 27607, 43017, 44909, 39444, 53106]
+        preferences.favorites = Set(demo)
+        if preferences.selectedNorad == nil || !demo.contains(preferences.selectedNorad!) {
+            preferences.selectedNorad = 25544   // ISS
+        }
+        savePreferences()
     }
 
     func bootstrap() async {
