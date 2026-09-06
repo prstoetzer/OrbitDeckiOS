@@ -20,8 +20,11 @@ SCHEME="OrbitDeckIOS"
 PROJ="OrbitDeckIOS.xcodeproj"
 DD="build/screenshots"
 OUT="Screenshots"
-RENDER_WAIT="${RENDER_WAIT:-9}"     # seconds to let a screen settle before capture
+RENDER_WAIT="${RENDER_WAIT:-9}"     # seconds to let a card screen settle before capture
+HEAVY_WAIT="${HEAVY_WAIT:-22}"      # full-bleed GPU screens (globe/radar/map) need longer to
+                                    # composite their first frame, esp. on the 13" iPad
 WARMUP_WAIT="${WARMUP_WAIT:-25}"    # first launch fetches the GP catalog from the network
+HEAVY_SCREENS=" globe radar groundtrack "   # need HEAVY_WAIT
 
 SCREENS=(home track globe radar passes schedule groundtrack)
 DEVICES=(
@@ -63,7 +66,7 @@ for entry in "${DEVICES[@]}"; do
   for S in "${SCREENS[@]}"; do
     xcrun simctl terminate "$UDID" "$BUNDLE_ID" 2>/dev/null || true
     xcrun simctl launch "$UDID" "$BUNDLE_ID" -odScreen "$S" -odDemo 1 >/dev/null
-    sleep "$RENDER_WAIT"
+    if [[ "$HEAVY_SCREENS" == *" $S "* ]]; then sleep "$HEAVY_WAIT"; else sleep "$RENDER_WAIT"; fi
     xcrun simctl io "$UDID" screenshot "$OUT/$TAG/$S.png" >/dev/null
     echo "  ✓ $TAG/$S.png"
   done
