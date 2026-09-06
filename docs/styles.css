@@ -204,3 +204,14 @@ h3 { font-size: 19px; margin: 26px 0 8px; }
     .doc-body table, .prose table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .container { padding-left: 16px; padding-right: 16px; }
 }
+
+/* Screenshot gallery (App Store captures) */
+.shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 18px; margin-top: 8px; }
+.shots figure { margin: 0; }
+.shots img { width: 100%; height: auto; display: block; border-radius: 20px; border: 1px solid var(--border); background: var(--panel); }
+.shots figcaption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 8px; }
+/* Inline contextual screenshot on the docs pages */
+.doc-shot { max-width: 320px; float: right; margin: 0 0 16px 20px; }
+.doc-shot img { width: 100%; height: auto; display: block; border-radius: 18px; border: 1px solid var(--border); }
+.doc-shot figcaption { color: var(--muted); font-size: 12px; text-align: center; margin-top: 6px; }
+@media (max-width: 640px) { .doc-shot { float: none; max-width: 240px; margin: 0 auto 16px; } }
