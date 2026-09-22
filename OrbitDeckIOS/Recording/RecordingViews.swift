@@ -36,7 +36,7 @@ struct HomeRecordingCard: View {
                 }
                 SatelliteStatusLine(satellite: satellite)
                 AudioLevelControl(title: "Recording level", gain: $recorder.inputGain, level: recorder.level)
-                Text("Records the received audio from your USB (or network) audio interface, tagged with the satellite and time. Set the level so the meter rides in the green. Works only in the foreground.")
+                Text("Records the received audio from your USB (or network) audio interface, tagged with the satellite and time. Set the level so the meter rides in the green. Keeps recording with the screen locked or the app backgrounded during a pass.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }

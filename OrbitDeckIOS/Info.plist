@@ -12,9 +12,17 @@
     <string>OrbitDeck can save decoded SSTV images to your photo library when you choose to export them.</string>
     <key>UIBackgroundModes</key>
     <array>
-        <!-- Keep capturing/playing satellite audio (pass recording, SSTV, FT4) — and the
-             CAT/network link that rides alongside it — running while the screen is locked
-             or the app is backgrounded during a pass. -->
+        <!-- A satellite pass runs 8-15 minutes, and the operator routinely locks the screen
+             or switches apps partway through it. The app must keep recording and playing
+             audio for the whole pass:
+               - Pass recording captures the radio's received audio to an AAC file
+                 (Recording/PassRecorder.swift).
+               - SSTV and FT4 decode the received audio continuously; FT4 also synthesizes
+                 and plays transmit audio out to the radio (Audio/USBAudioSource.swift).
+               - Remote voice streams the radio's received audio to the device speaker
+                 (Audio/AudioHub.swift).
+             Interrupting any of these loses the pass - the satellite is gone and won't be
+             back for ~90 minutes. -->
         <string>audio</string>
     </array>
 </dict>
