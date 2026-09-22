@@ -86,7 +86,16 @@ a:hover { text-decoration: underline; }
 }
 .hero h1 { font-size: clamp(30px, 6vw, 48px); margin: 0 0 12px; line-height: 1.1; }
 .hero p.tagline { font-size: clamp(17px, 3vw, 21px); color: var(--muted); max-width: 640px; margin: 0 auto 28px; }
-.hero .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.hero .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; align-items: center; }
+
+/* Apple's official App Store badge. Per Apple's marketing guidelines the artwork
+   must not be recoloured, restyled or given effects, so it gets no .btn chrome —
+   just the anchor. Rendered at its native 40px height (Apple's stated minimum for
+   web) with width:auto so the aspect ratio holds; the flex gap supplies more than
+   the required clear space of one-tenth the badge height. */
+.hero .badges a.appstore { display: inline-flex; line-height: 0; }
+.hero .badges a.appstore:hover { text-decoration: none; }
+.hero .badges a.appstore img { height: 40px; width: auto; display: block; }
 
 .btn {
     display: inline-block;
