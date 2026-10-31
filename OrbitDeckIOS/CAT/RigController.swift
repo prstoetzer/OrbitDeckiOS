@@ -47,6 +47,7 @@ final class RigController: ObservableObject {
         var connecting: Bool
         var connected: Bool
         var error: String?
+        var hint: String?
 
         var stateText: String {
             if connecting { return "Connecting…" }
@@ -192,7 +193,7 @@ final class RigController: ObservableObject {
         // Seed per-radio status (both show "Connecting…" for a two-radio station).
         statuses = built.enumerated().map { i, link in
             RigLinkStatus(id: i, radioName: link.spec.name, transport: link.slot.transport,
-                          leg: link.leg, connecting: true, connected: false, error: nil)
+                          leg: link.leg, connecting: true, connected: false, error: nil, hint: nil)
         }
         for link in built {
             ODLog.shared.log("connect start: \(link.spec.name) via \(String(describing: link.slot.transport)) leg=\(String(describing: link.leg)) host=\(link.slot.host):\(link.slot.port)", category: "cat")
@@ -201,7 +202,7 @@ final class RigController: ObservableObject {
         Task {
             // Connect all radios concurrently so both progress at once. Capture the
             // Sendable transport, not the (non-Sendable) LiveLink.
-            await withTaskGroup(of: (Int, String?).self) { group in
+            await withTaskGroup(of: (Int, Error?).self) { group in
                 for (i, link) in links.enumerated() {
                     let t = link.transport
                     group.addTask {
@@ -210,14 +211,22 @@ final class RigController: ObservableObject {
                             try await t.postConnect();
                             return (i, nil)
                         }
-                        catch { return (i, error.localizedDescription) }
+                        catch { return (i, error) }
                     }
                 }
                 for await (i, err) in group where i < statuses.count {
                     statuses[i].connecting = false
                     if let err {
-                        statuses[i].error = err
-                        ODLog.shared.log("connect failed [\(statuses[i].radioName)]: \(err)", category: "cat")
+                        let errorText = err.localizedDescription
+                        statuses[i].error = errorText
+                        ODLog.shared.log("connect failed [\(statuses[i].radioName)]: \(errorText)", category: "cat")
+                        
+                        if statuses[i].transport == .bleicom,
+                           let bleError = err as? IComBLESerialTransport.BLEError,
+                           bleError == .commandTimeout
+                        {
+                            statuses[i].hint = "Hint: If you are pairing your Icom radio via Bluetooth for the first time, go to Menu > Set > Bluetooth Set > Pairing Reception and then try to connect again."
+                        }
                     } else {
                         statuses[i].connected = true
                         ODLog.shared.log("connected [\(statuses[i].radioName)]", category: "cat")
@@ -320,6 +329,9 @@ final class RigController: ObservableObject {
         case .ble:
             let uuid = UUID(uuidString: slot.bleIdentifier) ?? UUID()
             return BLESerialTransport(identifier: uuid)
+        case .bleicom:
+            let uuid = UUID(uuidString: slot.bleIdentifier) ?? UUID()
+            return IComBLESerialTransport(identifier: uuid)
         case .rigctld:
             // Reuse the generic TCP transport (also used by rotctld); rigctld is a
             // plain line-oriented TCP protocol. Default Hamlib NET port is 4532.

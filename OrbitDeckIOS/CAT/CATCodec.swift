@@ -35,6 +35,10 @@ enum CATCodec {
     static func civFrame(addr: UInt8, payload: [UInt8]) -> [UInt8] {
         [0xFE, 0xFE, addr, host] + payload + [0xFD]
     }
+    
+    static func civBLEConfigFrame(cfgCommand: UInt8, payload: [UInt8]) -> [UInt8] {
+        [0xFE, 0xF1, 0x00, cfgCommand] + payload + [0xFD]
+    }
 
     static func civSetFreq(_ spec: RadioSpec, addr: UInt8, hz: UInt64) -> [UInt8] {
         let n = (spec.wideFreq && hz > 5_850_000_000) ? 6 : 5
