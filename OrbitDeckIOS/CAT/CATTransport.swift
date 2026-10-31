@@ -38,7 +38,7 @@ enum CATError: LocalizedError {
 /// Common transport interface used by `RigController`.
 protocol CATTransport: AnyObject, Sendable {
     func connect() async throws
-    func postConnect() async throws
+    func postConnect(store: OrbitStore) async throws
     func disconnect() async
     func send(_ bytes: [UInt8]) async throws
     /// Return bytes received so far, waiting up to `maxWait` for the first byte.
@@ -133,7 +133,7 @@ final class BLESerialTransport: NSObject, CATTransport, @unchecked Sendable {
         }
     }
     
-    func postConnect() async throws { /* no-op */ }
+    func postConnect(store: OrbitStore) async throws { /* no-op */ }
 
     func disconnect() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
@@ -338,15 +338,10 @@ final class IComBLESerialTransport: NSObject, CATTransport, @unchecked Sendable 
         }
     }
     
-    func postConnect() async throws {
-        // random uuid identifying our app: 136108e3-4ab4-4900-b1b8-e1d6b2706ade
-        let deviceUUIDBytes: [UInt8] = [
-            0x13, 0x61, 0x08, 0xE3,
-            0x4A, 0xB4,
-            0x49, 0x00,
-            0xB1, 0xB8,
-            0xE1, 0xD6, 0xB2, 0x70, 0x6A, 0xDE
-        ]
+    func postConnect(store: OrbitStore) async throws {
+        let deviceUUID = await store.installationUUID
+        var uuidValue = UUID(uuidString: deviceUUID)
+        let deviceUUIDBytes = withUnsafeBytes(of: &uuidValue) { Array($0) }
         
         let deviceUUIDMessage = CATCodec.civBLEConfigFrame(cfgCommand: 0x61, payload: deviceUUIDBytes)
         

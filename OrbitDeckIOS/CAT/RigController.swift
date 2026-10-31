@@ -198,6 +198,10 @@ final class RigController: ObservableObject {
         for link in built {
             ODLog.shared.log("connect start: \(link.spec.name) via \(String(describing: link.slot.transport)) leg=\(String(describing: link.leg)) host=\(link.slot.host):\(link.slot.port)", category: "cat")
         }
+        guard let store = self.store else {
+            ODLog.shared.log("OrbitStore not attached")
+            return
+        }
 
         Task {
             // Connect all radios concurrently so both progress at once. Capture the
@@ -208,7 +212,7 @@ final class RigController: ObservableObject {
                     group.addTask {
                         do {
                             try await t.connect();
-                            try await t.postConnect();
+                            try await t.postConnect(store: store);
                             return (i, nil)
                         }
                         catch { return (i, error) }

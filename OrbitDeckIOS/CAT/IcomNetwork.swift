@@ -107,7 +107,7 @@ final class IcomNetworkTransport: NSObject, CATTransport, @unchecked Sendable {
         }
     }
     
-    func postConnect() async throws { /* no-op */ }
+    func postConnect(store: OrbitStore) async throws { /* no-op */ }
 
     func disconnect() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
