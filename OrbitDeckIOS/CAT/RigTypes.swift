@@ -6,7 +6,8 @@ import Foundation
 //  Ported from CardSat's radio_profiles.h / settings.h (the bench-validated
 //  reference). CardSat speaks three CAT dialect families; OrbitDeck drives the
 //  radios that expose a serial CI-V / Yaesu / Kenwood interface over a BLE UART
-//  adapter, plus Icom radios with native network (RS-BA1) CAT over Wi-Fi.
+//  adapter, plus Icom radios with native network (RS-BA1) CAT over Wi-Fi
+//  and Icom radios with native bluetooth CAT capability (IC-705/IC-905).
 //
 //  iOS constraint: generic Bluetooth *Classic* (SPP) serial adapters cannot be
 //  opened without MFi. Only BLE (Low Energy) UART adapters work here; the Kenwood
@@ -65,6 +66,7 @@ struct RadioSpec: Identifiable, Sendable, Hashable {
     let fullDuplex: Bool    // has MAIN/SUB satellite operation (true sat rigs)
     let rxOnly: Bool        // receive-only; cannot be the uplink radio
     let hasLan: Bool        // native Icom network (RS-BA1) CAT available
+    let hasBluetooth: Bool  // native Icom BT CAT available
     let canReadFreq: Bool
     let modeFilter: Bool    // append filter byte to CI-V cmd 06
     let hasSatMode: Bool
@@ -98,19 +100,19 @@ enum RadioCatalog {
         civ("IC-9700", 0xA2, 19200, selMain: [0x07,0xD0], selSub: [0x07,0xD1], sat: true,
             satCmd: 0x16, satSub: 0x5A, tone: true, toneSub: 0x42, assignBand: true, lan: true, fmNarrow: 0x02),
         RadioSpec(id: "FT-847", name: "FT-847", family: .yaesuBinary, civAddr: 0, defaultBaud: 57600,
-                  fullDuplex: true, rxOnly: false, hasLan: false, canReadFreq: true, modeFilter: false,
+                  fullDuplex: true, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: true, satModeCmd: 0, satModeSub: 0, hasTone: true, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
         RadioSpec(id: "FT-736R", name: "FT-736R", family: .yaesuFT736, civAddr: 0, defaultBaud: 4800,
-                  fullDuplex: true, rxOnly: false, hasLan: false, canReadFreq: false, modeFilter: false,
+                  fullDuplex: true, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: false, modeFilter: false,
                   hasSatMode: true, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
         RadioSpec(id: "TS-790", name: "TS-790", family: .kenwoodBase, civAddr: 0, defaultBaud: 4800,
-                  fullDuplex: true, rxOnly: false, hasLan: false, canReadFreq: true, modeFilter: false,
+                  fullDuplex: true, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: true, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
         RadioSpec(id: "TS-2000", name: "TS-2000", family: .kenwoodBase, civAddr: 0, defaultBaud: 57600,
-                  fullDuplex: true, rxOnly: false, hasLan: false, canReadFreq: true, modeFilter: false,
+                  fullDuplex: true, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: true, satModeCmd: 0, satModeSub: 0, hasTone: true, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
     ]
@@ -120,8 +122,8 @@ enum RadioCatalog {
     /// station. Excludes the FT-991/991A/FTX-1 (USB-only, unreachable on iOS).
     static let mono: [RadioSpec] = [
         // Icom CI-V transceivers
-        civLeg("IC-705", 0xA4, 19200, lan: true),
-        civLeg("IC-905", 0xAC, 19200, lan: true, wide: true),
+        civLeg("IC-705", 0xA4, 19200, lan: true, bluetooth: true),
+        civLeg("IC-905", 0xAC, 19200, lan: true, bluetooth: true, wide: true),
         civLeg("IC-7100", 0x88, 19200),
         civLeg("IC-7000", 0x70, 19200, modeFilter: false, canRead: true),
         civLeg("IC-706MKIIG", 0x58, 9600),
@@ -152,20 +154,20 @@ enum RadioCatalog {
         yaesuLeg("VR-5000", .yaesuVR5000, 9600, rxOnly: true, canRead: false),
         // Kenwood all-mode base stations
         RadioSpec(id: "TS-711", name: "TS-711", family: .kenwoodBase, civAddr: 0, defaultBaud: 4800,
-                  fullDuplex: false, rxOnly: false, hasLan: false, canReadFreq: true, modeFilter: false,
+                  fullDuplex: false, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
         RadioSpec(id: "TS-811", name: "TS-811", family: .kenwoodBase, civAddr: 0, defaultBaud: 4800,
-                  fullDuplex: false, rxOnly: false, hasLan: false, canReadFreq: true, modeFilter: false,
+                  fullDuplex: false, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
         // Kenwood handhelds via the B.B. Link BLE adapter (all-mode receiver on band B)
         RadioSpec(id: "TH-D74", name: "TH-D74", family: .kenwoodHandheld, civAddr: 0, defaultBaud: 9600,
-                  fullDuplex: false, rxOnly: true, hasLan: false, canReadFreq: true, modeFilter: false,
+                  fullDuplex: false, rxOnly: true, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
         RadioSpec(id: "TH-D75", name: "TH-D75", family: .kenwoodHandheld, civAddr: 0, defaultBaud: 9600,
-                  fullDuplex: false, rxOnly: true, hasLan: false, canReadFreq: true, modeFilter: false,
+                  fullDuplex: false, rxOnly: true, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
     ]
@@ -178,7 +180,7 @@ enum RadioCatalog {
     /// the controller's per-link plumbing (which expects a `RadioSpec`) works. It
     /// is treated as full-duplex-capable (split VFO) and frequency-readable.
     static let rigctld = RadioSpec(id: "RIGCTLD", name: "rigctld", family: .rigctld, civAddr: 0, defaultBaud: 0,
-                                   fullDuplex: true, rxOnly: false, hasLan: false, canReadFreq: true, modeFilter: false,
+                                   fullDuplex: true, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                                    hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                                    selMain: [], selSub: [], canAssignBand: false, wideFreq: false)
 
@@ -192,25 +194,25 @@ enum RadioCatalog {
                             satCmd: UInt8 = 0, satSub: UInt8 = 0,
                             tone: Bool = false, toneSub: UInt8 = 0,
                             modeFilter: Bool = true, assignBand: Bool = false,
-                            lan: Bool = false, fmNarrow: UInt8 = 0) -> RadioSpec {
+                            lan: Bool = false, bluetooth: Bool = false, fmNarrow: UInt8 = 0) -> RadioSpec {
         RadioSpec(id: name, name: name, family: .civ, civAddr: addr, defaultBaud: baud,
-                  fullDuplex: true, rxOnly: false, hasLan: lan, canReadFreq: true, modeFilter: modeFilter,
+                  fullDuplex: true, rxOnly: false, hasLan: lan, hasBluetooth: bluetooth, canReadFreq: true, modeFilter: modeFilter,
                   hasSatMode: sat, satModeCmd: satCmd, satModeSub: satSub, hasTone: tone, toneEncSub: toneSub,
                   selMain: selMain, selSub: selSub, canAssignBand: assignBand, wideFreq: false,
                   fmNarrowFilter: fmNarrow)
     }
     private static func civLeg(_ name: String, _ addr: UInt8, _ baud: Int,
-                               rxOnly: Bool = false, lan: Bool = false, wide: Bool = false,
+                               rxOnly: Bool = false, lan: Bool = false, bluetooth: Bool = false, wide: Bool = false,
                                modeFilter: Bool = true, canRead: Bool = true) -> RadioSpec {
         RadioSpec(id: name, name: name, family: .civ, civAddr: addr, defaultBaud: baud,
-                  fullDuplex: false, rxOnly: rxOnly, hasLan: lan, canReadFreq: canRead, modeFilter: modeFilter,
+                  fullDuplex: false, rxOnly: rxOnly, hasLan: lan, hasBluetooth: bluetooth, canReadFreq: canRead, modeFilter: modeFilter,
                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: wide)
     }
     private static func yaesuLeg(_ name: String, _ family: RigFamily, _ baud: Int,
                                  rxOnly: Bool = false, canRead: Bool = true) -> RadioSpec {
         RadioSpec(id: name, name: name, family: family, civAddr: 0, defaultBaud: baud,
-                  fullDuplex: false, rxOnly: rxOnly, hasLan: false, canReadFreq: canRead, modeFilter: false,
+                  fullDuplex: false, rxOnly: rxOnly, hasLan: false, hasBluetooth: false, canReadFreq: canRead, modeFilter: false,
                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false)
     }
@@ -232,12 +234,14 @@ enum RigRole: String, Codable, Sendable, CaseIterable, Identifiable {
 /// How the app reaches the radio.
 enum CATTransportKind: String, Codable, Sendable, CaseIterable, Identifiable {
     case ble        // BLE UART adapter (CoreBluetooth)
+    case bleicom    // ICOM rigs with native BT
     case network    // Icom RS-BA1 over Wi-Fi
     case rigctld    // Hamlib rigctld server over TCP
     var id: String { rawValue }
     var label: String {
         switch self {
         case .ble: "BLE serial adapter"
+        case .bleicom: "Icom built-in BT"
         case .network: "Icom network (Wi-Fi)"
         case .rigctld: "Hamlib rigctld (network)"
         }
