@@ -38,6 +38,7 @@ enum CATError: LocalizedError {
 /// Common transport interface used by `RigController`.
 protocol CATTransport: AnyObject, Sendable {
     func connect() async throws
+    func postConnect() async throws
     func disconnect() async
     func send(_ bytes: [UInt8]) async throws
     /// Return bytes received so far, waiting up to `maxWait` for the first byte.
@@ -131,6 +132,8 @@ final class BLESerialTransport: NSObject, CATTransport, @unchecked Sendable {
         case .failure(let e): c.resume(throwing: e)
         }
     }
+    
+    func postConnect() async throws { /* no-op */ }
 
     func disconnect() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in

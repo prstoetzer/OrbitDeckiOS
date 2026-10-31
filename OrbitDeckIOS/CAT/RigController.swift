@@ -205,7 +205,11 @@ final class RigController: ObservableObject {
                 for (i, link) in links.enumerated() {
                     let t = link.transport
                     group.addTask {
-                        do { try await t.connect(); return (i, nil) }
+                        do {
+                            try await t.connect();
+                            try await t.postConnect();
+                            return (i, nil)
+                        }
                         catch { return (i, error.localizedDescription) }
                     }
                 }
