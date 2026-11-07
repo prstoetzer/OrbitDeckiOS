@@ -489,6 +489,18 @@ final class OrbitStore: ObservableObject {
         FeatureEngine.latLonToGrid4(latitude: preferences.observer.latitude,
                                     longitude: preferences.observer.longitude)
     }
+    
+    // UUID that is generated once (lazily) and stored for lifetime of the app
+    var installationUUID: String {
+        if let storedUUID = defaults.string(forKey: "OrbitDeckIOS.installationUUID") {
+            return storedUUID
+        } else {
+            // if we dont have any UUID yet, generate and store new one
+            let newUUID = UUID().uuidString
+            defaults.set(newUUID, forKey: "OrbitDeckIOS.installationUUID")
+            return newUUID
+        }
+    }
 
     /// Six-character station locator for display.
     var operatorGrid6: String {

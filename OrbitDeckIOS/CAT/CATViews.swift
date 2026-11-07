@@ -73,10 +73,13 @@ struct RigControlSettingsView: View {
                     .pickerStyle(.menu)
                 }
 
-                // Connection type. Icom network only appears for LAN-capable radios.
+                // Connection type. Icom network only appears for LAN-capable radios. Icom BLE only appears for bluetooth-capable radios.
                 Picker("Connection", selection: transportBinding(index)) {
                     Text(CATTransportKind.ble.label).tag(CATTransportKind.ble)
-                    if catalogSpec?.hasLan == true { Text(CATTransportKind.network.label).tag(CATTransportKind.network) }
+                    if catalogSpec?.hasBluetooth == true { Text(CATTransportKind.bleicom.label).tag(CATTransportKind.bleicom)
+                    }
+                    if catalogSpec?.hasLan == true { Text(CATTransportKind.network.label).tag(CATTransportKind.network)
+                    }
                     Text(CATTransportKind.rigctld.label).tag(CATTransportKind.rigctld)
                 }
 
@@ -141,6 +144,19 @@ struct RigControlSettingsView: View {
                         .buttonStyle(.plain)
                         Text("For CI-V/Yaesu/Kenwood radios, wire a BLE UART adapter to the radio's CAT/CI-V port. Kenwood TH-D74/D75 use the B.B. Link adapter.")
                             .font(.caption).foregroundStyle(ODTheme.muted)
+                    } else if rig.config.slots[index].transport == .bleicom {
+                        Button {
+                            blePickerSlot = SlotRef(id: index)
+                        } label: {
+                            HStack {
+                                Text("Radio BLE device")
+                                Spacer()
+                                Text(rig.config.slots[index].bleName.isEmpty ? "Choose…" : rig.config.slots[index].bleName)
+                                    .foregroundStyle(ODTheme.muted)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     } else {
                         TextField("Radio IP / hostname", text: slotBind.host)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
@@ -241,7 +257,7 @@ struct RigControlSettingsView: View {
             switch newT {
             case .rigctld: if p == 0 || p == 50001 { rig.config.slots[i].port = 4532 }
             case .network: if p == 0 || p == 4532 { rig.config.slots[i].port = 50001 }
-            case .ble: break
+            case .ble, .bleicom: break
             }
         })
     }
@@ -486,14 +502,22 @@ struct HomeRigControlCard: View {
                                 Text(s.title).font(.caption.weight(.semibold))
                                 Text(s.stateText).font(.caption2)
                                     .foregroundStyle(s.error != nil ? ODTheme.warning : ODTheme.muted)
+                                if let hintText = s.hint {
+                                    // show the hint only if we have some
+                                    Text(hintText)
+                                        .font(.caption2)
+                                        .foregroundStyle(ODTheme.good)
+                                        .padding(.top, 8)
+                                }
                             }
                             Spacer()
                             if s.connecting { ProgressView().controlSize(.small) }
                         }
                     }
-                }
-                if !rig.connected, !rig.errorText.isEmpty {
-                    Text(rig.errorText).font(.caption).foregroundStyle(ODTheme.warning)
+                } else {
+                    if !rig.connected, !rig.errorText.isEmpty {
+                        Text(rig.errorText).font(.caption).foregroundStyle(ODTheme.warning)
+                    }
                 }
                 if rig.connected {
                     Divider().opacity(0.4)
