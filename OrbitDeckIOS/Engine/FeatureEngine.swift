@@ -3432,21 +3432,49 @@ actor QRZService {
     private static let base = "https://xmldata.qrz.com/xml/current/"
 
     func lookup(username: String, password: String, callsign: String) async throws -> QRZRecord {
+        let body = try await callsignBody(username: username, password: password, callsign: callsign)
+        if let record = parseCallsign(body) { return record }
+        throw NSError(domain: "QRZ", code: 2, userInfo: [NSLocalizedDescriptionKey: "QRZ callsign not found."])
+    }
+
+    /// The name to log for a callsign: the QRZ nickname when set, else the first
+    /// word of the first name — never the full legal name. "" when QRZ has none.
+    /// Throws code 1 for credential/login problems, code 2 for not found.
+    func operatorName(username: String, password: String, callsign: String) async throws -> String {
+        let body = try await callsignBody(username: username, password: password, callsign: callsign)
+        let nickname = xmlUnescape(xmlTag(body, "nickname"))
+        if !nickname.isEmpty { return nickname }
+        return xmlUnescape(xmlTag(body, "fname")).split(separator: " ").first.map(String.init) ?? ""
+    }
+
+    /// The XML response holding a `<Callsign>` record, logging in (or back in
+    /// after a session timeout) as needed.
+    private func callsignBody(username: String, password: String, callsign: String) async throws -> String {
         var key = sessionKey
         if key.isEmpty {
             key = try await login(username: username, password: password)
             sessionKey = key
         }
         var body = try await get(Self.base + "?s=\(encode(key));callsign=\(encode(callsign))")
-        if let record = parseCallsign(body) { return record }
+        if hasCallsign(body) { return body }
         let error = xmlTag(body, "Error")
         if error.localizedCaseInsensitiveContains("session") || error.localizedCaseInsensitiveContains("timeout") || error.localizedCaseInsensitiveContains("invalid") {
             key = try await login(username: username, password: password)
             sessionKey = key
             body = try await get(Self.base + "?s=\(encode(key));callsign=\(encode(callsign))")
-            if let record = parseCallsign(body) { return record }
+            if hasCallsign(body) { return body }
         }
         throw NSError(domain: "QRZ", code: 2, userInfo: [NSLocalizedDescriptionKey: error.isEmpty ? "QRZ callsign not found." : error])
+    }
+
+    private func hasCallsign(_ body: String) -> Bool {
+        body.range(of: "<Callsign>", options: .caseInsensitive) != nil
+    }
+
+    private func xmlUnescape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&#39;", with: "'").replacingOccurrences(of: "&amp;", with: "&")
     }
 
     private func login(username: String, password: String) async throws -> String {
@@ -3472,7 +3500,7 @@ actor QRZService {
     }
 
     private func parseCallsign(_ body: String) -> QRZRecord? {
-        guard body.range(of: "<Callsign>", options: .caseInsensitive) != nil else { return nil }
+        guard hasCallsign(body) else { return nil }
         let first = xmlTag(body, "fname"), last = xmlTag(body, "name")
         let name = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
         let state = xmlTag(body, "state"), zip = xmlTag(body, "zip")

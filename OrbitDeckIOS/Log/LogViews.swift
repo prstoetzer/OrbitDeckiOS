@@ -19,11 +19,13 @@ extension QSORecord {
             q.dlHz = tp.downlinkCenter
             q.ulHz = tp.uplinkCenter
             q.mode = adifMode(tp.mode)
+            // SatNOGS lists a separate uplink mode for cross-mode transponders.
+            if let up = tp.uplinkMode, !up.isEmpty, adifMode(up) != q.mode { q.uplinkMode = adifMode(up) }
         }
         q.myGrid = myGrid
         q.myCall = myCall
-        q.rstSent = defaultRst
-        q.rstRcvd = defaultRst
+        q.rstSent = LoggingConfig.rst(for: q.mode, base: defaultRst)
+        q.rstRcvd = q.rstSent
         return q
     }
 
@@ -37,6 +39,9 @@ extension QSORecord {
         if t.contains("FT8") { return "FT8" }
         return raw.isEmpty ? "SSB" : raw
     }
+
+    /// Common satellite modes offered by the editor's mode menus (free text still allowed).
+    static let commonModes = ["SSB", "USB", "LSB", "FM", "CW", "AM", "FT4", "FT8", "PKT", "SSTV", "DATA"]
 }
 
 // MARK: - Home quick-log card
@@ -76,8 +81,18 @@ struct HomeQuickLogCard: View {
                 Text("Saved to the Log. Upload to LoTW / Cloudlog from the Log screen.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
+            .onAppear { resetRst() }
+            .onChange(of: satellite.id) { _, _ in resetRst() }
         }
     }
+
+    /// The default report for the current transponder's mode (59 voice, 599 CW/data).
+    private var defaultRst: String {
+        let mode = rig.transponder(for: satellite).map { QSORecord.adifMode($0.mode) } ?? "SSB"
+        return qso.config.rst(for: mode)
+    }
+
+    private func resetRst() { rstSent = defaultRst; rstRcvd = defaultRst }
 
     private func logIt() {
         var q = QSORecord.prefilled(satellite: satellite, transponder: rig.transponder(for: satellite),
@@ -87,7 +102,7 @@ struct HomeQuickLogCard: View {
         q.rstSent = rstSent; q.rstRcvd = rstRcvd
         q.grid = theirGrid.trimmingCharacters(in: .whitespaces).uppercased()
         qso.add(q)
-        call = ""; theirGrid = ""; rstSent = qso.config.defaultRst; rstRcvd = qso.config.defaultRst
+        call = ""; theirGrid = ""; resetRst()
         justLogged = true
         Task { try? await Task.sleep(nanoseconds: 1_500_000_000); justLogged = false }
     }
@@ -177,19 +192,28 @@ struct LogScreen: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(q.call.isEmpty ? "—" : q.call).font(.headline)
+                if !q.name.isEmpty { Text(q.name).font(.subheadline) }
                 if !q.grid.isEmpty { Text(q.gridList.first ?? q.grid).font(.caption).foregroundStyle(ODTheme.muted) }
                 Spacer()
                 if q.uploaded.contains(.lotw) { badge("L", ODTheme.good) }
                 if q.uploaded.contains(.cloudlog) { badge("C", ODTheme.accent) }
             }
             // Logs are UTC by convention — always, regardless of the local-time setting.
-            Text("\(q.sat) · \(q.mode) · \(ODFormat.utcStamp(q.utc))")
+            Text("\(q.sat) · \(modeLabel(q)) · \(ODFormat.utcStamp(q.utc))")
                 .font(.caption).foregroundStyle(ODTheme.muted)
-            if !q.rstSent.isEmpty || !q.rstRcvd.isEmpty {
-                Text("Sent \(q.rstSent.isEmpty ? "—" : q.rstSent) · Rcvd \(q.rstRcvd.isEmpty ? "—" : q.rstRcvd)")
-                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            let rst = (q.rstSent.isEmpty && q.rstRcvd.isEmpty) ? nil
+                : "Sent \(q.rstSent.isEmpty ? "—" : q.rstSent) · Rcvd \(q.rstRcvd.isEmpty ? "—" : q.rstRcvd)"
+            let detail = [rst, q.country.isEmpty ? nil : q.country].compactMap { $0 }
+            if !detail.isEmpty {
+                Text(detail.joined(separator: " · ")).font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
+    }
+
+    /// "SSB", or "FM↑ SSB↓" when the uplink and downlink modes differ.
+    private func modeLabel(_ q: QSORecord) -> String {
+        let up = q.effectiveUplinkMode, down = q.effectiveDownlinkMode
+        return up == down ? up : "\(up)↑ \(down)↓"
     }
 
     private func badge(_ t: String, _ c: Color) -> some View {
@@ -264,18 +288,34 @@ struct QSOEditView: View {
             Form {
                 Section("Contact") {
                     labeledField("Call", text: $record.call, caps: true)
+                    TextField("Name", text: $record.name)
+                        .textInputAutocapitalization(.words).autocorrectionDisabled()
                     labeledField("Their grid", text: $record.grid, caps: true)
                     HStack {
                         labeledField("RST sent", text: $record.rstSent)
                         labeledField("RST rcvd", text: $record.rstRcvd)
                     }
+                    // Log times are UTC: without the zone override the picker shows and
+                    // edits device-local time while the label says UTC.
                     DatePicker("Time (UTC)", selection: $record.utc)
+                        .environment(\.timeZone, TimeZone(identifier: "UTC")!)
+                    HStack {
+                        TextField("Country", text: $record.country)
+                        TextField("DXCC", value: $record.dxcc, format: .number.grouping(.never))
+                            .keyboardType(.numberPad).multilineTextAlignment(.trailing).frame(maxWidth: 70)
+                    }
                 }
-                Section("Satellite") {
+                Section {
                     labeledField("Satellite", text: $record.sat)
-                    labeledField("Mode", text: $record.mode, caps: true)
+                    modeField("Mode", text: $record.mode)
+                    modeField("Uplink mode", text: legBinding(\.uplinkMode), placeholder: "Same as mode")
+                    modeField("Downlink mode", text: legBinding(\.downlinkMode), placeholder: "Same as mode")
                     HStack { Text("Downlink"); Spacer(); TextField("Hz", value: $record.dlHz, format: .number).multilineTextAlignment(.trailing) }
                     HStack { Text("Uplink"); Spacer(); TextField("Hz", value: $record.ulHz, format: .number).multilineTextAlignment(.trailing) }
+                } header: {
+                    Text("Satellite")
+                } footer: {
+                    Text("Set the uplink or downlink mode only for a cross-mode contact; Mode is what LoTW and ADIF MODE use.")
                 }
                 Section("Station") {
                     labeledField("My call", text: $record.myCall, caps: true)
@@ -289,6 +329,20 @@ struct QSOEditView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Save") { save() }.disabled(record.call.isEmpty) }
             }
             .onAppear { if existing == nil { prefill() } }
+            .onChange(of: record.mode) { old, new in
+                // Follow the mode with the default report while it hasn't been edited.
+                let wasDefault = qso.config.rst(for: old), nowDefault = qso.config.rst(for: new)
+                if record.rstSent == wasDefault { record.rstSent = nowDefault }
+                if record.rstRcvd == wasDefault { record.rstRcvd = nowDefault }
+            }
+            .onChange(of: record.call) { old, new in
+                // Re-resolve the entity for a new call unless it was typed in by hand.
+                let oldMatch = DXCCLookup.entity(for: old)
+                guard record.dxcc == oldMatch?.code, record.country == (oldMatch?.name ?? "") else { return }
+                let match = DXCCLookup.entity(for: new)
+                record.dxcc = match?.code
+                record.country = match?.name ?? ""
+            }
         }
     }
 
@@ -298,6 +352,26 @@ struct QSOEditView: View {
             .autocorrectionDisabled(caps)
     }
 
+    /// Free-text mode with a menu of the common ones.
+    private func modeField(_ label: String, text: Binding<String>, placeholder: String? = nil) -> some View {
+        HStack {
+            Text(label)
+            TextField(placeholder ?? label, text: text)
+                .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                .multilineTextAlignment(.trailing)
+            Menu {
+                if placeholder != nil { Button("Same as mode") { text.wrappedValue = "" } }
+                ForEach(QSORecord.commonModes, id: \.self) { m in Button(m) { text.wrappedValue = m } }
+            } label: { Image(systemName: "chevron.up.chevron.down") }
+        }
+    }
+
+    /// An optional per-leg mode as text: empty means "same as Mode" (nil).
+    private func legBinding(_ kp: WritableKeyPath<QSORecord, String?>) -> Binding<String> {
+        Binding(get: { record[keyPath: kp] ?? "" },
+                set: { let v = $0.trimmingCharacters(in: .whitespaces).uppercased(); record[keyPath: kp] = v.isEmpty ? nil : v })
+    }
+
     private func prefill() {
         let sat = store.selectedSatellite
         let base = QSORecord.prefilled(satellite: sat, transponder: sat.flatMap { rig.transponder(for: $0) },
@@ -305,6 +379,7 @@ struct QSOEditView: View {
                                        defaultRst: qso.config.defaultRst)
         // Keep the fresh id/utc from `record`, fill the rest.
         record.sat = base.sat; record.mode = base.mode; record.dlHz = base.dlHz; record.ulHz = base.ulHz
+        record.uplinkMode = base.uplinkMode
         record.myGrid = base.myGrid; record.myCall = base.myCall
         record.rstSent = base.rstSent; record.rstRcvd = base.rstRcvd
     }
@@ -338,6 +413,15 @@ struct LogSettingsView: View {
             Section("Station") {
                 field("My call", binding(\.myCall), caps: true)
                 field("Default RST", binding(\.defaultRst))
+                Text("Used as given for voice (59); CW and data modes add the tone digit (599). FT4/FT8 log a dB report.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+            Section("QRZ") {
+                Toggle("Fill in names from QRZ", isOn: binding(\.qrzNameLookup))
+                Text(qso.qrzCredentials() == nil
+                     ? "Add your QRZ XML username and password in Settings to look up the operator's first name for new QSOs."
+                     : "Looks up the operator's first name (or QRZ nickname) in the background when a QSO is logged without one.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Section("LoTW station location") {
                 field("Callsign (cert)", stationBinding(\.call), caps: true)

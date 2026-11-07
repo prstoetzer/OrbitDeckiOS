@@ -36,6 +36,7 @@ final class QSOStore: ObservableObject {
         recordings = load([RecordingEntry].self, "Recordings.json") ?? []
         sstvImages = load([SSTVImageEntry].self, "SSTVImages.json") ?? []
         ft4Traffic = load([FT4TrafficEntry].self, "FT4Traffic.json") ?? []
+        backfillDXCCOnce()
     }
 
     func persistConfig() {
@@ -46,9 +47,19 @@ final class QSOStore: ObservableObject {
 
     // MARK: QSOs
 
-    func add(_ q: QSORecord) { qsos.insert(q, at: 0); saveQSOs() }
+    // Every logging path (Home card, editor, FT4 and packet auto-log) goes through
+    // add/update, so the DXCC fill and QRZ name lookup live here (ADIF import fills
+    // DXCC itself and deliberately skips QRZ, which would flood it for a big file).
+    func add(_ q: QSORecord) {
+        var q = q
+        Self.fillDXCC(&q)
+        qsos.insert(q, at: 0); saveQSOs()
+        requestName(for: q)
+    }
     func update(_ q: QSORecord) {
-        if let i = qsos.firstIndex(where: { $0.id == q.id }) { qsos[i] = q; saveQSOs() }
+        var q = q
+        Self.fillDXCC(&q)
+        if let i = qsos.firstIndex(where: { $0.id == q.id }) { qsos[i] = q; saveQSOs(); requestName(for: q) }
     }
     func delete(_ q: QSORecord) { qsos.removeAll { $0.id == q.id }; saveQSOs() }
     func delete(at offsets: IndexSet) { qsos.remove(atOffsets: offsets); saveQSOs() }
@@ -93,11 +104,108 @@ final class QSOStore: ObservableObject {
 
     @discardableResult
     func adifImport(_ text: String) -> Int {
-        let parsed = ADIF.parse(text)
+        var parsed = ADIF.parse(text)
         guard !parsed.isEmpty else { return 0 }
+        for i in parsed.indices { Self.fillDXCC(&parsed[i]) }
         qsos.insert(contentsOf: parsed, at: 0)
         saveQSOs()
         return parsed.count
+    }
+
+    // MARK: DXCC entity
+
+    /// Resolve the worked station's DXCC entity from its callsign when not yet set
+    /// (an ADIF import or the editor may already have supplied one).
+    static func fillDXCC(_ q: inout QSORecord) {
+        guard q.dxcc == nil, let match = DXCCLookup.entity(for: q.call) else { return }
+        q.dxcc = match.code
+        if q.country.isEmpty { q.country = match.name }
+    }
+
+    private static let dxccBackfillKey = "orbitdeck.qsoDXCCBackfill.v1"
+
+    /// One-time pass giving QSOs logged before the DXCC field existed an entity.
+    private func backfillDXCCOnce() {
+        guard !UserDefaults.standard.bool(forKey: Self.dxccBackfillKey) else { return }
+        var changed = false
+        for i in qsos.indices where qsos[i].dxcc == nil {
+            Self.fillDXCC(&qsos[i])
+            changed = changed || qsos[i].dxcc != nil
+        }
+        if changed { saveQSOs() }
+        UserDefaults.standard.set(true, forKey: Self.dxccBackfillKey)
+    }
+
+    // MARK: QRZ name lookup
+
+    // Fills an empty `name` from QRZ XML in the background: one request at a time,
+    // at most one per second, results cached in memory for the session (including
+    // "no name"), and a back-off after login/network failures. Logging never waits.
+    private let qrz = QRZService()
+    private var nameCache: [String: String] = [:]     // base call → name ("" = none)
+    private var nameQueue: [UUID] = []
+    private var nameWorker: Task<Void, Never>?
+    private var lastQRZRequest: Date?
+    private var qrzBackoffUntil: Date?
+
+    /// QRZ XML username (Settings, stored in the main preferences blob) and the
+    /// Keychain password, or nil when either is missing.
+    func qrzCredentials() -> (username: String, password: String)? {
+        struct Prefs: Decodable { var qrzUsername: String? }
+        guard let data = UserDefaults.standard.data(forKey: "OrbitDeckIOS.preferences.v1"),
+              let user = (try? JSONDecoder().decode(Prefs.self, from: data))?.qrzUsername?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !user.isEmpty else { return nil }
+        let password = OrbitSecretStore.get(.qrzPassword)
+        return password.isEmpty ? nil : (user, password)
+    }
+
+    private func requestName(for q: QSORecord) {
+        guard config.qrzNameLookup, q.name.isEmpty else { return }
+        let call = DXCCLookup.baseCall(q.call)
+        guard call.count >= 3 else { return }
+        if let cached = nameCache[call] { applyName(cached, to: q.id, call: call); return }
+        if let until = qrzBackoffUntil, until > Date() { return }
+        guard qrzCredentials() != nil else { return }
+        if !nameQueue.contains(q.id) { nameQueue.append(q.id) }
+        if nameWorker == nil { nameWorker = Task { await drainNameQueue() } }
+    }
+
+    private func drainNameQueue() async {
+        defer { nameWorker = nil }
+        while !nameQueue.isEmpty {
+            let id = nameQueue.removeFirst()
+            guard let q = qsos.first(where: { $0.id == id }), q.name.isEmpty, config.qrzNameLookup else { continue }
+            let call = DXCCLookup.baseCall(q.call)
+            if let cached = nameCache[call] { applyName(cached, to: id, call: call); continue }
+            guard let creds = qrzCredentials() else { nameQueue.removeAll(); return }
+            if let last = lastQRZRequest {
+                let wait = 1.0 - Date().timeIntervalSince(last)
+                if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1e9)) }
+            }
+            lastQRZRequest = Date()
+            do {
+                let name = try await qrz.operatorName(username: creds.username, password: creds.password, callsign: call)
+                nameCache[call] = name
+                applyName(name, to: id, call: call)
+            } catch let error as NSError where error.domain == "QRZ" && error.code == 2 {
+                nameCache[call] = ""                     // not on QRZ: don't ask again this session
+            } catch {
+                // Bad credentials or no network: stop and wait before trying again.
+                let ns = error as NSError
+                let credentialProblem = ns.domain == "QRZ" && ns.code == 1
+                qrzBackoffUntil = Date().addingTimeInterval(credentialProblem ? 600 : 60)
+                nameQueue.removeAll()
+                return
+            }
+        }
+    }
+
+    /// Store a looked-up name unless the operator has since typed one or changed the call.
+    private func applyName(_ name: String, to id: UUID, call: String) {
+        guard !name.isEmpty, let i = qsos.firstIndex(where: { $0.id == id }),
+              qsos[i].name.isEmpty, DXCCLookup.baseCall(qsos[i].call) == call else { return }
+        qsos[i].name = name
+        saveQSOs()
     }
 
     // MARK: Uploads

@@ -723,3 +723,410 @@ enum DXCCNumericData {
         return out
     }()
 }
+
+// MARK: - Callsign → DXCC entity
+
+/// Prefix-based callsign → DXCC entity lookup for the QSO log (ADIF `DXCC` /
+/// `COUNTRY`). Longest-prefix match over the ITU/DXCC prefix blocks below, with
+/// portable and compound calls resolved first (`K1ABC/VE3`, `VE3/K1ABC`, `/P`,
+/// `/M`, `/QRP`, call-area digits like `/9`), `/MM` and `/AM` mapped to entity 0
+/// ("not a DXCC entity"), plus code rules for Russia and Guantanamo Bay.
+/// Prefixes shared by several entities (VK0, 3Y, E5, JD1, FT, …) deliberately
+/// resolve to nothing rather than guess; the operator can fill those in.
+enum DXCCLookup {
+    struct Match: Equatable, Sendable {
+        let code: Int          // ARRL DXCC entity code; 0 = not an entity (/MM, /AM)
+        let name: String       // entity name, "" for code 0
+    }
+
+    /// Portable modifiers that never change the entity.
+    private static let modifiers: Set<String> = ["P", "M", "QRP", "QRPP", "A", "B", "R", "LH", "PM"]
+    /// Modifiers that put the station outside every DXCC entity.
+    private static let noEntity: Set<String> = ["MM", "AM"]
+
+    /// Entity for a callsign, or nil when the prefix is unknown or ambiguous.
+    static func entity(for rawCall: String) -> Match? {
+        let parts = callParts(rawCall)
+        guard !parts.isEmpty else { return nil }
+        if parts.dropFirst().contains(where: { noEntity.contains($0) }) { return Match(code: 0, name: "") }
+        let core = parts.enumerated().filter { $0.offset == 0 || !modifiers.contains($0.element) }.map(\.element)
+        guard let base = core.max(by: { $0.count < $1.count }) else { return nil }
+        var target = base
+        if core.count > 1, let short = core.min(by: { $0.count < $1.count }) {
+            if short.count == 1, let digit = short.first, digit.isNumber {
+                // A bare call-area digit (UA3ABC/9, K1ABC/6): swap it into the base call.
+                if let i = base.firstIndex(where: \.isNumber) {
+                    target = base.replacingCharacters(in: i...i, with: String(digit))
+                }
+            } else {
+                // The shorter part is the location prefix (cty.dat convention); the first wins a tie.
+                target = short
+            }
+        }
+        guard let code = code(for: target), code >= 0 else { return nil }
+        return Match(code: code, name: code == 0 ? "" : (DXCCNumericData.nameByCode[code] ?? ""))
+    }
+
+    /// The operator's own callsign inside a compound call (`VE3/K1ABC/P` → `K1ABC`),
+    /// used for QRZ lookups.
+    static func baseCall(_ rawCall: String) -> String {
+        callParts(rawCall).max(by: { $0.count < $1.count }) ?? ""
+    }
+
+    private static func callParts(_ rawCall: String) -> [String] {
+        rawCall.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "/").map(String.init).filter { !$0.isEmpty }
+    }
+
+    private static func code(for call: String) -> Int? {
+        let chars = Array(call)
+        guard let first = chars.first else { return nil }
+        // Russia: R* and UA–UI. Call area 2 is Kaliningrad, 8/9/0 are Asiatic Russia.
+        if first == "R" || (first == "U" && chars.count > 1 && "ABCDEFGHI".contains(chars[1])) {
+            switch chars.first(where: \.isNumber) {
+            case "2": return 126
+            case "8", "9", "0": return 15
+            default: return 54
+            }
+        }
+        // Guantanamo Bay is KG4 with a two-letter suffix (KG4AB); KG4ABC is the US.
+        if call.hasPrefix("KG4") && call.count == 5 { return 105 }
+        for len in stride(from: min(maxPrefixLength, call.count), through: 1, by: -1) {
+            if let code = table[String(call.prefix(len))] { return code }
+        }
+        return nil
+    }
+
+    /// `code|prefix prefix …`; `AA-AK` expands the last character's range.
+    /// Code -1 marks prefixes shared by several entities (no automatic entity).
+    private static let rawPrefixes = """
+-1|VK0 3Y E5 JD1 FT TO TX 4U KC4 CE9
+1|VA-VG VO VY CF-CK CY CZ XJ-XO
+211|CY0
+252|CY9
+291|K W N AA-AK
+6|AL KL NL WL
+110|KH6 KH7 AH6 AH7 NH6 NH7 WH6 WH7
+166|KH0 AH0 NH0 WH0
+20|KH1 AH1 NH1 WH1
+103|KH2 AH2 NH2 WH2
+123|KH3 AH3 NH3 WH3
+174|KH4 AH4 NH4 WH4
+197|KH5 AH5 NH5 WH5
+9|KH8 AH8 NH8 WH8
+297|KH9 AH9 NH9 WH9
+182|KP1 NP1 WP1
+285|KP2 NP2 WP2
+202|KP3 KP4 NP3 NP4 WP3 WP4
+43|KP5 NP5 WP5
+50|XA-XI 4A-4C 6D-6J
+204|XF4
+223|G M 2
+114|GD MD 2D GT MT
+265|GI MI 2I GN MN
+122|GJ MJ 2J GH MH
+279|GM MM 2M GS MS
+106|GU MU 2U GP MP
+294|GW MW 2W GC MC
+227|F TM TH HW-HY
+79|FG
+169|FH
+516|FJ
+162|FK
+84|FM
+175|FO
+277|FP
+453|FR
+213|FS
+298|FW
+63|FY
+41|FT5W FT8W
+131|FT5X FT8X
+10|FT5Z FT8Z
+214|TK
+230|DA-DR Y2-Y9
+281|EA-EH AM-AO
+21|EA6 EB6 EC6 ED6 EE6 EF6 EG6 EH6
+29|EA8 EB8 EC8 ED8 EE8 EF8 EG8 EH8
+32|EA9 EB9 EC9 ED9 EE9 EF9 EG9 EH9
+248|I
+225|IS0 IM0
+272|CQ CR CS CT
+256|CT3 CQ3 CR3 CS3
+149|CU CT8 CQ8 CR8 CS8
+144|CV-CX
+112|CA-CE XQ-XR 3G
+47|CE0Y
+217|CE0X
+125|CE0Z
+100|AY-AZ L2-L9 LO-LW
+108|PP-PY ZV-ZZ
+56|PY0F
+253|PY0S
+273|PY0T
+136|OA-OC
+120|HC HD
+71|HC8 HD8
+116|HJ HK 5J 5K
+216|HK0
+148|YV-YY 4M
+17|YV0
+104|CP
+132|ZP
+140|PZ
+129|8R
+70|CL CM CO T4
+78|HH 4V
+72|HI
+82|6Y
+60|C6
+62|8P
+90|9Y 9Z
+77|J3
+97|J6
+95|J7
+98|J8
+94|V2
+249|V4
+66|V3
+76|TG TD
+80|HQ HR
+74|YS HU
+86|YN H6 H7 HT
+308|TI TE
+37|TI9
+88|HO HP 3E 3F H3 H8 H9
+91|P4
+517|PJ2
+520|PJ4
+519|PJ5 PJ6
+518|PJ7
+12|VP2E
+96|VP2M
+65|VP2V
+89|VP5
+69|ZF
+64|VP9
+141|VP8
+172|VP6
+237|OX XP
+222|OY
+221|OU OV OW OZ 5P 5Q
+266|LA-LN
+259|JW
+118|JX
+284|SA-SM 7S 8S
+224|OF-OI
+5|OH0
+167|OJ0
+242|TF
+245|EI EJ
+209|ON-OT
+263|PA-PI
+254|LX
+287|HB HE
+251|HB0
+206|OE
+239|HA HG
+503|OK OL
+504|OM
+269|SN-SR HF 3Z
+146|LY
+145|YL
+52|ES
+27|EU-EW
+288|UR-UZ EM-EO
+179|ER
+275|YO-YR
+212|LZ
+236|SV-SZ J4
+45|SV5 SX5 J45
+40|SV9 SW9 SX9 J49
+215|5B C4 H2 P3
+283|ZC4
+390|TA-TC YM
+257|9H
+233|ZB2
+203|C3
+260|3A
+278|T7
+295|HV
+246|1A
+497|9A
+499|S5
+501|E7 T9
+296|YT YU
+514|4O
+502|Z3
+7|ZA
+522|Z6
+75|4L
+14|EK
+18|4J 4K
+130|UN-UQ
+292|UJ-UM
+135|EX
+262|EY
+280|EZ
+336|4X 4Z
+510|E4
+342|JY
+354|OD
+384|YK 6C
+333|YI HN
+330|EP EQ 9B-9D
+348|9K
+378|HZ 7Z 8Z
+304|A9
+376|A7
+391|A6
+370|A4
+492|7O
+3|YA T6
+372|AP-AS 6P-6S
+324|VU AT-AW 8T-8Y
+11|VU4
+142|VU7
+315|4P-4S
+159|8Q
+369|9N
+306|A5
+305|S2 S3
+309|XY XZ
+387|HS E2
+143|XW
+312|XU
+293|3W XV
+318|B 3H-3U XS
+386|BM BN BO BP BQ BU BV BW BX
+505|BV9P
+506|BS7
+321|VR
+152|XX9
+363|JT JU JV
+344|HM P5
+137|HL 6K-6N DS DT D7-D9
+339|JA-JS 7J-7N 8J-8N
+375|DU-DZ 4D-4I
+327|YB-YH 7A-7I 8A-8I PK-PO
+299|9M 9W
+46|9M6 9M8 9W6 9W8
+381|9V S6
+345|V8
+511|4W
+163|P2
+150|VH-VN AX
+38|VK9C
+147|VK9L
+171|VK9M
+189|VK9N
+303|VK9W
+35|VK9X
+170|ZL ZM
+34|ZL7
+133|ZL8
+16|ZL9
+270|ZK3
+188|E6
+190|5W
+160|A3
+176|3D2
+468|3DA
+158|YJ
+185|H4
+507|H40
+301|T30
+31|T31
+48|T32
+490|T33
+282|T2
+157|C2
+168|V7
+173|V6
+22|T8
+478|SU 6A 6B
+436|5A
+474|3V TS
+400|7R 7T-7Y
+446|CN 5C-5G
+302|S0
+444|5T
+456|6V 6W
+422|C5
+109|J5
+107|3X
+458|9L
+434|EL 5L 5M 6Z A8 D5
+428|TU
+424|9G
+483|5V
+416|TY
+450|5N 5O
+187|5U
+442|TZ
+480|XT
+410|TT
+406|TJ
+408|TL
+420|TR
+412|TN
+414|9O-9T
+49|3C
+195|3C0
+219|S9
+401|D2 D3
+464|V5
+402|A2 8O
+462|ZR-ZU
+201|ZS8
+432|7P
+181|C8 C9
+452|Z2
+482|9I 9J
+440|7Q
+470|5H 5I
+430|5Y 5Z
+286|5X
+454|9X
+404|9U
+53|ET 9E 9F
+51|E3
+382|J2
+232|6O T5
+466|ST 6T 6U
+521|Z8
+438|5R 5S 6X
+165|3B8
+4|3B6 3B7
+207|3B9
+411|D6
+379|S7
+409|D4
+250|ZD7
+205|ZD8
+274|ZD9
+33|VQ9
+117|4U1I
+289|4U1U
+"""
+
+    private static let table: [String: Int] = {
+        var out: [String: Int] = [:]
+        for row in rawPrefixes.split(whereSeparator: \.isNewline) {
+            guard let pipe = row.firstIndex(of: "|"), let code = Int(row[..<pipe]) else { continue }
+            for token in row[row.index(after: pipe)...].split(separator: " ") {
+                let ends = token.split(separator: "-")
+                if ends.count == 2, ends[0].count == ends[1].count, ends[0].dropLast() == ends[1].dropLast(),
+                   let a = ends[0].unicodeScalars.last, let b = ends[1].unicodeScalars.last, a.value <= b.value {
+                    let stem = String(ends[0].dropLast())
+                    for v in a.value...b.value { if let s = Unicode.Scalar(v) { out[stem + String(Character(s))] = code } }
+                } else {
+                    out[String(token)] = code
+                }
+            }
+        }
+        return out
+    }()
+
+    private static let maxPrefixLength = table.keys.map(\.count).max() ?? 1
+}
