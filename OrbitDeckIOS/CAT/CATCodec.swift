@@ -78,9 +78,10 @@ enum CATCodec {
 
     /// Icom DATA sub-mode + filter (CI-V 1A 06): `1A 06 <data> <filter>` — data 0x01 = ON /
     /// 0x00 = OFF; filter 0x01 = FIL1 (must be 0x00 when data is OFF), per the IC-9700 CI-V
-    /// reference p.18. With an SSB base mode this gives USB-D / LSB-D.
-    static func civDataMode(_ spec: RadioSpec, addr: UInt8, on: Bool) -> [UInt8] {
-        civFrame(addr: addr, payload: [0x1A, 0x06, on ? 0x01 : 0x00, on ? 0x01 : 0x00])
+    /// reference p.18. With an SSB base mode this gives USB-D / LSB-D; with FM, FM-D (for
+    /// FM-N data, pass the rig's narrow filter number as `filter`).
+    static func civDataMode(_ spec: RadioSpec, addr: UInt8, on: Bool, filter: UInt8 = 0x01) -> [UInt8] {
+        civFrame(addr: addr, payload: [0x1A, 0x06, on ? 0x01 : 0x00, on ? filter : 0x00])
     }
 
     /// MAIN/SUB band-access select (full-duplex Icom only); nil if not applicable.
@@ -135,11 +136,11 @@ enum CATCodec {
         let n = (spec.wideFreq && hz > 5_850_000_000) ? 6 : 5
         return civFrame(addr: addr, payload: [0x25, 0x01] + civBCD(hz, bytes: n))
     }
-    /// Set the unselected VFO's mode (`26 01 <mode> <data> <filter>`), data off.
-    /// FM-N uses the rig's narrow-FM filter number; everything else FIL1.
-    static func civSetUnselectedMode(_ spec: RadioSpec, addr: UInt8, mode: RigMode) -> [UInt8] {
+    /// Set the unselected VFO's mode (`26 01 <mode> <data> <filter>`), data off unless
+    /// `data` (USB-D/LSB-D/FM-D). FM-N uses the rig's narrow-FM filter number; else FIL1.
+    static func civSetUnselectedMode(_ spec: RadioSpec, addr: UInt8, mode: RigMode, data: Bool = false) -> [UInt8] {
         let filter: UInt8 = (mode == .fmn && spec.fmNarrowFilter != 0) ? spec.fmNarrowFilter : 0x01
-        return civFrame(addr: addr, payload: [0x26, 0x01, civModeByte(mode), 0x00, filter])
+        return civFrame(addr: addr, payload: [0x26, 0x01, civModeByte(mode), data ? 0x01 : 0x00, filter])
     }
 
     /// Read the selected VFO's frequency via 0x25 (`25 00`) — used only as a probe:
@@ -249,10 +250,11 @@ enum CATCodec {
             return [yaesuBinModeByte(mode), 0, 0, 0, op]
         default:
             let op: UInt8 = vfo == .satRX ? 0x17 : vfo == .satTX ? 0x27 : 0x07
-            // FT-817/818/857/897 DIG (0x0A) for the data path — its sideband (USER-U/L) is a
-            // radio menu setting, so DIG stands in for USB-D/LSB-D. Only used when the caller
-            // has confirmed the model supports it.
-            let modeByte: UInt8 = data ? 0x0A : yaesuBinModeByte(mode)
+            // FT-817/818/857/897 DIG (0x0A) for the SSB data path — its sideband (USER-U/L)
+            // is a radio menu setting, so DIG stands in for USB-D/LSB-D — and PKT (0x0C,
+            // Hamlib ft817.c/ft857.c) for FM data (packet/SSTV via the data jack). Only used
+            // when the caller has confirmed the model supports it.
+            let modeByte: UInt8 = data ? (mode.isFM ? 0x0C : 0x0A) : yaesuBinModeByte(mode)
             return [modeByte, 0, 0, 0, op]
         }
     }
@@ -364,6 +366,14 @@ enum CATCodec {
         Array(String(format: "%@%011llu;", vfo, hz).utf8)
     }
     static func kwSetMode(_ m: RigMode) -> [UInt8] { Array("MD\(kwModeDigit(m));".utf8) }
+    /// Mode frames for a specific Kenwood: `MD<m>;`, and/or `OM0<m>;` (main band) on the
+    /// TS-890S/990S — see `RadioSpec.kenwoodModeOM`.
+    static func kwSetMode(_ spec: RadioSpec, _ m: RigMode) -> [[UInt8]] {
+        var out: [[UInt8]] = []
+        if spec.kenwoodModeOM { out.append(Array("OM0\(kwModeDigit(m));".utf8)) }
+        if spec.kenwoodModeMD { out.append(kwSetMode(m)) }
+        return out
+    }
     /// Kenwood split. TS-2000: receive on VFO A (`FR0`), transmit on VFO B (`FT1`);
     /// off = `FR0;FT0;` (manual PC command table). TS-790/711/811 (IF-10C/IF-10A):
     /// select VFO A (`FN0`) then `SP1`; off = `SP0` — they have no FR/FT.
@@ -383,9 +393,10 @@ enum CATCodec {
     /// TS-2000 TX CTCSS: TNnn + TO1/TO0. Uses the Kenwood 38-tone list (no 69.3 Hz) so the
     /// tone number matches the radio's `TN` table — the shared 39-tone index was off by one
     /// at and above 71.9 Hz.
-    static func kwTone(on: Bool, toneHz: Double) -> [[UInt8]] {
+    /// `zeroBased`: the TS-590S/SG number their 42-tone list from 00 (= 67.0 Hz).
+    static func kwTone(on: Bool, toneHz: Double, zeroBased: Bool = false) -> [[UInt8]] {
         if !on || toneHz <= 0 { return [Array("TO0;".utf8)] }
-        guard let n = CTCSS.kenwoodIndex(hz: toneHz) else { return [] }
+        guard let n = zeroBased ? CTCSS.kenwood42Index(hz: toneHz) : CTCSS.kenwoodIndex(hz: toneHz) else { return [] }
         return [Array(String(format: "TN%02d;", n).utf8), Array("TO1;".utf8)]
     }
     // MARK: Kenwood satellite (TS-2000 / TS-790) — SATL entry/exit
@@ -519,7 +530,7 @@ enum CATCodec {
     /// Hamlib-supported radio that has one. USB→PKTUSB, LSB→PKTLSB, FM→PKTFM.
     private static func hamlibDataMode(_ m: RigMode) -> String {
         switch m {
-        case .lsb: "PKTLSB"; case .fm: "PKTFM"; default: "PKTUSB"
+        case .lsb: "PKTLSB"; case .fm, .fmn: "PKTFM"; default: "PKTUSB"
         }
     }
 }

@@ -345,13 +345,43 @@ struct RigControlSettingsView: View {
                 TextField("Hz", value: bindTuning(\.xvtrUplinkHz), format: .number).multilineTextAlignment(.trailing)
                     .keyboardType(.numbersAndPunctuation).frame(width: 130).textFieldStyle(.odField)
             }
-            Picker("Uplink CTCSS", selection: bindTuning(\.uplinkToneHz)) {
+            Picker("Uplink CTCSS (other satellites)", selection: bindTuning(\.uplinkToneHz)) {
                 Text("Off").tag(0.0)
                 ForEach(CTCSS.availableHz, id: \.self) { Text(String(format: "%.1f Hz", $0)).tag($0) }
+            }
+            if let sat = store.selectedSatellite {
+                satelliteToneRows(sat)
             }
             Text("Transverter LO offsets, deadbands and lead mirror CardSat. Per-satellite oscillator calibration comes from the Calibrations screen.")
                 .font(.caption).foregroundStyle(ODTheme.muted)
         }
+    }
+
+    /// Per-satellite uplink tone for the selected satellite: Default (built-in table, else
+    /// the global tone), Off, or a specific tone — plus which tone is in effect and why.
+    @ViewBuilder private func satelliteToneRows(_ sat: SatelliteRecord) -> some View {
+        let uplinkHz = rig.transponder(for: sat)?.uplinkCenter ?? 0
+        let builtIn = SatelliteTones.builtInTone(norad: sat.id, uplinkHz: uplinkHz)
+        let fallback = builtIn ?? rig.config.tuning.uplinkToneHz
+        let fallbackText = fallback > 0 ? String(format: "%.1f Hz", fallback) : "off"
+        Picker("CTCSS for \(sat.name)", selection: satToneBinding(sat.id)) {
+            Text("Default (\(builtIn != nil ? "built-in" : "global") \(fallbackText))").tag(-1.0)
+            Text("Off").tag(0.0)
+            ForEach(CTCSS.availableHz, id: \.self) { Text(String(format: "%.1f Hz", $0)).tag($0) }
+        }
+        let r = SatelliteTones.resolve(norad: sat.id, uplinkHz: uplinkHz, tuning: rig.config.tuning)
+        Text("In effect for \(sat.name): \(r.hz > 0 ? String(format: "%.1f Hz", r.hz) : "no tone") (\(r.source.rawValue)). Sent only on FM uplinks; turned off again on a transponder without one and when you disconnect.")
+            .font(.caption).foregroundStyle(ODTheme.muted)
+    }
+
+    /// The selected satellite's override; -1 = none (use the default).
+    private func satToneBinding(_ norad: UInt) -> Binding<Double> {
+        let key = String(norad)
+        return Binding(get: { rig.config.tuning.satelliteToneHz[key] ?? -1 },
+                       set: { v in
+                           if v < 0 { rig.config.tuning.satelliteToneHz.removeValue(forKey: key) }
+                           else { rig.config.tuning.satelliteToneHz[key] = v }
+                       })
     }
 
     // MARK: Bindings
