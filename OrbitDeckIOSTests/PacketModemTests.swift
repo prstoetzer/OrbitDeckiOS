@@ -2,7 +2,8 @@ import Testing
 import Foundation
 @testable import OrbitDeck
 
-// Packet stack: FCS, AX.25, KISS, APRS, and the AFSK 1200 modem end to end.
+// Packet stack: FCS, AX.25, KISS, APRS, APRS symbols, and the AFSK 1200 and
+// G3RUH 9600 modems end to end.
 
 struct PacketFrameTests {
     @Test func fcsMatchesCRC16X25ReferenceVector() {
@@ -244,5 +245,120 @@ struct AFSKModemTests {
         var seed: UInt32 = 99
         let noise = (0..<96_000).map { _ -> Float in seed = seed &* 1_664_525 &+ 1_013_904_223; return Float(Int32(bitPattern: seed)) / Float(Int32.max) * 0.3 }
         #expect(AFSKDemodulator(sampleRate: 48_000).process(noise).isEmpty)
+    }
+}
+
+struct G3RUHModemTests {
+    private func testFrame(_ text: String = "Hello at 9600 via satellite") -> AX25Frame {
+        AX25Frame(destination: AX25Address(call: "APZODK"), source: AX25Address(call: "N8HM", ssid: 7),
+                  digipeaters: [AX25Address(call: "ARISS")], info: Array(text.utf8))
+    }
+
+    private func randomBits(_ n: Int, seed: UInt32) -> [Bool] {
+        var s = seed
+        return (0..<n).map { _ in s = s &* 1_664_525 &+ 1_013_904_223; return s >> 31 == 1 }
+    }
+
+    @Test func scramblerRoundTripAndSelfSync() {
+        let bits = randomBits(2000, seed: 7)
+        var tx = G3RUHScrambler(), rx = G3RUHScrambler()
+        let line = bits.map { tx.scramble($0) }
+        #expect(line != bits)
+        #expect(line.map { rx.descramble($0) } == bits)
+        // A receiver joining mid-stream is in sync after 17 bits.
+        var late = G3RUHScrambler()
+        let joined = line.dropFirst(100).map { late.descramble($0) }
+        #expect(Array(joined.dropFirst(17)) == Array(bits.dropFirst(117)))
+        // An inverted channel only inverts the output (NRZI then ignores it).
+        var inv = G3RUHScrambler()
+        let inverted = line.map { inv.descramble(!$0) }
+        #expect(Array(inverted.dropFirst(17)) == bits.dropFirst(17).map { !$0 })
+    }
+
+    @Test func scramblerMatchesPolynomial() {
+        // An impulse into the descrambler echoes at taps 12 and 17 (1 + x^12 + x^17).
+        var rx = G3RUHScrambler()
+        let out = ([true] + [Bool](repeating: false, count: 30)).map { rx.descramble($0) }
+        #expect(out.indices.filter { out[$0] } == [0, 12, 17])
+    }
+
+    @Test(arguments: [48_000.0, 44_100.0, 16_000.0])
+    func cleanLoopback(sampleRate: Double) {
+        let frame = testFrame()
+        let audio = G3RUHModulator.transmission(frame, sampleRate: sampleRate, txDelayMs: 100)
+        let silence = [Float](repeating: 0, count: Int(sampleRate / 10))
+        #expect(G3RUHDemodulator(sampleRate: sampleRate).process(silence + audio + silence) == [frame])
+        // Discriminator polarity doesn't matter.
+        #expect(G3RUHDemodulator(sampleRate: sampleRate).process(silence + audio.map { -$0 } + silence) == [frame])
+    }
+
+    @Test(arguments: [48_000.0, 16_000.0])
+    func survivesDCStepAndNoise(sampleRate: Double) {
+        // A mistuned receiver shifts the baseband: step the DC offset mid-frame (a CAT
+        // Doppler retune) on top of noise.
+        let frame = testFrame("DC step halfway through the frame, as when CAT retunes the receiver")
+        let audio = G3RUHModulator.transmission(frame, sampleRate: sampleRate, txDelayMs: 100)
+        var seed: UInt32 = 12345
+        func noise() -> Float { seed = seed &* 1_664_525 &+ 1_013_904_223; return Float(Int32(bitPattern: seed)) / Float(Int32.max) }
+        let start = audio.count / 2
+        let shifted = audio.indices.map { audio[$0] + 0.1 * noise() + ($0 >= start ? 0.3 : 0) }
+        #expect(G3RUHDemodulator(sampleRate: sampleRate).process(shifted) == [frame])
+    }
+
+    @Test func toleratesClockOffsetAndChunking() {
+        let fs = 48_000.0
+        let frame = testFrame()
+        let audio = G3RUHModulator.transmission(frame, sampleRate: fs, txDelayMs: 100)
+        // 300 ppm sample-clock mismatch between the two sound cards.
+        var resampled: [Float] = []
+        var t = 0.0
+        while t < Double(audio.count - 1) {
+            let i = Int(t), f = Float(t - Double(i))
+            resampled.append(audio[i] * (1 - f) + audio[i + 1] * f)
+            t += 1.0003
+        }
+        let demod = G3RUHDemodulator(sampleRate: fs)
+        var frames: [AX25Frame] = []
+        var i = 0
+        while i < resampled.count {
+            let end = min(resampled.count, i + 480)          // 10 ms audio buffers
+            frames += demod.process(Array(resampled[i..<end]))
+            i = end
+        }
+        #expect(frames == [frame])
+    }
+
+    @Test func backToBackFramesAndNoise() {
+        let fs = 48_000.0
+        let audio = G3RUHModulator.transmission(testFrame("first"), sampleRate: fs, txDelayMs: 50)
+            + G3RUHModulator.transmission(testFrame("second"), sampleRate: fs, txDelayMs: 50)
+        #expect(G3RUHDemodulator(sampleRate: fs).process(audio).count == 2)
+        var seed: UInt32 = 99
+        let noise = (0..<96_000).map { _ -> Float in seed = seed &* 1_664_525 &+ 1_013_904_223; return Float(Int32(bitPattern: seed)) / Float(Int32.max) * 0.3 }
+        #expect(G3RUHDemodulator(sampleRate: fs).process(noise).isEmpty)
+    }
+
+    @Test func profileDecodesWithoutModemField() throws {
+        // Profiles saved before 9600 support have no `modem` key.
+        let old = Data(#"{"path":"ARISS","format":"plainText"}"#.utf8)
+        let p = try JSONDecoder().decode(PacketSatelliteProfile.self, from: old)
+        #expect(p.path == "ARISS" && p.format == .plainText && p.modem == .automatic)
+        let settings = try JSONDecoder().decode(PacketSettings.self, from: Data("{}".utf8))
+        #expect(settings.useDataMode)
+    }
+}
+
+struct APRSSymbolTests {
+    @Test func commonSymbolsMapToSFSymbols() {
+        #expect(APRSSymbol(table: "/", code: ">").systemImage == "car.fill")
+        #expect(APRSSymbol(table: "/", code: "-").systemImage == "house.fill")
+        #expect(APRSSymbol(table: "/", code: "#").name == "Digipeater")
+        #expect(APRSSymbol(table: "\\", code: "S").name == "Satellite")
+        // Overlay digipeater: alternate table with the overlay character shown.
+        let overlay = APRSSymbol(table: "S", code: "#")
+        #expect(overlay.name == "Digipeater" && overlay.overlay == "S")
+        #expect(APRSSymbol(table: "/", code: "3").systemImage == "3.circle.fill")
+        #expect(APRSSymbol(table: nil, code: nil).systemImage == "mappin.circle.fill")
+        #expect(APRSSymbol(table: "/", code: "z").systemImage == "mappin.circle.fill")
     }
 }

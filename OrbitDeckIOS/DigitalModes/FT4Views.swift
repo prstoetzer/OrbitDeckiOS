@@ -563,6 +563,8 @@ struct HomeFT4Card: View {
 //  PacketViews.swift — Home "Packet / APRS" card (monitor + compose + setup)
 // ===========================================================================
 
+import MapKit
+
 struct HomePacketCard: View {
     @EnvironmentObject private var packet: PacketEngine
     @EnvironmentObject private var audio: AudioHub
@@ -576,6 +578,9 @@ struct HomePacketCard: View {
     @State private var tab = 0
     @State private var onlyMine = false
     @State private var horizonEvent: NextEvent?
+    /// AOS of the pass in progress (kept after LOS), for the map's "This pass" filter.
+    @State private var passStart: Date?
+    @State private var mapAllStations = false
     let satellite: SatelliteRecord
 
     /// Auto: show when this satellite has a packet transponder and there's a way to
@@ -588,7 +593,7 @@ struct HomePacketCard: View {
             if packet.isRunning { return true }
             let hasPacket = satellite.transponders.contains { tp in
                 let h = "\(tp.mode) \(tp.description)".uppercased()
-                return ["APRS", "AFSK", "PACKET", "DIGI"].contains { h.contains($0) }
+                return ["APRS", "AFSK", "PACKET", "DIGI", "G3RUH"].contains { h.contains($0) }
             }
             let reachable = audio.audioAvailable
                 || (packet.settings.transport == .bleKISS && !packet.settings.bleIdentifier.isEmpty)
@@ -631,15 +636,21 @@ struct HomePacketCard: View {
                     Picker("View", selection: $tab) {
                         Text("Monitor").tag(0)
                         Text("Stations (\(packet.heard.count))").tag(1)
+                        Text("Map").tag(2)
                     }
                     .pickerStyle(.segmented)
-                    if tab == 0 { monitor } else { stations }
+                    switch tab {
+                    case 0: monitor
+                    case 1: stations
+                    default: stationMap
+                    }
                 }
 
                 DisclosureGroup("Setup", isExpanded: $showSetup) { setup.padding(.top, 4) }
                     .font(.subheadline).tint(ODTheme.accent)
             }
             .task(id: satellite.id) {
+                passStart = nil
                 await packet.tuneBBLink(for: satellite)
             }
             // AOS/LOS for the horizon line, refreshed each minute.
@@ -648,6 +659,12 @@ struct HomePacketCard: View {
                 horizonEvent = await Task.detached(priority: .utility) {
                     try? OrbitPredictor.nextEvent(sat, observer: observer, horizonDays: 2)
                 }.value
+                if horizonEvent?.isVisible == true {
+                    let pass = await Task.detached(priority: .utility) {
+                        try? OrbitPredictor.currentOrNextPass(sat, observer: observer, horizonDays: 1)
+                    }.value
+                    if let pass, pass.aos <= Date() { passStart = pass.aos }
+                }
             }
             .sheet(isPresented: $pickingAdapter) {
                 NavigationStack {
@@ -696,13 +713,30 @@ struct HomePacketCard: View {
         }
     }
 
-    /// Per-satellite format and path (ISS: APRS via ARISS).
+    /// Per-satellite format, path and modem (ISS: APRS via ARISS, 1200 AFSK).
     private var profileRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             Picker("Format", selection: profile.format) {
                 ForEach(PacketMessageFormat.allCases) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
+            if packet.settings.transport == .builtInModem {
+                HStack {
+                    Text("Modem").font(.caption).foregroundStyle(ODTheme.muted)
+                    Picker("Modem", selection: profile.modem) {
+                        ForEach(PacketModem.allCases) { m in
+                            Text(m == .automatic ? "Auto (\(autoModemLabel))" : m.label).tag(m)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(packet.isRunning)
+                    Spacer()
+                }
+                if packet.modem(for: satellite) == .g3ruh9600 {
+                    Text("9600 baud needs the radio's 9600 data port (flat, wide discriminator audio and direct modulator input), with the receiver on the wide FM filter. Speaker and mic audio are too filtered to decode or send it.")
+                        .font(.caption2).foregroundStyle(ODTheme.warning)
+                }
+            }
             HStack {
                 Text("Path").font(.caption).foregroundStyle(ODTheme.muted)
                 TextField("ARISS", text: profile.path)
@@ -812,6 +846,8 @@ struct HomePacketCard: View {
             }
             ForEach(packet.heard) { station in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    APRSSymbolBadge(table: station.symbolTable, code: station.symbolCode, size: 22)
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 5 }
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 5) {
                             Text(station.call).font(.subheadline.weight(.semibold))
@@ -829,6 +865,30 @@ struct HomePacketCard: View {
             }
         }
     }
+
+    /// Heard stations with a position on a map, filtered to this pass or all; tap a
+    /// station to address it.
+    private var stationMap: some View {
+        let since = passStart ?? Date().addingTimeInterval(-20 * 60)
+        let shown = packet.heard.filter { $0.latitude != nil && (mapAllStations || $0.lastHeard >= since) }
+        let unplaced = packet.heard.filter { $0.latitude == nil }.count
+        return VStack(alignment: .leading, spacing: 6) {
+            Picker("Stations", selection: $mapAllStations) {
+                Text("This pass").tag(false)
+                Text("All heard").tag(true)
+            }
+            .pickerStyle(.segmented)
+            PacketStationMap(stations: shown, observer: store.preferences.observer, satellite: satellite,
+                             myTable: packet.settings.symbolTable.first, myCode: packet.settings.symbolCode.first) { call in
+                messageTo = call
+            }
+            Text("\(shown.count) on the map" + (unplaced > 0 ? " · \(unplaced) without a position" : "")
+                 + ". Tap a station to put its call in To. The shaded area is \(satellite.name)'s footprint.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    private var autoModemLabel: String { packet.autoModem(for: satellite) == .g3ruh9600 ? "9600" : "1200" }
 
     private func stationDetail(_ s: PacketHeardStation) -> String {
         var parts: [String] = []
@@ -885,12 +945,14 @@ struct HomePacketCard: View {
                     }
                     FineSlider(value: $packet.settings.outputLevel, range: 0.05...1, step: 0.05)
                 }
-                Button { packet.sendTestTone() } label: { Label("Send 3 s test tone", systemImage: "waveform") }
+                Button { packet.sendTestTone() } label: { Label("Send 3 s test signal", systemImage: "waveform") }
                     .buttonStyle(.bordered)
                     .disabled(!packet.isRunning || packet.isTransmitting)
-                Toggle("Off-frequency decoders (±175/±350 Hz)", isOn: $packet.settings.offsetDecoders)
+                Toggle("Off-frequency decoders (±175/±350 Hz, 1200 only)", isOn: $packet.settings.offsetDecoders)
                     .disabled(packet.isRunning)
-                Text("1200-baud AFSK through your audio interface. OrbitDeck keys the radio over CAT when it can, otherwise use VOX. Set about 3 kHz deviation: send the test tone into a dummy load, start low and raise the level until the digipeated copy decodes. Off-frequency decoders catch stations slightly off frequency (residual Doppler).")
+                Toggle("Put the radio in data mode (CAT)", isOn: $packet.settings.useDataMode)
+                    .disabled(packet.isRunning)
+                Text("1200-baud AFSK or 9600-baud G3RUH (chosen per satellite above) through your audio interface. OrbitDeck keys the radio over CAT when it can, otherwise use VOX. With CAT connected it also selects the radio's data mode (e.g. FM-D) while packet runs, so audio uses the data port; turn that off if you feed the mic jack. Set about 3 kHz deviation: send the test signal into a dummy load, start low and raise the level until the digipeated copy decodes. 9600 needs the 9600 data port and a receive path flat down to about 50 Hz. Off-frequency decoders catch 1200-baud stations slightly off frequency (residual Doppler); the 9600 decoder tracks the offset itself.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Group {
@@ -1003,4 +1065,214 @@ private struct PacketLogRow: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+// MARK: - APRS map
+
+/// Heard stations (by APRS symbol), the operator's station and the satellite's
+/// footprint. The footprint is redrawn every few seconds as the satellite moves.
+private struct PacketStationMap: View {
+    let stations: [PacketHeardStation]
+    let observer: ObserverSite
+    let satellite: SatelliteRecord
+    let myTable: Character?
+    let myCode: Character?
+    let select: (String) -> Void
+    @State private var camera: MapCameraPosition = .automatic
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            let sub = try? OrbitPredictor.subpoint(satellite, at: context.date)
+            Map(position: $camera) {
+                if let sub {
+                    MapPolygon(coordinates: Self.footprint(latitude: sub.latitude, longitude: sub.longitude,
+                                                           altitudeKm: sub.altitudeKm))
+                        .foregroundStyle(ODTheme.accent.opacity(0.10))
+                        .stroke(ODTheme.accent.opacity(0.6), lineWidth: 1)
+                }
+                Annotation(observer.name, coordinate: CLLocationCoordinate2D(latitude: observer.latitude,
+                                                                             longitude: observer.longitude)) {
+                    APRSSymbolBadge(table: myTable, code: myCode, size: 24, tint: ODTheme.good)
+                }
+                ForEach(stations) { s in
+                    if let lat = s.latitude, let lon = s.longitude {
+                        Annotation(s.call, coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon)) {
+                            Button { select(s.call) } label: {
+                                APRSSymbolBadge(table: s.symbolTable, code: s.symbolCode, size: 24,
+                                                tint: s.viaDigipeater ? .cyan : ODTheme.accent)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Puts \(s.call) in the To field")
+                        }
+                    }
+                }
+            }
+            .mapStyle(.standard(elevation: .flat))
+        }
+        .frame(height: 280)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// The 0°-elevation footprint ring around the sub-satellite point (the same
+    /// geodesic construction as the ground-track view's footprint).
+    static func footprint(latitude: Double, longitude: Double, altitudeKm: Double, samples: Int = 120) -> [CLLocationCoordinate2D] {
+        let re = 6371.0
+        let gamma = acos(max(-1, min(1, re / (re + max(0, altitudeKm)))))
+        let lat0 = latitude * .pi / 180, lon0 = longitude * .pi / 180
+        return (0...samples).map { i in
+            let theta = Double(i) / Double(samples) * 2 * .pi
+            let lat = asin(sin(lat0) * cos(gamma) + cos(lat0) * sin(gamma) * cos(theta))
+            let lon = lon0 + atan2(sin(theta) * sin(gamma) * cos(lat0), cos(gamma) - sin(lat0) * sin(lat))
+            var lonDeg = lon * 180 / .pi
+            while lonDeg > 180 { lonDeg -= 360 }
+            while lonDeg < -180 { lonDeg += 360 }
+            return CLLocationCoordinate2D(latitude: lat * 180 / .pi, longitude: lonDeg)
+        }
+    }
+}
+
+// MARK: - APRS symbols
+
+/// An APRS symbol drawn as an SF Symbol in a colored disc, with the overlay
+/// character (alternate-table symbols such as a numbered digipeater) in the corner.
+private struct APRSSymbolBadge: View {
+    let table: Character?
+    let code: Character?
+    var size: CGFloat = 24
+    var tint: Color = ODTheme.accent
+
+    var body: some View {
+        let symbol = APRSSymbol(table: table, code: code)
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: symbol.systemImage)
+                .font(.system(size: size * 0.5, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: size, height: size)
+                .background(tint, in: Circle())
+            if let overlay = symbol.overlay {
+                Text(String(overlay))
+                    .font(.system(size: size * 0.36, weight: .bold).monospaced())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 1.5)
+                    .background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 3))
+                    .offset(x: 3, y: 3)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(symbol.name)
+    }
+}
+
+/// APRS symbol table/code (APRS 1.0.1 ch. 20) → an SF Symbol and a name, for the
+/// common symbols; anything else gets a generic pin. Table `/` is primary, `\` the
+/// alternate table, and 0–9/A–Z an alternate symbol with that overlay character.
+struct APRSSymbol {
+    let systemImage: String
+    let name: String
+    let overlay: Character?
+
+    init(table: Character?, code: Character?) {
+        let t = table ?? "/"
+        overlay = t != "/" && t != "\\" && (t.isNumber || ("A"..."Z").contains(t)) ? t : nil
+        guard let code else {
+            systemImage = "mappin.circle.fill"; name = "Station"
+            return
+        }
+        let entry = t == "/" ? Self.primary[code] : (Self.alternate[code] ?? Self.sharedAlternate(code))
+        if let entry {
+            systemImage = entry.0; name = entry.1
+        } else if t == "/", let n = code.wholeNumberValue {
+            systemImage = "\(n).circle.fill"; name = "Numbered circle \(n)"
+        } else {
+            systemImage = "mappin.circle.fill"; name = "Station"
+        }
+    }
+
+    /// Alternate-table codes that mean the same thing as in the primary table.
+    private static func sharedAlternate(_ code: Character) -> (String, String)? {
+        ["#", "&", "-", ">", "_", "k", "u", "s"].contains(code) ? primary[code] : nil
+    }
+
+    private static let primary: [Character: (String, String)] = [
+        "!": ("shield.fill", "Police"),
+        "#": ("antenna.radiowaves.left.and.right", "Digipeater"),
+        "$": ("phone.fill", "Phone"),
+        "%": ("desktopcomputer", "DX cluster"),
+        "&": ("server.rack", "Gateway"),
+        "'": ("airplane", "Small aircraft"),
+        "(": ("dot.radiowaves.up.forward", "Mobile satellite station"),
+        ")": ("figure.roll", "Wheelchair"),
+        "+": ("cross.fill", "Red Cross"),
+        "-": ("house.fill", "House"),
+        "/": ("circle.fill", "Dot"),
+        ":": ("flame.fill", "Fire"),
+        ";": ("tent.fill", "Campground"),
+        "<": ("bicycle", "Motorcycle"),
+        "=": ("tram.fill", "Railroad engine"),
+        ">": ("car.fill", "Car"),
+        "?": ("server.rack", "File server"),
+        "@": ("hurricane", "Hurricane prediction"),
+        "A": ("cross.case.fill", "Aid station"),
+        "B": ("envelope.fill", "BBS"),
+        "C": ("ferry.fill", "Canoe"),
+        "E": ("eye.fill", "Eyeball event"),
+        "G": ("square.grid.3x3", "Grid square"),
+        "H": ("bed.double.fill", "Hotel"),
+        "I": ("network", "TCP/IP"),
+        "K": ("graduationcap.fill", "School"),
+        "L": ("desktopcomputer", "PC user"),
+        "N": ("envelope.fill", "NTS station"),
+        "O": ("balloon.fill", "Balloon"),
+        "P": ("shield.fill", "Police"),
+        "R": ("bus.fill", "RV"),
+        "S": ("dot.radiowaves.up.forward", "Space station"),
+        "T": ("tv", "SSTV"),
+        "U": ("bus.fill", "Bus"),
+        "V": ("tv", "ATV"),
+        "W": ("cloud.sun.fill", "Weather service site"),
+        "X": ("airplane", "Helicopter"),
+        "Y": ("sailboat.fill", "Sailboat"),
+        "[": ("figure.walk", "Person"),
+        "]": ("envelope.fill", "Mailbox"),
+        "^": ("airplane", "Aircraft"),
+        "_": ("cloud.sun.fill", "Weather station"),
+        "`": ("antenna.radiowaves.left.and.right.circle.fill", "Dish antenna"),
+        "a": ("cross.case.fill", "Ambulance"),
+        "b": ("bicycle", "Bicycle"),
+        "d": ("flame.fill", "Fire department"),
+        "f": ("flame.fill", "Fire truck"),
+        "g": ("airplane", "Glider"),
+        "h": ("cross.fill", "Hospital"),
+        "j": ("suv.side.fill", "Jeep"),
+        "k": ("truck.box.fill", "Truck"),
+        "l": ("laptopcomputer", "Laptop"),
+        "n": ("point.3.connected.trianglepath.dotted", "Node"),
+        "o": ("building.2.fill", "Emergency operations center"),
+        "p": ("pawprint.fill", "Rover"),
+        "r": ("dot.radiowaves.left.and.right", "Repeater"),
+        "s": ("ferry.fill", "Ship"),
+        "u": ("truck.box.fill", "Truck"),
+        "v": ("car.side.fill", "Van"),
+        "w": ("drop.fill", "Water station"),
+        "y": ("antenna.radiowaves.left.and.right", "Yagi at QTH"),
+    ]
+
+    private static let alternate: [Character: (String, String)] = [
+        "!": ("exclamationmark.triangle.fill", "Emergency"),
+        "$": ("dollarsign.circle.fill", "Bank or ATM"),
+        "%": ("bolt.fill", "Power plant"),
+        "(": ("cloud.fill", "Cloudy"),
+        "*": ("snowflake", "Snow"),
+        "@": ("hurricane", "Hurricane"),
+        "O": ("balloon.fill", "Balloon"),
+        "S": ("dot.radiowaves.up.forward", "Satellite"),
+        "T": ("cloud.bolt.fill", "Thunderstorm"),
+        "[": ("cloud.fill", "Wall cloud"),
+        "^": ("airplane", "Aircraft"),
+        "a": ("cross.case.fill", "ARES/RACES"),
+        "n": ("triangle.fill", "Triangle"),
+        "t": ("tornado", "Tornado"),
+        "w": ("drop.fill", "Flooding"),
+        "0": ("circle.fill", "Circle"),
+    ]
 }
