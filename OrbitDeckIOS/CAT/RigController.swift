@@ -726,7 +726,7 @@ final class RigController: ObservableObject {
             guard tp.isLinear, u > 0 else { return u }
             return tp.invert ? u - offset : u + offset
         }()
-        let cal = store.downlinkCalibrationHz(for: sat.id, invert: tp.invert) + Double(config.tuning.calDownlinkHz)
+        let cal = store.downlinkCalibrationHz(for: sat.id, transponder: tp.id, invert: tp.invert) + Double(config.tuning.calDownlinkHz)
         let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink,
                                                           rangeRateKmS: look.rangeRateKmS,
                                                           downlinkCalibrationHz: cal,

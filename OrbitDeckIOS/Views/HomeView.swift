@@ -672,7 +672,7 @@ struct HomeView: View {
             guard transponder.isLinear, u > 0 else { return u }
             return transponder.invert ? u - offset : u + offset
         }()
-        let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
+        let cal = store.downlinkCalibrationHz(for: satellite.id, transponder: transponder.id, invert: transponder.invert)
         // Calibrated dials for the tune readouts; the uncalibrated pair gives the
         // true Doppler shift shown on the Doppler (DN/UP) rows.
         let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink, rangeRateKmS: rangeRateKmS,

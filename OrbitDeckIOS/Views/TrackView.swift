@@ -85,7 +85,7 @@ struct TrackView: View {
     private func dopplerCard(satellite: SatelliteRecord, transponder: TransponderRecord, rangeRateKmS: Double) -> some View {
         let downlink = transponder.downlinkCenter
         let uplink = transponder.uplinkCenter
-        let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
+        let cal = store.downlinkCalibrationHz(for: satellite.id, transponder: transponder.id, invert: transponder.invert)
         // Calibrated dials for the tune readouts; the uncalibrated pair gives the
         // true Doppler shift shown on the Doppler (DN/UP) rows.
         let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink, rangeRateKmS: rangeRateKmS,

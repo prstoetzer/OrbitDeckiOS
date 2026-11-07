@@ -526,6 +526,59 @@ final class OrbitStore: ObservableObject {
         return c.downlinkHz + (invert ? -1.0 : 1.0) * c.uplinkHz
     }
 
+    // Per-transponder refinement (FT4 echo auto-calibration). Different transponders on
+    // one satellite can have different LO errors, so the FT4 auto-cal learns a downlink
+    // offset per satellite+transponder, stored ON TOP of the operator's per-satellite
+    // calibration: a transponder with no entry uses the per-satellite value unchanged, and
+    // a manual per-satellite edit still shifts every transponder. Kept in its own
+    // UserDefaults key (a plain [String: Double] JSON dictionary, decoded tolerantly —
+    // unreadable data reads as empty) so StorePreferences' schema is untouched.
+
+    private static let transponderCalKey = "orbitdeck.calibration.transponderOffsets"
+
+    private static func transponderCalID(_ norad: UInt, _ transponderID: String) -> String {
+        "\(norad)|\(transponderID)"
+    }
+
+    private func transponderCalOffsets() -> [String: Double] {
+        guard let data = UserDefaults.standard.data(forKey: Self.transponderCalKey),
+              let dict = try? JSONDecoder().decode([String: Double].self, from: data) else { return [:] }
+        return dict
+    }
+
+    /// The learned extra downlink offset (Hz) for one transponder, or nil when that
+    /// transponder has none yet (it then uses the per-satellite calibration as-is).
+    func transponderCalibrationOffsetHz(for norad: UInt, transponder transponderID: String) -> Double? {
+        transponderCalOffsets()[Self.transponderCalID(norad, transponderID)]
+    }
+
+    /// Persist (or clear, with nil) the learned downlink offset for one transponder.
+    func setTransponderCalibrationOffsetHz(_ offsetHz: Double?, for norad: UInt, transponder transponderID: String) {
+        var dict = transponderCalOffsets()
+        dict[Self.transponderCalID(norad, transponderID)] = offsetHz
+        if let data = try? JSONEncoder().encode(dict) {
+            UserDefaults.standard.set(data, forKey: Self.transponderCalKey)
+        }
+        objectWillChange.send()
+    }
+
+    /// The effective calibration for a satellite on a given transponder: the per-satellite
+    /// value plus that transponder's learned downlink offset (if any). A nil transponder
+    /// is the per-satellite calibration.
+    func calibration(for norad: UInt, transponder transponderID: String?) -> RadioCalibration {
+        var c = calibration(for: norad)
+        if let transponderID, let extra = transponderCalibrationOffsetHz(for: norad, transponder: transponderID) {
+            c.downlinkHz += extra
+        }
+        return c
+    }
+
+    /// `downlinkCalibrationHz(for:invert:)` including the transponder's learned offset.
+    func downlinkCalibrationHz(for norad: UInt, transponder transponderID: String?, invert: Bool) -> Double {
+        let c = calibration(for: norad, transponder: transponderID)
+        return c.downlinkHz + (invert ? -1.0 : 1.0) * c.uplinkHz
+    }
+
     var locationMode: LocationMode { preferences.locationMode ?? .fixed }
 
     /// The name used for the observer while following the device.

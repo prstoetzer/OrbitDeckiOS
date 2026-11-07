@@ -135,7 +135,7 @@ struct RadioView: View {
                 rangeKm: look.rangeKm, frequencyHz: Double(nominal.uplink),
                 txPowerW: groundTxPowerW, txGainDb: groundTxGainDb,
                 rxGainDb: 0, lineLossDb: lineLossDb) : nil
-            let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
+            let cal = store.downlinkCalibrationHz(for: satellite.id, transponder: transponder.id, invert: transponder.invert)
             let corrected = OrbitPredictor.dopplerFrequencies(
                 downlinkHz: nominal.downlink, uplinkHz: nominal.uplink,
                 rangeRateKmS: look.rangeRateKmS,
