@@ -224,6 +224,14 @@ enum RadioCatalog {
                   fullDuplex: false, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: false),
+        // Kenwood HF/6 m transceivers as a single leg (e.g. a 10 m uplink), RS-232 CAT
+        // port via a BLE serial adapter. Base-family ASCII (FA/FB 11 digits, FR/FT split,
+        // TX/RX); the TS-890/990 set the mode with OM0 (see `kenwoodModeOM`). Defaults:
+        // TS-590S/SG 9600 baud, TS-890S/990S 115200 (set to match the radio's COM menu).
+        kenwoodHF("TS-590", "TS-590S", 9600, tone: true),
+        kenwoodHF("TS-590SG", "TS-590SG", 9600, tone: true),
+        kenwoodHF("TS-890", "TS-890S", 115200, tone: false),
+        kenwoodHF("TS-990", "TS-990S", 115200, tone: false),
         // Kenwood handhelds via the B.B. Link BLE adapter (all-mode receiver on band B)
         RadioSpec(id: "TH-D74", name: "TH-D74", family: .kenwoodHandheld, civAddr: 0, defaultBaud: 9600,
                   fullDuplex: false, rxOnly: true, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
@@ -271,6 +279,12 @@ enum RadioCatalog {
                   fullDuplex: false, rxOnly: rxOnly, hasLan: lan, hasBluetooth: bluetooth, canReadFreq: canRead, modeFilter: modeFilter,
                   hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: false, toneEncSub: 0,
                   selMain: [], selSub: [], canAssignBand: false, wideFreq: wide)
+    }
+    private static func kenwoodHF(_ id: String, _ name: String, _ baud: Int, tone: Bool) -> RadioSpec {
+        RadioSpec(id: id, name: name, family: .kenwoodBase, civAddr: 0, defaultBaud: baud,
+                  fullDuplex: false, rxOnly: false, hasLan: false, hasBluetooth: false, canReadFreq: true, modeFilter: false,
+                  hasSatMode: false, satModeCmd: 0, satModeSub: 0, hasTone: tone, toneEncSub: 0,
+                  selMain: [], selSub: [], canAssignBand: false, wideFreq: false)
     }
     private static func yaesuLeg(_ name: String, _ family: RigFamily, _ baud: Int,
                                  rxOnly: Bool = false, canRead: Bool = true) -> RadioSpec {
@@ -324,9 +338,21 @@ extension RadioSpec {
                              "IC-275", "IC-475", "IC-271", "IC-471", "IC-575", "IC-1275"].contains(id)
     }
 
-    /// Kenwood split dialect: the TS-2000 uses FR/FT (receive/transmit VFO); the
-    /// TS-790/711/811 select the VFO with FN and switch split with SP.
-    var kenwoodSplitFRFT: Bool { id == "TS-2000" }
+    /// Kenwood split dialect: the TS-2000 and the TS-590/890/990 HF rigs use FR/FT
+    /// (receive/transmit VFO); the TS-790/711/811 select the VFO with FN and switch
+    /// split with SP.
+    var kenwoodSplitFRFT: Bool { id == "TS-2000" || isKenwoodHF }
+    /// The TS-590S/SG/890S/990S single-leg HF rigs.
+    var isKenwoodHF: Bool { ["TS-590", "TS-590SG", "TS-890", "TS-990"].contains(id) }
+    /// Kenwood mode command. The TS-990S sets the mode with `OM0<m>;` (main band) and has
+    /// no `MD`; the TS-890S is sent both `OM0` and `MD` (it answers `?;` to whichever it
+    /// doesn't take, which is harmless). Everything else uses `MD<m>;`. Mode digits
+    /// 1–5 (LSB/USB/CW/FM/AM) are the same in both forms.
+    var kenwoodModeOM: Bool { id == "TS-990" || id == "TS-890" }
+    var kenwoodModeMD: Bool { id != "TS-990" }
+    /// Kenwood `TN` numbering: the TS-590S/SG count from 00 = 67.0 Hz over a 42-tone
+    /// list that includes 69.3 Hz; the TS-2000 counts from 01 over the 38 EIA tones.
+    var kenwoodToneZeroBased: Bool { id == "TS-590" || id == "TS-590SG" }
 }
 
 // MARK: - Roles / transport
@@ -436,6 +462,49 @@ struct CATTuning: Codable, Sendable, Equatable {
     /// FT-817 family, FT-100): each uplink write briefly moves the receiver, so the
     /// uplink only retunes once it has drifted this far (at least the normal deadband).
     var splitUplinkDeadbandHz = 500
+    /// Per-satellite uplink CTCSS override, keyed by NORAD ID (as a string). 0 = Off;
+    /// no entry = the built-in table, then `uplinkToneHz`. See `SatelliteTones`.
+    var satelliteToneHz: [String: Double] = [:]
+}
+
+// MARK: - Per-satellite uplink tone
+
+/// Uplink CTCSS for FM satellites. Resolution: the operator's per-satellite override →
+/// the built-in table → the global `CATTuning.uplinkToneHz`, so a station that relied on
+/// the global setting keeps it for every bird not listed here.
+enum SatelliteTones {
+    struct Entry {
+        let norad: UInt
+        let toneHz: Double
+        /// Only apply to a transponder whose uplink is within 10 kHz of this (Hz), for
+        /// birds with several FM uplinks (the ISS voice repeater needs 67 Hz, APRS
+        /// doesn't). nil = every uplink of the satellite.
+        var uplinkHz: Int64? = nil
+    }
+    /// Only tones that are well established for active FM repeaters.
+    static let builtIn: [Entry] = [
+        Entry(norad: 27607, toneHz: 67.0),                            // SO-50 (SaudiSat-1C)
+        Entry(norad: 43017, toneHz: 67.0),                            // AO-91 (Fox-1B)
+        Entry(norad: 43678, toneHz: 141.3),                           // PO-101 (Diwata-2)
+        Entry(norad: 25544, toneHz: 67.0, uplinkHz: 145_990_000),     // ISS cross-band repeater
+    ]
+
+    enum Source: String { case override = "your setting", builtIn = "built-in", global = "global setting" }
+
+    static func builtInTone(norad: UInt, uplinkHz: Int64) -> Double? {
+        builtIn.first { e in
+            guard e.norad == norad else { return false }
+            guard let want = e.uplinkHz else { return true }
+            return uplinkHz > 0 && abs(uplinkHz - want) <= 10_000
+        }?.toneHz
+    }
+
+    /// The tone (0 = off) for a satellite/transponder uplink, and where it came from.
+    static func resolve(norad: UInt, uplinkHz: Int64, tuning: CATTuning) -> (hz: Double, source: Source) {
+        if let o = tuning.satelliteToneHz[String(norad)] { return (max(0, o), .override) }
+        if let b = builtInTone(norad: norad, uplinkHz: uplinkHz) { return (b, .builtIn) }
+        return (tuning.uplinkToneHz, .global)
+    }
 }
 
 // MARK: - CTCSS
@@ -497,6 +566,7 @@ extension CATTuning {
         case fmDeadbandHz, linearDeadbandHz, narrowFM, leadMs, calDownlinkHz, calUplinkHz
         case xvtrDownlinkHz, xvtrUplinkHz, uplinkToneHz, passbandOffsetHz, followRadio, followLeg
         case followSettleMs, followUplinkResumeMs, rigctldUseSplit, splitUplinkDeadbandHz
+        case satelliteToneHz
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
@@ -523,6 +593,7 @@ extension CATTuning {
         t.followUplinkResumeMs = c.value(Int.self, .followUplinkResumeMs, t.followUplinkResumeMs)
         t.rigctldUseSplit = c.value(Bool.self, .rigctldUseSplit, t.rigctldUseSplit)
         t.splitUplinkDeadbandHz = c.value(Int.self, .splitUplinkDeadbandHz, t.splitUplinkDeadbandHz)
+        t.satelliteToneHz = c.value([String: Double].self, .satelliteToneHz, t.satelliteToneHz)
         self = t
     }
     func encode(to encoder: Encoder) throws {
@@ -549,6 +620,7 @@ extension CATTuning {
         try c.encode(followUplinkResumeMs, forKey: .followUplinkResumeMs)
         try c.encode(rigctldUseSplit, forKey: .rigctldUseSplit)
         try c.encode(splitUplinkDeadbandHz, forKey: .splitUplinkDeadbandHz)
+        try c.encode(satelliteToneHz, forKey: .satelliteToneHz)
     }
 }
 
@@ -615,5 +687,27 @@ enum CTCSS {
             if e < bestErr { bestErr = e; best = i }
         }
         return bestErr <= 10 ? best + 1 : nil
+    }
+
+    /// The TS-590S/SG `TN` list: 00 = 67.0 Hz, the 38 EIA tones plus 69.3, 206.5, 229.1
+    /// and 254.1 Hz (the radio's last entry, 1750 Hz, isn't CTCSS and is left out).
+    static let kenwood42Tenths: [Int] = [
+        670, 693, 719, 744, 770, 797, 825, 854, 885, 915,
+        948, 974, 1000, 1035, 1072, 1109, 1148, 1188, 1230, 1273,
+        1318, 1365, 1413, 1462, 1514, 1567, 1622, 1679, 1738, 1799,
+        1862, 1928, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418,
+        2503, 2541
+    ]
+
+    /// 0-based TS-590 `TN` tone number for a frequency (nearest within ~1 Hz), or nil.
+    static func kenwood42Index(hz: Double) -> Int? {
+        guard hz > 0 else { return nil }
+        let target = Int((hz * 10).rounded())
+        var best = -1, bestErr = 9999
+        for (i, t) in kenwood42Tenths.enumerated() {
+            let e = abs(t - target)
+            if e < bestErr { bestErr = e; best = i }
+        }
+        return bestErr <= 10 ? best : nil
     }
 }
