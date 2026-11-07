@@ -84,13 +84,19 @@ struct HomeQuickLogCard: View {
             // Don't clobber a report the operator typed when they come back to this tab.
             .onAppear { if rstSent.isEmpty && rstRcvd.isEmpty { resetRst() } }
             .onChange(of: satellite.id) { _, _ in resetRst() }
+            .onChange(of: rig.config.tuning.linearCW) { _, _ in resetRst() }
         }
     }
 
     /// The default report for the current transponder's mode (59 voice, 599 CW/data).
     private var defaultRst: String {
-        let mode = rig.transponder(for: satellite).map { QSORecord.adifMode($0.mode) } ?? "SSB"
+        let mode = linearCW ? "CW" : (rig.transponder(for: satellite).map { QSORecord.adifMode($0.mode) } ?? "SSB")
         return qso.config.rst(for: mode)
+    }
+
+    /// CW chosen for linear transponders (CAT setting) and this one is linear.
+    private var linearCW: Bool {
+        rig.config.tuning.linearCW && (rig.transponder(for: satellite)?.isLinear ?? false)
     }
 
     private func resetRst() { rstSent = defaultRst; rstRcvd = defaultRst }
@@ -100,6 +106,7 @@ struct HomeQuickLogCard: View {
                                     myGrid: store.operatorGrid6, myCall: qso.config.myCall,
                                     defaultRst: qso.config.defaultRst)
         q.call = call.trimmingCharacters(in: .whitespaces).uppercased()
+        if linearCW { q.mode = "CW"; q.uplinkMode = nil; q.downlinkMode = nil }
         q.rstSent = rstSent; q.rstRcvd = rstRcvd
         q.grid = theirGrid.trimmingCharacters(in: .whitespaces).uppercased()
         qso.add(q)

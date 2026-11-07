@@ -437,6 +437,7 @@ struct CATTuning: Codable, Sendable, Equatable {
     var fmDeadbandHz = 300           // FM write deadband
     var linearDeadbandHz = 20        // SSB/CW write deadband (tight for FT4/CW tracking)
     var narrowFM = true              // command narrow FM (FM-N) on FM satellites (they're narrow-band)
+    var linearCW = false             // operate linear transponders in CW (both legs) instead of SSB
     var leadMs = 100                 // predictive-lead atop the auto interval-centering
     var calDownlinkHz = 0            // extra global downlink oscillator trim
     var calUplinkHz = 0              // extra global uplink oscillator trim
@@ -566,7 +567,7 @@ extension CATTuning {
         case fmDeadbandHz, linearDeadbandHz, narrowFM, leadMs, calDownlinkHz, calUplinkHz
         case xvtrDownlinkHz, xvtrUplinkHz, uplinkToneHz, passbandOffsetHz, followRadio, followLeg
         case followSettleMs, followUplinkResumeMs, rigctldUseSplit, splitUplinkDeadbandHz
-        case satelliteToneHz
+        case satelliteToneHz, linearCW
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
@@ -594,6 +595,7 @@ extension CATTuning {
         t.rigctldUseSplit = c.value(Bool.self, .rigctldUseSplit, t.rigctldUseSplit)
         t.splitUplinkDeadbandHz = c.value(Int.self, .splitUplinkDeadbandHz, t.splitUplinkDeadbandHz)
         t.satelliteToneHz = c.value([String: Double].self, .satelliteToneHz, t.satelliteToneHz)
+        t.linearCW = c.value(Bool.self, .linearCW, t.linearCW)
         self = t
     }
     func encode(to encoder: Encoder) throws {
@@ -621,6 +623,7 @@ extension CATTuning {
         try c.encode(rigctldUseSplit, forKey: .rigctldUseSplit)
         try c.encode(splitUplinkDeadbandHz, forKey: .splitUplinkDeadbandHz)
         try c.encode(satelliteToneHz, forKey: .satelliteToneHz)
+        try c.encode(linearCW, forKey: .linearCW)
     }
 }
 

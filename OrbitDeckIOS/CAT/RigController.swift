@@ -801,6 +801,14 @@ final class RigController: ObservableObject {
         // with the uplink taken from SatNOGS's uplink_mode when it has one.
         var dlMode = RigMode.downlink(for: tp)
         var ulMode = RigMode.uplink(for: tp, downlink: dlMode)
+        // Operator-chosen CW on a linear transponder: both sideband legs go to CW. The dial
+        // then reads the carrier itself, so the uplink maps 1:1 through the transponder and
+        // your own signal returns at your CW pitch. A digital client holding the DATA
+        // sub-mode on this transponder (FT4) keeps SSB.
+        if config.tuning.linearCW, tp.isLinear, !useDataModeForDigital {
+            if dlMode == .usb || dlMode == .lsb { dlMode = .cw }
+            if ulMode == .usb || ulMode == .lsb { ulMode = .cw }
+        }
         let isFM = dlMode.isFM
         var deadband = Int64(isFM ? config.tuning.fmDeadbandHz : config.tuning.linearDeadbandHz)   // adapted near TCA (D2)
         // Voice FM, SSTV and 1200-baud packet birds are narrow-band, so command FM-N on

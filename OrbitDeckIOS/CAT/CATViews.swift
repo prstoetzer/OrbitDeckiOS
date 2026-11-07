@@ -332,6 +332,9 @@ struct RigControlSettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Toggle("Narrow FM on FM satellites", isOn: bindTuning(\.narrowFM))
+            Toggle("CW on linear transponders", isOn: bindTuning(\.linearCW))
+            Text("Puts both legs in CW instead of USB/LSB on linear transponders (the dial shows the carrier, so your own signal returns at your CW pitch). FT4 keeps SSB while it runs.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
             Stepper("Predictive lead: \(rig.config.tuning.leadMs) ms", value: bindTuning(\.leadMs), in: 0...500, step: 10)
             HStack {
                 Text("Downlink transverter LO")
@@ -567,6 +570,14 @@ struct HomeRigControlCard: View {
                         get: { rig.config.tuning.trackDoppler },
                         set: { rig.config.tuning.trackDoppler = $0; rig.persist() }
                     ))
+                    Picker("Linear mode", selection: Binding(
+                        get: { rig.config.tuning.linearCW },
+                        set: { rig.config.tuning.linearCW = $0; rig.persist() }
+                    )) {
+                        Text("SSB").tag(false)
+                        Text("CW").tag(true)
+                    }
+                    .pickerStyle(.segmented)
                 }
                 Text("CAT works only while OrbitDeck is in the foreground. Keep the Home screen awake during a pass (Settings ▸ Display).")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
