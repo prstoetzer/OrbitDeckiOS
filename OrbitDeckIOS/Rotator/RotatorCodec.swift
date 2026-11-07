@@ -10,11 +10,13 @@ import Foundation
 
 enum RotatorCodec {
 
-    /// Build the "point to az/el" command for a protocol.
-    static func point(_ proto: RotatorProtocolKind, az: Double, el: Double) -> [UInt8] {
+    /// Build the "point to az/el" command for a protocol. `azimuthOnly` (GS-232 only)
+    /// sends the azimuth-only `Maaa` command for controllers without an elevation axis.
+    static func point(_ proto: RotatorProtocolKind, az: Double, el: Double, azimuthOnly: Bool = false) -> [UInt8] {
         switch proto {
         case .gs232:
             var a = az; if a < 0 { a += 360 }; if a > 450 { a = 450 }
+            if azimuthOnly { return ascii(String(format: "M%03d\r", Int(a.rounded()))) }
             var e = el; if e < 0 { e = 0 }; if e > 180 { e = 180 }
             return ascii(String(format: "W%03d %03d\r", Int(a.rounded()), Int(e.rounded())))
         case .easycomm1:
@@ -53,8 +55,28 @@ enum RotatorCodec {
     /// The frame(s) to command a position. One datagram/frame for every protocol,
     /// matching CardSat exactly (PstRotator uses the combined
     /// `<PST><AZIMUTH>…</AZIMUTH><ELEVATION>…</ELEVATION></PST>` datagram).
-    static func pointDatagrams(_ proto: RotatorProtocolKind, az: Double, el: Double) -> [[UInt8]] {
-        [point(proto, az: az, el: el)]
+    static func pointDatagrams(_ proto: RotatorProtocolKind, az: Double, el: Double, azimuthOnly: Bool = false) -> [[UInt8]] {
+        [point(proto, az: az, el: el, azimuthOnly: azimuthOnly)]
+    }
+
+    /// SPID Rot2Prog STATUS frame (asks the controller for its position).
+    static var spidStatus: [UInt8] { spidFrame(cmd: 0x1F, az: 0, el: 0) }
+
+    /// Find and validate a 12-byte Rot2Prog reply anywhere in `bytes`:
+    /// 0x57, az[4], PH, el[4], PV, 0x20 — digits 0…9, nonzero resolutions. Leading
+    /// junk is skipped; a short or corrupt frame returns nil.
+    static func spidReply(_ bytes: [UInt8]) -> (az: Double, el: Double)? {
+        guard bytes.count >= 12 else { return nil }
+        for i in 0...(bytes.count - 12) where bytes[i] == 0x57 && bytes[i + 11] == 0x20 {
+            let azD = bytes[(i + 1)...(i + 4)], elD = bytes[(i + 6)...(i + 9)]
+            guard azD.allSatisfy({ $0 <= 9 }), elD.allSatisfy({ $0 <= 9 }),
+                  bytes[i + 5] > 0, bytes[i + 10] > 0 else { continue }
+            func value(_ d: ArraySlice<UInt8>, _ res: UInt8) -> Double {
+                Double(d.reduce(0) { $0 * 10 + Int($1) }) / Double(res) - 360
+            }
+            return (value(azD, bytes[i + 5]), value(elD, bytes[i + 10]))
+        }
+        return nil
     }
 
     /// Stop / all-stop command.
@@ -75,7 +97,7 @@ enum RotatorCodec {
         switch proto {
         case .gs232: ascii("C2\r")
         case .easycomm1, .easycomm2, .easycomm3: ascii("AZ EL\r")
-        case .spid: spidFrame(cmd: 0x1F, az: 0, el: 0)
+        case .spid: spidStatus
         case .saebrtrack: nil            // fire-and-forget; a bare AZ/EL query is misread as goto-0
         case .rotctld: ascii("p\n")
         case .pstRotator: nil            // reply comes on port+1; not used by the loop
@@ -87,12 +109,7 @@ enum RotatorCodec {
     static func parsePosition(_ proto: RotatorProtocolKind, _ bytes: [UInt8]) -> (az: Double, el: Double)? {
         switch proto {
         case .spid:
-            // 12-byte reply: 0x57, az[4], PH, el[4], PV, 0x20.
-            guard let i = bytes.firstIndex(of: 0x57), bytes.count >= i + 12, bytes[i + 11] == 0x20 else { return nil }
-            let res = max(1, Int(bytes[i + 5]))
-            let az = Double(Int(bytes[i+1]) * 1000 + Int(bytes[i+2]) * 100 + Int(bytes[i+3]) * 10 + Int(bytes[i+4])) / Double(res) - 360
-            let el = Double(Int(bytes[i+6]) * 1000 + Int(bytes[i+7]) * 100 + Int(bytes[i+8]) * 10 + Int(bytes[i+9])) / Double(res) - 360
-            return (az, el)
+            return spidReply(bytes)
         default:
             guard let s = String(bytes: bytes, encoding: .ascii) else { return nil }
             return parseText(proto, s)
