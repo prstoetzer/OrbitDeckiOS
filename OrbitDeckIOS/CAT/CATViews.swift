@@ -514,6 +514,11 @@ struct HomeRigControlCard: View {
                             if s.connecting { ProgressView().controlSize(.small) }
                         }
                     }
+                    // With no per-radio rows (a setup problem caught before connecting,
+                    // or reconnects given up), the station-level error is the only message.
+                    if rig.statuses.isEmpty, !rig.connected, !rig.errorText.isEmpty {
+                        Text(rig.errorText).font(.caption).foregroundStyle(ODTheme.warning)
+                    }
                 } else {
                     if !rig.connected, !rig.errorText.isEmpty {
                         Text(rig.errorText).font(.caption).foregroundStyle(ODTheme.warning)

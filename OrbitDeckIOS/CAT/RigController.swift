@@ -190,6 +190,7 @@ final class RigController: ObservableObject {
         guard config.isConfigured, let slot0 = config.slots.first, let spec0 = slot0.spec else {
             errorText = "Configure a radio first."; return
         }
+        if let problem = stationProblem() { statuses.removeAll(); errorText = problem; return }
         connecting = true; wantConnection = true; errorText = ""; statusText = "Connecting…"
         persist()
 
@@ -274,6 +275,29 @@ final class RigController: ObservableObject {
                 await teardown()
             }
         }
+    }
+
+    /// Station setups that would otherwise connect but misbehave quietly: a two-radio
+    /// station whose uplink radio isn't set up (it would run downlink-only), a BLE link
+    /// with no device chosen (it would scan for a random ID until the timeout), or both
+    /// radios on the same BLE adapter (both links would drive one radio).
+    private func stationProblem() -> String? {
+        var active = [0]
+        if config.twoRadios {
+            guard config.slots.count > 1, config.slots[1].enabled, config.slots[1].spec != nil else {
+                return "Two radios is on, but Radio 2 (uplink) isn't set up. Turn on \"Use this radio\" and choose a model, or turn off Two radios."
+            }
+            active.append(1)
+        }
+        let ble = active.filter { config.slots[$0].transport == .ble || config.slots[$0].transport == .bleicom }
+        for i in ble where UUID(uuidString: config.slots[i].bleIdentifier) == nil {
+            let which = config.twoRadios ? "Radio \(i + 1)" : "the radio"
+            return "Choose a BLE device for \(which) in Rig Control settings."
+        }
+        if ble.count == 2, config.slots[0].bleIdentifier == config.slots[1].bleIdentifier {
+            return "Radio 1 and Radio 2 are set to the same BLE device. Each radio needs its own adapter (or its own built-in Bluetooth)."
+        }
+        return nil
     }
 
     func disconnect() {
