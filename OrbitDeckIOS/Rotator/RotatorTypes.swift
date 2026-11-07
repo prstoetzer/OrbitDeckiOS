@@ -82,6 +82,12 @@ struct RotatorConfig: Codable, Sendable, Equatable {
     var flip = false                // flip mode (az+180, el=180−el) for overhead passes
     var minElevationDeg = 0.0       // only track above this elevation (0 = whole visible pass)
     var updateMs = 1000             // pointing loop period
+    var gs232AzOnly = false         // GS-232 azimuth-only controller: send "Maaa", not "Waaa eee"
+
+    /// Azimuth-only pointing is in effect (only GS-232 offers the option).
+    var azimuthOnly: Bool { proto == .gs232 && gs232AzOnly }
+    /// Flip needs an elevation axis that can pass 90°, so it's off for azimuth-only.
+    var flipEnabled: Bool { flip && !azimuthOnly }
 
     var isConfigured: Bool {
         guard enabled else { return false }
@@ -104,7 +110,7 @@ extension RotatorConfig {
     enum CK: String, CodingKey {
         case enabled, proto, bleIdentifier, bleName, baud, host, port
         case leadSec, trackLeadSec, azLookSec, azRange, azOffsetDeg, elOffsetDeg, deadbandDeg
-        case magCorrect, parkAz, parkEl, flip, minElevationDeg, updateMs
+        case magCorrect, parkAz, parkEl, flip, minElevationDeg, updateMs, gs232AzOnly
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
@@ -129,6 +135,7 @@ extension RotatorConfig {
         r.flip = c.value(Bool.self, .flip, r.flip)
         r.minElevationDeg = c.value(Double.self, .minElevationDeg, r.minElevationDeg)
         r.updateMs = c.value(Int.self, .updateMs, r.updateMs)
+        r.gs232AzOnly = c.value(Bool.self, .gs232AzOnly, r.gs232AzOnly)
         self = r
     }
     func encode(to encoder: Encoder) throws {
@@ -153,5 +160,6 @@ extension RotatorConfig {
         try c.encode(flip, forKey: .flip)
         try c.encode(minElevationDeg, forKey: .minElevationDeg)
         try c.encode(updateMs, forKey: .updateMs)
+        try c.encode(gs232AzOnly, forKey: .gs232AzOnly)
     }
 }

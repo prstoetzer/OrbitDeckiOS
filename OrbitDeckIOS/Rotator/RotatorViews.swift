@@ -49,6 +49,11 @@ struct RotatorSettingsView: View {
                         }
                         Text("Wire a BLE UART adapter to the rotator controller's serial port; set this to match the controller's baud.")
                             .font(.caption).foregroundStyle(ODTheme.muted)
+                        if rot.config.proto == .gs232 {
+                            Toggle("Azimuth-only controller", isOn: b(\.gs232AzOnly))
+                            Text("For GS-232 controllers without an elevation axis: sends the azimuth-only M command instead of W. Flip mode is unavailable.")
+                                .font(.caption).foregroundStyle(ODTheme.muted)
+                        }
                     } else {
                         TextField("Host / IP", text: b(\.host))
                             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
@@ -71,6 +76,7 @@ struct RotatorSettingsView: View {
                         ForEach(RotAzRange.allCases) { Text($0.label).tag($0) }
                     }
                     Toggle("Flip mode (overhead passes)", isOn: b(\.flip))
+                        .disabled(rot.config.azimuthOnly)
                     if rot.config.azRange == .az450 {
                         Stepper(value: b(\.azLookSec), in: 0...30) {
                             Text(verbatim: "Az lookahead: \(rot.config.azLookSec) s")
@@ -162,8 +168,13 @@ struct HomeRotatorCard: View {
                 }
                 if rot.connected {
                     Divider().opacity(0.4)
-                    MetricRow("Azimuth", String(format: "%.0f° %@", rot.commandedAz, ODFormat.compass(rot.commandedAz)), valueColor: ODTheme.good)
-                    MetricRow("Elevation", String(format: "%.0f°", rot.commandedEl), valueColor: ODTheme.warning)
+                    // Always a 0–360° compass heading, whatever range the rotator is commanded in.
+                    MetricRow("Azimuth", String(format: "%.0f° %@", rot.displayAz, ODFormat.compass(rot.displayAz)), valueColor: ODTheme.good)
+                    if !rot.config.azimuthOnly {
+                        MetricRow("Elevation", rot.flipActive ? String(format: "%.0f° (flipped)", rot.commandedEl)
+                                                              : String(format: "%.0f°", rot.commandedEl),
+                                  valueColor: ODTheme.warning)
+                    }
                     if !rot.lastTx.isEmpty {
                         Text(rot.lastTx).font(.caption2.monospaced())
                             .foregroundStyle(rot.lastTx.contains("ok") ? ODTheme.good : ODTheme.warning)
