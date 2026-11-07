@@ -32,11 +32,22 @@ struct QSORecord: Identifiable, Codable, Sendable, Equatable {
     var grid = ""                // worked station grid(s)
     var notes = ""
     var uploaded: UploadFlags = []
+    // Added in 0.9.14 (tolerant decoding below keeps older logs loading).
+    // Per-leg modes for cross-mode contacts (e.g. FM up / SSB down); nil means
+    // "same as `mode`", which stays the primary for ADIF MODE, LoTW and Cloudlog.
+    var uplinkMode: String?
+    var downlinkMode: String?
+    var name = ""                // worked operator's first name / nickname (QRZ fill)
+    var dxcc: Int?               // ARRL DXCC entity code; nil = not resolved, 0 = none (/MM)
+    var country = ""             // DXCC entity name
 
     /// Worked-station grids split for VUCC (comma/slash/space separated).
     var gridList: [String] {
         grid.split(whereSeparator: { ",/ ".contains($0) }).map { String($0).uppercased() }
     }
+
+    var effectiveUplinkMode: String { uplinkMode ?? mode }
+    var effectiveDownlinkMode: String { downlinkMode ?? mode }
 }
 
 /// A recorded pass audio clip, listed on the Log screen (Phase 4 populates it).
@@ -105,10 +116,27 @@ struct CloudlogConfig: Codable, Sendable, Equatable {
 struct LoggingConfig: Codable, Sendable, Equatable {
     var enabled = false
     var myCall = ""
-    var defaultRst = "59"
+    var defaultRst = "59"           // phone report; CW/data add the tone digit (see rst(for:))
     var station = LoTWStation()
     var cloudlog = CloudlogConfig()
     var hasLoTWCredential = false   // a .p12 has been imported into the app
+    var qrzNameLookup = true        // fill empty names from QRZ (only when credentials are set)
+
+    /// Default report for a mode: RS (59) for voice, RST (599) for CW and data,
+    /// and empty for the WSJT modes, which log a dB report instead.
+    func rst(for mode: String) -> String { Self.rst(for: mode, base: defaultRst) }
+
+    static func rst(for mode: String, base: String) -> String {
+        let m = mode.uppercased()
+        if ["FT4", "FT8", "JS8", "MFSK", "Q65", "MSK144", "JT65", "JT9"].contains(m) { return "" }
+        // Only reshape a plain RS/RST default; leave anything else (e.g. "-10") alone.
+        let digits = base.filter(\.isNumber)
+        guard digits == base, (2...3).contains(digits.count) else { return base }
+        let rs = String(digits.prefix(2))
+        let usesTone = ["CW", "PKT", "PACKET", "RTTY", "PSK", "PSK31", "PSK63", "BPSK", "FSK", "DATA",
+                        "AFSK", "GMSK", "BPSK1200", "OLIVIA", "HELL", "DIGI"].contains(m)
+        return usesTone ? rs + (digits.count == 3 ? String(digits.suffix(1)) : "9") : rs
+    }
 }
 
 // MARK: - Tolerant Codable for the config structs (add fields without breaking saves)
@@ -149,8 +177,40 @@ extension CloudlogConfig {
     }
 }
 
+extension QSORecord {
+    // Every field tolerant: QSOLog.json written by any earlier build (which lacks
+    // the 0.9.14 fields) must keep loading, and one odd record must not sink the log.
+    enum CK: String, CodingKey {
+        case id, utc, call, sat, mode, dlHz, ulHz, myGrid, myCall, rstSent, rstRcvd, grid, notes, uploaded
+        case uplinkMode, downlinkMode, name, dxcc, country
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CK.self)
+        var q = QSORecord(utc: c.value(Date.self, .utc, Date(timeIntervalSince1970: 0)))
+        q.id = c.value(UUID.self, .id, q.id)
+        q.call = c.value(String.self, .call, q.call)
+        q.sat = c.value(String.self, .sat, q.sat)
+        q.mode = c.value(String.self, .mode, q.mode)
+        q.dlHz = c.value(Int64.self, .dlHz, q.dlHz)
+        q.ulHz = c.value(Int64.self, .ulHz, q.ulHz)
+        q.myGrid = c.value(String.self, .myGrid, q.myGrid)
+        q.myCall = c.value(String.self, .myCall, q.myCall)
+        q.rstSent = c.value(String.self, .rstSent, q.rstSent)
+        q.rstRcvd = c.value(String.self, .rstRcvd, q.rstRcvd)
+        q.grid = c.value(String.self, .grid, q.grid)
+        q.notes = c.value(String.self, .notes, q.notes)
+        q.uploaded = c.value(UploadFlags.self, .uploaded, q.uploaded)
+        q.uplinkMode = (try? c.decodeIfPresent(String.self, forKey: .uplinkMode)) ?? nil
+        q.downlinkMode = (try? c.decodeIfPresent(String.self, forKey: .downlinkMode)) ?? nil
+        q.name = c.value(String.self, .name, q.name)
+        q.dxcc = (try? c.decodeIfPresent(Int.self, forKey: .dxcc)) ?? nil
+        q.country = c.value(String.self, .country, q.country)
+        self = q
+    }
+}
+
 extension LoggingConfig {
-    enum CK: String, CodingKey { case enabled, myCall, defaultRst, station, cloudlog, hasLoTWCredential }
+    enum CK: String, CodingKey { case enabled, myCall, defaultRst, station, cloudlog, hasLoTWCredential, qrzNameLookup }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
         var s = LoggingConfig()
@@ -160,6 +220,7 @@ extension LoggingConfig {
         s.station = c.value(LoTWStation.self, .station, s.station)
         s.cloudlog = c.value(CloudlogConfig.self, .cloudlog, s.cloudlog)
         s.hasLoTWCredential = c.value(Bool.self, .hasLoTWCredential, s.hasLoTWCredential)
+        s.qrzNameLookup = c.value(Bool.self, .qrzNameLookup, s.qrzNameLookup)
         self = s
     }
 }

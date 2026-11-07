@@ -63,10 +63,21 @@ enum ADIF {
         if grids.count > 1 { r += field("VUCC_GRIDS", grids.joined(separator: ",")) }
         if !q.myGrid.isEmpty { r += field("MY_GRIDSQUARE", q.myGrid) }
         if !q.myCall.isEmpty { r += field("STATION_CALLSIGN", q.myCall) }
+        if !q.name.isEmpty { r += field("NAME", q.name) }
+        if let dxcc = q.dxcc { r += field("DXCC", String(dxcc)) }
+        if !q.country.isEmpty { r += field("COUNTRY", q.country) }
+        // ADIF has no per-leg mode fields, so cross-mode legs go in app-defined
+        // fields (MODE above stays the primary). Only explicitly set legs are written.
+        if let up = q.uplinkMode, !up.isEmpty { r += field(Self.appUplinkMode, up) }
+        if let down = q.downlinkMode, !down.isEmpty { r += field(Self.appDownlinkMode, down) }
         if !q.notes.isEmpty { r += field("COMMENT", q.notes) }
         r += "<EOR>\n"
         return r
     }
+
+    /// App-defined ADIF fields (APP_{PROGRAMID}_{FIELD}) for the per-leg modes.
+    static let appUplinkMode = "APP_ORBITDECK_UPLINK_MODE"
+    static let appDownlinkMode = "APP_ORBITDECK_DOWNLINK_MODE"
 
     /// Canonical ADIF (MODE, SUBMODE?) for a stored mode string. FT4 and JS8 are
     /// SUBMODEs of MFSK; FT8 is a top-level MODE; everything else passes through.
@@ -153,6 +164,11 @@ enum ADIF {
         q.myGrid = f["my_gridsquare"] ?? ""
         q.myCall = f["station_callsign"] ?? ""
         q.notes = f["comment"] ?? ""
+        q.name = f["name"] ?? ""
+        q.dxcc = f["dxcc"].flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        q.country = f["country"] ?? ""
+        q.uplinkMode = f[appUplinkMode.lowercased()].flatMap { $0.isEmpty ? nil : $0.uppercased() }
+        q.downlinkMode = f[appDownlinkMode.lowercased()].flatMap { $0.isEmpty ? nil : $0.uppercased() }
         return q
     }
 
