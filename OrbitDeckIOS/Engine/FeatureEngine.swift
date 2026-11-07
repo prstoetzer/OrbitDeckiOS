@@ -2981,6 +2981,12 @@ enum SatelliteNameMatch {
         return stem
     }
 
+    /// Text after the `baseCall` stem: "METEOR-M2 3" → " 3".
+    static func stemRemainder(_ text: String) -> String {
+        guard let cut = text.firstIndex(where: { $0 == " " || $0 == "[" || $0 == "(" || $0 == "_" }) else { return "" }
+        return String(text[cut...])
+    }
+
     /// Strip a trailing mode tag: "AO-7_[V/a]" or "AO-7[V/a]" → "AO-7".
     static func apiBase(_ apiName: String) -> String {
         let s = apiName.trimmingCharacters(in: .whitespaces)
@@ -2991,9 +2997,32 @@ enum SatelliteNameMatch {
     }
 
     private static func tokenIn(_ haystackNorm: String, _ needleNorm: String) -> Bool {
-        guard !needleNorm.isEmpty else { return false }
+        tokenRange(haystackNorm, needleNorm) != nil
+    }
+
+    private static func tokenRange(_ haystackNorm: String, _ needleNorm: String) -> Range<String.Index>? {
+        guard !needleNorm.isEmpty else { return nil }
         let pattern = "(^|\\s)\(NSRegularExpression.escapedPattern(for: needleNorm))($|\\s)"
-        return haystackNorm.range(of: pattern, options: .regularExpression) != nil
+        return haystackNorm.range(of: pattern, options: .regularExpression)
+    }
+
+    /// True when `remainder` (the candidate text after the part that matched the
+    /// query) starts with a family-member designator the query lacks: a number,
+    /// a lone letter, or number+letter ("METEOR-M2 3", "NOAA 15", "… 2B").
+    static func startsWithDesignator(_ remainder: String) -> Bool {
+        guard let token = norm(remainder).split(separator: " ").first else { return false }
+        if token.count == 1 { return true }
+        guard token.count <= 4, let first = token.first, first.isNumber else { return false }
+        let letters = token.drop { $0.isNumber }
+        return letters.count <= 1 && letters.allSatisfy(\.isLetter)
+    }
+
+    /// First clean hit, else a designator-extended hit only when it is the sole
+    /// plausible candidate. A one-name list gives no evidence that the short
+    /// name means this family member, so it never accepts an extended hit.
+    private static func pick(_ hits: [(index: Int, extended: Bool)], listCount: Int) -> Int? {
+        if let clean = hits.first(where: { !$0.extended }) { return clean.index }
+        return hits.count == 1 && listCount > 1 ? hits[0].index : nil
     }
 
     private static func parenTokens(_ name: String) -> [String] {
@@ -3019,12 +3048,25 @@ enum SatelliteNameMatch {
         }
         // 2. whole-name equality
         for (i, nm) in normed.enumerated() where nm == bn { return i }
-        // 3. delimited-token containment
-        for (i, nm) in normed.enumerated() where tokenIn(nm, bn) { return i }
-        // 4. legacy prefix base (AO-07 ↔ AO-7)
-        if !ab.isEmpty { for (i, name) in names.enumerated() where baseCall(name) == ab { return i } }
-        // 5. collapsed form (AO-7 ↔ AO7), more tolerant than the token tiers
+        // 3. collapsed whole-name equality (AO-7 ↔ AO7, METEOR-M2 ↔ METEOR-M 2),
+        // ahead of the containment tiers so the exact satellite beats a family
+        // member that merely extends the name ("METEOR-M2 3").
         if !bc.isEmpty { for (i, name) in names.enumerated() where collapse(name) == bc { return i } }
+        // 4. delimited-token containment; a candidate that adds a trailing
+        // designator the query lacks is a different family member.
+        var hits: [(index: Int, extended: Bool)] = []
+        for (i, nm) in normed.enumerated() {
+            if let r = tokenRange(nm, bn) { hits.append((i, startsWithDesignator(String(nm[r.upperBound...])))) }
+        }
+        if let i = pick(hits, listCount: names.count) { return i }
+        // 5. legacy prefix base (AO-07 ↔ AO-7), with the same designator guard
+        if !ab.isEmpty {
+            hits = []
+            for (i, name) in names.enumerated() where baseCall(name) == ab {
+                hits.append((i, startsWithDesignator(stemRemainder(name))))
+            }
+            if let i = pick(hits, listCount: names.count) { return i }
+        }
         // 6. known aliases with no lexical bridge
         if let target = aliases[base.uppercased()] {
             let tn = norm(target)

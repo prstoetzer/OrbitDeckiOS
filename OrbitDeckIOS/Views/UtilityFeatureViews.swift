@@ -157,6 +157,9 @@ struct GlobeView: View {
         if let sat = store.selectedSatellite, let look = try? OrbitPredictor.look(sat, observer:store.preferences.observer, at:date) {
             let center = centerPoint(look:look)
             let favorites = store.satellites.filter { store.preferences.favorites.contains($0.id) }
+            let palette = store.satellitePalette
+            let satColor = palette.color(sat.id)
+            let minElevation = store.preferences.minElevation
             Canvas { context, size in
                 let r=min(size.width,size.height)/2-24, c=CGPoint(x:size.width/2,y:size.height/2)
                 context.fill(Path(ellipseIn:CGRect(x:c.x-r,y:c.y-r,width:2*r,height:2*r)), with:.color(ODTheme.globeOcean))
@@ -165,16 +168,22 @@ struct GlobeView: View {
                 drawGraticule(context:&context,c:c,r:r,center:center)
                 drawCoastlines(context:&context,c:c,r:r,center:center)
                 if let p=project(lat:store.preferences.observer.latitude,lon:store.preferences.observer.longitude,center:center,c:c,r:r) { context.draw(Text("★").foregroundStyle(ODTheme.warning).font(.title3),at:p) }
-                drawTrack(context:&context,satellite:sat,date:date,center:center,c:c,r:r)
-                drawFootprint(context:&context,lat:look.subLatitude,lon:look.subLongitude,alt:look.altitudeKm,center:center,c:c,r:r,color:ODTheme.good)
+                drawTrack(context:&context,satellite:sat,date:date,center:center,c:c,r:r,color:satColor)
+                drawFootprint(context:&context,lat:look.subLatitude,lon:look.subLongitude,alt:look.altitudeKm,center:center,c:c,r:r,color:satColor)
+                // Dashed ring at the operator's minimum elevation (the usable footprint).
+                if minElevation > 0 {
+                    drawFootprint(context:&context,lat:look.subLatitude,lon:look.subLongitude,alt:look.altitudeKm,center:center,c:c,r:r,color:satColor,elevation:minElevation)
+                }
                 for fs in favorites where fs.id != sat.id {
                     if let fl = try? OrbitPredictor.look(fs, observer: store.preferences.observer, at: date) {
                         drawSatelliteGlyph(context: &context, satellite: fs, date: date, look: fl,
-                                           center: center, c: c, r: r, color: ODTheme.accent, size: 12)
+                                           center: center, c: c, r: r, canvas: size,
+                                           color: palette.color(fs.id), size: 12)
                     }
                 }
                 drawSatelliteGlyph(context: &context, satellite: sat, date: date, look: look,
-                                   center: center, c: c, r: r, color: ODTheme.good, size: 15)
+                                   center: center, c: c, r: r, canvas: size,
+                                   color: satColor, size: 15, selected: true)
             }
         } else { ContentUnavailableView("Select a satellite", systemImage:"globe.americas") }
     }
@@ -228,10 +237,11 @@ struct GlobeView: View {
     /// by its (scaled) altitude, with a faint tether to the ground point and a
     /// label. Orthographic projection means the raised position is the surface
     /// offset vector scaled by (1 + altitude fraction). The arrow points the
-    /// satellite's direction of travel (sampled ~1 min ahead).
+    /// satellite's direction of travel (sampled ~1 min ahead). The selected
+    /// satellite gets a white halo and a bolder label rather than another hue.
     private func drawSatelliteGlyph(context: inout GraphicsContext, satellite: SatelliteRecord, date: Date, look: LiveLook,
-                                    center: (Double, Double), c: CGPoint, r: Double,
-                                    color: Color, size: CGFloat) {
+                                    center: (Double, Double), c: CGPoint, r: Double, canvas: CGSize,
+                                    color: Color, size: CGFloat, selected: Bool = false) {
         guard let surface = project(lat: look.subLatitude, lon: look.subLongitude, center: center, c: c, r: r) else { return }
         let scale = 1 + altitudeFraction(look.altitudeKm)
         let glyph = CGPoint(x: c.x + (surface.x - c.x) * scale, y: c.y + (surface.y - c.y) * scale)
@@ -251,23 +261,49 @@ struct GlobeView: View {
                 if hypot(ag.x - glyph.x, ag.y - glyph.y) > 0.3 { angle = atan2(ag.y - glyph.y, ag.x - glyph.x) }
             }
         }
+        if selected {
+            let h = size * 0.7
+            context.fill(Path(ellipseIn: CGRect(x: glyph.x - h, y: glyph.y - h, width: 2 * h, height: 2 * h)),
+                         with: .color(.white.opacity(0.18)))
+        }
         if let angle {
             drawHeadingArrow(&context, at: glyph, angle: angle, color: color, size: size * 0.5)
         } else {
             let d = size * 0.32
             context.fill(Path(ellipseIn: CGRect(x: glyph.x - d, y: glyph.y - d, width: 2 * d, height: 2 * d)), with: .color(color))
         }
-        context.draw(Text(satellite.name).font(.system(size: 8, weight: .semibold)).foregroundStyle(color.opacity(0.9)),
-                     at: CGPoint(x: glyph.x, y: glyph.y - size * 0.9))
+        let label = context.resolve(Text(satellite.name)
+            .font(.system(size: selected ? 10 : 8, weight: selected ? .bold : .semibold))
+            .foregroundStyle(color.opacity(selected ? 1 : 0.9)))
+        context.draw(label, at: Self.labelPosition(glyph: glyph, offset: size * 0.9,
+                                                   label: label.measure(in: CGSize(width: 240, height: 40)),
+                                                   canvas: canvas, headingAngle: angle))
+    }
+
+    /// Where to center a glyph's label so it stays inside the canvas: above the
+    /// glyph normally, below it near the top edge or when the arrow points up the
+    /// screen (where it would sit on the label), and clamped horizontally.
+    nonisolated static func labelPosition(glyph: CGPoint, offset: CGFloat, label: CGSize, canvas: CGSize,
+                                          headingAngle: Double?) -> CGPoint {
+        let margin: CGFloat = 2
+        let headingUp = headingAngle.map { sin($0) < -0.7 } ?? false
+        var y = glyph.y - offset
+        if headingUp || y - label.height / 2 < margin { y = glyph.y + offset }
+        y = min(max(y, label.height / 2 + margin), canvas.height - label.height / 2 - margin)
+        let halfW = min(label.width / 2, canvas.width / 2 - margin)
+        let x = min(max(glyph.x, halfW + margin), canvas.width - halfW - margin)
+        return CGPoint(x: x, y: y)
     }
 
     private func centerPoint(look:LiveLook)->(Double,Double) { switch mode { case .satellite:return(look.subLatitude,look.subLongitude);case .station:return(store.preferences.observer.latitude,store.preferences.observer.longitude);case .north:return(90,0);case .south:return(-90,0);case .free:return(freeLat,freeLon) } }
     private func project(lat:Double,lon:Double,center:(Double,Double),c:CGPoint,r:Double)->CGPoint? { let la=lat*Double.pi/180,lo=lon*Double.pi/180,cl=center.0*Double.pi/180,co=center.1*Double.pi/180; let cosc=sin(cl)*sin(la)+cos(cl)*cos(la)*cos(lo-co); guard cosc>=0 else{return nil}; let x=cos(la)*sin(lo-co),y=cos(cl)*sin(la)-sin(cl)*cos(la)*cos(lo-co); return CGPoint(x:c.x+r*x,y:c.y-r*y) }
     private func drawGraticule(context:inout GraphicsContext,c:CGPoint,r:Double,center:(Double,Double)) { for lat in stride(from:-60.0,through:60.0,by:30){ drawGeoLine(context:&context,points:stride(from:-180.0,through:180.0,by:4).map{(lat,$0)},center:center,c:c,r:r,color:ODTheme.grid.opacity(0.7),width:0.6) }; for lon in stride(from:-180.0,through:180.0,by:30){drawGeoLine(context:&context,points:stride(from:-90.0,through:90.0,by:4).map{($0,lon)},center:center,c:c,r:r,color:ODTheme.grid.opacity(0.7),width:0.6)} }
     private func drawCoastlines(context:inout GraphicsContext,c:CGPoint,r:Double,center:(Double,Double)) { for polyline in WorldMapData.coastlines { drawGeoLine(context:&context,points:polyline.map { ($0.1,$0.0) },center:center,c:c,r:r,color:.white.opacity(0.55),width:1.0) } }
-    private func drawGeoLine(context:inout GraphicsContext,points:[(Double,Double)],center:(Double,Double),c:CGPoint,r:Double,color:Color,width:Double){ var p=Path(),started=false; for ll in points { if let q=project(lat:ll.0,lon:ll.1,center:center,c:c,r:r){ if started{p.addLine(to:q)}else{p.move(to:q);started=true} } else { if started{context.stroke(p,with:.color(color),lineWidth:width);p=Path();started=false} } }; if started{context.stroke(p,with:.color(color),lineWidth:width)} }
-    private func drawTrack(context:inout GraphicsContext,satellite:SatelliteRecord,date:Date,center:(Double,Double),c:CGPoint,r:Double){ let period=max(60,satellite.periodMinutes*60); let points=(0...120).compactMap{i->(Double,Double)? in let t=date.addingTimeInterval(-period/2+period*Double(i)/120); guard let l=try? OrbitPredictor.look(satellite,observer:store.preferences.observer,at:t)else{return nil};return(l.subLatitude,l.subLongitude)}; drawGeoLine(context:&context,points:points,center:center,c:c,r:r,color:ODTheme.accent,width:1.8) }
-    private func drawFootprint(context:inout GraphicsContext,lat:Double,lon:Double,alt:Double,center:(Double,Double),c:CGPoint,r:Double,color:Color){ let re=6378.135,ang=acos(re/(re+max(1,alt)))*180/Double.pi; let pts=stride(from:0.0,through:360.0,by:5).map{destination(lat:lat,lon:lon,distanceDeg:ang,bearingDeg:$0)}; drawGeoLine(context:&context,points:pts,center:center,c:c,r:r,color:color.opacity(0.8),width:1.1) }
+    private func drawGeoLine(context:inout GraphicsContext,points:[(Double,Double)],center:(Double,Double),c:CGPoint,r:Double,color:Color,width:Double,dash:[CGFloat]=[]){ let style=StrokeStyle(lineWidth:width,dash:dash); var p=Path(),started=false; for ll in points { if let q=project(lat:ll.0,lon:ll.1,center:center,c:c,r:r){ if started{p.addLine(to:q)}else{p.move(to:q);started=true} } else { if started{context.stroke(p,with:.color(color),style:style);p=Path();started=false} } }; if started{context.stroke(p,with:.color(color),style:style)} }
+    private func drawTrack(context:inout GraphicsContext,satellite:SatelliteRecord,date:Date,center:(Double,Double),c:CGPoint,r:Double,color:Color){ let period=max(60,satellite.periodMinutes*60); let points=(0...120).compactMap{i->(Double,Double)? in let t=date.addingTimeInterval(-period/2+period*Double(i)/120); guard let l=try? OrbitPredictor.look(satellite,observer:store.preferences.observer,at:t)else{return nil};return(l.subLatitude,l.subLongitude)}; drawGeoLine(context:&context,points:points,center:center,c:c,r:r,color:color,width:1.8) }
+    /// Footprint ring at `elevation` (0° = horizon footprint, solid; above 0° =
+    /// the operator's minimum-elevation ring, dashed). See `FootprintGeometry`.
+    private func drawFootprint(context:inout GraphicsContext,lat:Double,lon:Double,alt:Double,center:(Double,Double),c:CGPoint,r:Double,color:Color,elevation:Double=0){ let ang=FootprintGeometry.centralAngle(altitudeKm:max(1,alt),elevation:elevation); let pts=stride(from:0.0,through:360.0,by:5).map{destination(lat:lat,lon:lon,distanceDeg:ang,bearingDeg:$0)}; drawGeoLine(context:&context,points:pts,center:center,c:c,r:r,color:color.opacity(elevation>0 ? 0.9 : 0.8),width:elevation>0 ? 1.0 : 1.1,dash:elevation>0 ? [5,4] : []) }
     private func destination(lat:Double,lon:Double,distanceDeg:Double,bearingDeg:Double)->(Double,Double){let p1=lat*Double.pi/180,l1=lon*Double.pi/180,d=distanceDeg*Double.pi/180,b=bearingDeg*Double.pi/180;let p2=asin(sin(p1)*cos(d)+cos(p1)*sin(d)*cos(b));let l2=l1+atan2(sin(b)*sin(d)*cos(p1),cos(d)-sin(p1)*sin(p2));return(p2*180/Double.pi,((l2*180/Double.pi+540).truncatingRemainder(dividingBy:360))-180)}
     private func drawNight(context: inout GraphicsContext, size: CGSize, c: CGPoint, r: Double, center: (Double, Double), date: Date) {
         let subSun = subsolarPoint(date)

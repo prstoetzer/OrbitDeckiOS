@@ -748,7 +748,7 @@ struct AutoSwitchView: View {
                         Text(verbatim: "\(index + 1)")
                             .font(.headline.monospacedDigit())
                             .frame(width: 22)
-                            .foregroundStyle(PassTimeline.color(index))
+                            .foregroundStyle(store.satellitePalette.color(norad))
                         VStack(alignment: .leading, spacing: 1) {
                             Text(name(norad))
                             Text(verbatim: "NORAD \(norad)").font(.caption2).foregroundStyle(ODTheme.muted)
@@ -799,7 +799,8 @@ struct AutoSwitchView: View {
                                           now: context.date,
                                           minElevation: auto.threshold(for: store),
                                           spans: planSpans,
-                                          highlighted: store.selectedSatellite?.id)
+                                          highlighted: store.selectedSatellite?.id,
+                                          palette: store.satellitePalette)
                             .task(id: planKey(context.date)) { await plan(from: context.date) }
                     }
                     .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))

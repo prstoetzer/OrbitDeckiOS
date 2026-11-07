@@ -101,6 +101,7 @@ private struct FavoritePassTimelineCard: View {
                     minElevation: store.preferences.minElevation,
                     eclipseShading: eclipseShading,
                     highlighted: store.selectedSatellite?.id,
+                    palette: store.satellitePalette,
                     onSelect: { store.select($0) }
                 )
                 .overlay {
@@ -151,7 +152,7 @@ private struct FavoritePassTimelineCard: View {
 
     @MainActor
     private func load(around now: Date) async {
-        let sats = favorites.enumerated().map { (record: $0.element, colorIndex: $0.offset) }
+        let sats = favorites
         guard !sats.isEmpty else { passes = []; return }
         let observer = store.preferences.observer
         // Cover from the look-back edge to the end of the span one slot from now.
