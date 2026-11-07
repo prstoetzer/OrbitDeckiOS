@@ -15,6 +15,7 @@ import CoreImage.CIFilterBuiltins
 struct HomeSSTVCard: View {
     @EnvironmentObject private var audio: AudioHub
     @EnvironmentObject private var decoder: SSTVDecoder
+    @EnvironmentObject private var store: OrbitStore
     @AppStorage(FeatureVisibility.sstvKey) private var visibility = FeatureVisibility.auto
     @State private var showSetup = false
     let satellite: SatelliteRecord
@@ -30,12 +31,20 @@ struct HomeSSTVCard: View {
                     Text(decoder.errorText).font(.caption).foregroundStyle(ODTheme.warning)
                 }
                 HStack(spacing: 10) {
-                    Circle().fill(decoder.isListening ? ODTheme.good : ODTheme.muted).frame(width: 10, height: 10)
-                    Text(decoder.isListening ? (decoder.modeName.isEmpty ? "Listening…" : decoder.modeName) : decoder.status)
-                        .font(.subheadline.weight(.semibold))
+                    Circle().fill(decoder.isListening ? ODTheme.good : (decoder.isArmed ? ODTheme.warning : ODTheme.muted))
+                        .frame(width: 10, height: 10)
+                    Text(headline).font(.subheadline.weight(.semibold))
                     Spacer()
                     Button(decoder.isListening ? "Stop" : "Decode") { toggle() }
                         .buttonStyle(.bordered)
+                }
+                if decoder.isArmed {
+                    Label("Armed — starts when \(decoder.autoSatelliteName) rises above \(Int(decoder.autoMinElevation))°, stops after it sets.",
+                          systemImage: "timer")
+                        .font(.caption2).foregroundStyle(ODTheme.warning)
+                } else if decoder.isListening, decoder.autoStarted {
+                    Label("Auto-started — stops after \(decoder.autoSatelliteName) sets.", systemImage: "timer")
+                        .font(.caption2).foregroundStyle(ODTheme.muted)
                 }
                 SatelliteStatusLine(satellite: satellite)
                 DopplerFrequencyLine(satellite: satellite)
@@ -52,6 +61,24 @@ struct HomeSSTVCard: View {
                     ForEach(SSTVModes.all) { m in Text(m.name).tag(m.name) }
                 }
                 .disabled(decoder.isListening)
+                if decoder.manualMode == nil, !expectedModes.isEmpty {
+                    Text("Expected for \(satellite.name): \(expectedModes.map(\.name).joined(separator: ", ")) — used if the VIS header is damaged or the picture was joined mid-transmission.")
+                        .font(.caption2).foregroundStyle(ODTheme.muted)
+                }
+
+                Toggle(isOn: $decoder.autoArm) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Auto start/stop by elevation").font(.subheadline)
+                        Text("Starts decoding when \(satellite.name) rises above the elevation below and stops after it sets. Keep OrbitDeck open while armed — iOS may suspend it in the background before audio starts.")
+                            .font(.caption2).foregroundStyle(ODTheme.muted)
+                    }
+                }
+                .toggleStyle(.switch)
+                if decoder.autoArm {
+                    Stepper(value: $decoder.autoMinElevation, in: 0...60, step: 5) {
+                        Text("Start above \(Int(decoder.autoMinElevation))°").font(.subheadline)
+                    }
+                }
 
                 // Level meter + calibration tucked into a disclosure so the card stays
                 // uncluttered (mirrors the FT4 card).
@@ -67,11 +94,27 @@ struct HomeSSTVCard: View {
                     .padding(.top, 4)
                 }
                 .font(.subheadline).tint(ODTheme.accent)
+                .onAppear { configureAuto() }
+                .onChange(of: satellite.id) { configureAuto() }
 
                 Text("Decodes SSTV live from your USB (or network) audio interface — the image builds as it receives. Saved images appear on the SSTV Images screen. Keeps decoding with the screen locked or the app backgrounded during a pass.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
+    }
+
+    private var expectedModes: [SSTVMode] { SSTVModes.expected(norad: satellite.id, name: satellite.name) }
+
+    private var headline: String {
+        if decoder.isListening { return decoder.modeName.isEmpty ? "Listening…" : decoder.modeName }
+        return decoder.isArmed ? "Armed" : decoder.status
+    }
+
+    /// Point the elevation trigger at this card's satellite and audio route.
+    private func configureAuto() {
+        let hub = audio
+        let allowMic = visibility == .always
+        decoder.configureAuto(satellite: satellite, store: store) { hub.makeSource(allowMicFallback: allowMic) }
     }
 
     /// Slant + tuning calibration sliders (like MMSSTV / Robot36). Adjustments
@@ -82,6 +125,14 @@ struct HomeSSTVCard: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Auto-tune (Doppler)").font(.caption2)
                     Text("Tracks the sync pulse to follow satellite Doppler; Tuning below is an added trim.")
+                        .font(.caption2).foregroundStyle(ODTheme.muted)
+                }
+            }
+            .toggleStyle(.switch)
+            Toggle(isOn: $decoder.chromaSmoothing) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Chroma smoothing").font(.caption2)
+                    Text("Lightly smooths color in Robot and PD pictures to reduce color speckle from a noisy downlink.")
                         .font(.caption2).foregroundStyle(ODTheme.muted)
                 }
             }
@@ -130,7 +181,7 @@ struct HomeSSTVCard: View {
         if decoder.isListening {
             decoder.stop()
         } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
-            decoder.start(source: source, satellite: satellite.name)
+            decoder.start(source: source, satellite: satellite.name, noradID: satellite.id)
         } else {
             decoder.errorText = "No audio interface available."
         }
@@ -473,6 +524,7 @@ struct SSTVReDecodeView: View {
         working = true; failed = false
         let slant = slantPct / 100.0, tuning = tuningHz, auto = autoTune
         let startSec = entry.audioStartSec ?? 0
+        let sat = entry.sat
         Task.detached {
             let result: (image: UIImage, mode: String)? = {
                 guard let file = try? AVAudioFile(forReading: url) else { return nil }
@@ -487,7 +539,7 @@ struct SSTVReDecodeView: View {
                 var samples = [Float](repeating: 0, count: count - skip)
                 let p = ch[0]; for i in skip..<count { samples[i - skip] = p[i] }
                 return SSTVDecoder().decodeOffline(frames: samples, rate: fmt.sampleRate, forced: nil,
-                                                   slant: slant, autoTune: auto, tuning: tuning)
+                                                   slant: slant, autoTune: auto, tuning: tuning, satellite: sat)
             }()
             await MainActor.run {
                 working = false
