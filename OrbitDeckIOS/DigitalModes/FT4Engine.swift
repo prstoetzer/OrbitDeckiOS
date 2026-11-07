@@ -28,6 +28,11 @@ private let kFT4SlotSeconds = 7.5
 /// courtesy while still covering typical BLE CAT latency.
 private let kFT4PreArmLead = 0.5
 
+/// How far into a slot a TX request for that slot's parity still starts transmitting in
+/// the same slot (late start), rather than waiting for the next matching slot. The
+/// elapsed part of the burst is skipped so the remaining symbols stay on the slot clock.
+private let kFT4LateStartWindow = 2.0
+
 enum FT4MsgKind: Sendable { case received, sent }
 
 struct FT4DecodedMessage: Identifiable, Sendable {
@@ -61,10 +66,26 @@ final class FT4Engine: ObservableObject {
         didSet { source?.outputGain = outputGain; AudioGainStore.save("orbitdeck.ft4.outputGain", outputGain) }
     }
 
-    // Operator-set TX state.
-    @Published var txEnabled = false
-    @Published var txOnEvenSlots = true
-    @Published var txMessage = ""
+    // Operator-set TX state. Any change re-checks for a late start in the current slot
+    // (see `requestLateStart`) or swaps the message of a burst that just began.
+    @Published var txEnabled = false { didSet { if txEnabled != oldValue { requestLateStart() } } }
+    @Published var txOnEvenSlots = true { didSet { if txOnEvenSlots != oldValue { requestLateStart() } } }
+    @Published var txMessage = "" { didSet { if txMessage != oldValue { requestLateStart() } } }
+
+    /// Wait-and-pounce: callsigns and/or grids (space- or comma-separated). When a CQ from
+    /// a target call (or from a station in a target grid), or a message to me from a
+    /// target call, is decoded while idle, the engine works it automatically. Persisted.
+    @Published var pounceTargets = UserDefaults.standard.string(forKey: FT4Settings.pounceTargetsKey) ?? "" {
+        didSet { UserDefaults.standard.set(pounceTargets, forKey: FT4Settings.pounceTargetsKey) }
+    }
+    @Published var pounceEnabled = UserDefaults.standard.bool(forKey: FT4Settings.pounceEnabledKey) {
+        didSet { UserDefaults.standard.set(pounceEnabled, forKey: FT4Settings.pounceEnabledKey) }
+    }
+    /// Callsigns never auto-answered while calling CQ (a manual tap still works them).
+    /// Persisted.
+    @Published var cqBlockList: [String] = UserDefaults.standard.stringArray(forKey: FT4Settings.cqBlockListKey) ?? [] {
+        didSet { UserDefaults.standard.set(cqBlockList, forKey: FT4Settings.cqBlockListKey) }
+    }
     @Published var txAudioFreq = 1500.0
     /// Pre-compensate the transmitted audio for the uplink Doppler drift across the burst
     /// so the emitted RF stays steady in the transponder passband (others decode you at a
@@ -153,6 +174,12 @@ final class FT4Engine: ObservableObject {
     private var pttArmed = false            // PTT pre-keyed for the upcoming TX slot
     private var armedSlotIndex = -1         // starting-slot index we've armed for
     private var dialSteppedForSlot = -1     // guard against double-stepping the dial
+    private var dialStepTask: Task<Void, Never>?   // the boundary's in-flight dial step
+
+    // Late start / in-burst message switch (see `requestLateStart`).
+    private var lateStartPending = false    // a re-check is already queued
+    private var txSlotIndex = -1            // slot the current burst belongs to
+    private var txOnAirMessage = ""         // message the current burst is sending
 
     // RX buffer for the current slot (filled on the audio thread).
     private nonisolated(unsafe) var rxBuffer: [Float] = []
@@ -193,11 +220,15 @@ final class FT4Engine: ObservableObject {
         dopplerProviderShared = dopplerProvider
         lock.lock(); rxBuffer.removeAll(keepingCapacity: true); lock.unlock()
         myCallSeq = myCall.uppercased()
-        myGridSeq = String(myGrid.prefix(4)).uppercased()
+        // Only a valid locator goes on the air; anything else counts as missing.
+        let grid4 = String(myGrid.prefix(4)).uppercased()
+        myGridSeq = FT4Engine.isGrid(grid4) ? grid4 : ""
         endSequence()
-        if txMessage.isEmpty, !myCall.isEmpty {
-            txMessage = myGrid.isEmpty ? "CQ \(myCall)" : "CQ \(myCall) \(String(myGrid.prefix(4)))"
+        if txMessage.isEmpty, !myCallSeq.isEmpty {
+            txMessage = myGridSeq.isEmpty ? "CQ \(myCallSeq)" : "CQ \(myCallSeq) \(myGridSeq)"
         }
+        // Hashed-callsign memory: our own call plus recent log calls resolve `<...>`.
+        FT4CallsignHashes.shared.preload(myCall: myCallSeq, logCalls: (qso?.qsos ?? []).prefix(200).map(\.call))
         pttOverCAT = rig?.pttSupported ?? false
         source.inputGain = inputGain
         source.outputGain = outputGain
@@ -254,6 +285,7 @@ final class FT4Engine: ObservableObject {
         }
         if isTransmitting || pttArmed { Task { await rig?.setPTT(false) } }
         pttArmed = false; armedSlotIndex = -1; dialSteppedForSlot = -1
+        dialStepTask = nil; txSlotIndex = -1; txOnAirMessage = ""
         isTransmitting = false
         isRunning = false
         AudioActivity.end()
@@ -455,7 +487,10 @@ final class FT4Engine: ObservableObject {
             // already stepped for this slot (a TX slot arms in the previous slot's tail).
             if let rig = self.rig, rig.holdDoppler, self.dialSteppedForSlot != startingSlot {
                 self.dialSteppedForSlot = startingSlot
-                await rig.stepDopplerNow()
+                // Kept as a task so a late start in this slot can wait for it to land.
+                let step = Task { @MainActor in await rig.stepDopplerNow() }
+                self.dialStepTask = step
+                await step.value
             }
 
             for f in found {
@@ -498,7 +533,9 @@ final class FT4Engine: ObservableObject {
                 }
             }
 
-            // Auto-sequencer updates txMessage/txEnabled before the TX decision.
+            // Pounce (if armed and idle) engages a target first; then the auto-sequencer
+            // updates txMessage/txEnabled before the TX decision.
+            self.pounceIfMatched(found, endedSlot: endedSlotIndex)
             if self.autoSequence { self.advance(found, endedSlot: endedSlotIndex) }
 
             let armed = self.pttArmed
@@ -506,7 +543,7 @@ final class FT4Engine: ObservableObject {
             let wantTx = self.txEnabled && !self.txMessage.isEmpty
                 && ((startingSlot % 2 == 0) == self.txOnEvenSlots)
             if wantTx {
-                self.beginTransmit(pttAlreadyKeyed: armed)
+                self.beginTransmit(slot: startingSlot, pttAlreadyKeyed: armed)
             } else if armed {
                 // Pre-armed PTT but this slot won't transmit after all — release it.
                 await self.rig?.setPTT(false)
@@ -516,22 +553,83 @@ final class FT4Engine: ObservableObject {
 
     // MARK: Auto-sequencer
 
-    /// Message field parse: `CQ`, or `<to> <de> <extra>`.
-    struct FT4Fields { let isCQ: Bool; let to: String; let de: String; let extra: String }
+    /// Message field parse. `isCQ` messages carry the caller in `de` (and an optional CQ
+    /// modifier such as DX / POTA / TEST / a 3-digit frequency). Directed messages are
+    /// `<to> <de> [extra]`; a bare `<call> <grid>` (a station announcing itself without CQ)
+    /// has an empty `to`. Resolved hashed calls (`<PJ4/K1ABC>`) are unbracketed; an
+    /// unresolved hash stays `<...>`. `extra` is a grid, report, RR73/RRR/73, or "".
+    struct FT4Fields {
+        let isCQ: Bool; let to: String; let de: String; let extra: String
+        var cqModifier = ""
+        /// A general call (CQ, or `<call> <grid>` with no addressee) — what pounce answers.
+        var isGeneralCall: Bool { isCQ || (to.isEmpty && !de.isEmpty) }
+    }
 
     nonisolated static func parse(_ text: String) -> FT4Fields? {
-        let t = text.split(separator: " ").map { $0.uppercased() }
+        let t = text.split(whereSeparator: { $0 == " " }).map { normalizeCallToken($0.uppercased()) }
         guard !t.isEmpty else { return nil }
         if t[0] == "CQ" {
-            // CQ [DX|region] <call> [grid]
+            // CQ [modifier] <call> [grid]. A modifier is a letters-only word (DX, POTA,
+            // TEST, NA, EU…) or a 1–3 digit number (CQ 123). Neither can be a callsign —
+            // every callsign carries a digit and a letter — so a real call never gets
+            // mistaken for one.
             var i = 1
-            if t.count > 2, t[1] == "DX" || (t[1].count <= 3 && !t[1].contains(where: { $0.isNumber })) { i = 2 }
-            let call = t.count > i ? t[i] : ""
-            let grid = t.count > i + 1 ? t[i + 1] : ""
-            return FT4Fields(isCQ: true, to: "", de: call, extra: grid)
+            var modifier = ""
+            if t.count > 1, isCQModifier(t[1]) { modifier = t[1]; i = 2 }
+            let call = t.count > i && isCallToken(t[i]) ? t[i] : ""
+            let rest = Array(t.dropFirst(i + 1))
+            return FT4Fields(isCQ: true, to: "", de: call, extra: extraField(rest), cqModifier: modifier)
         }
-        return FT4Fields(isCQ: false, to: t[0], de: t.count > 1 ? t[1] : "", extra: t.count > 2 ? t[2] : "")
+        if t[0] == "DE", t.count > 1, isCallToken(t[1]) {
+            // DE <call> [grid] — a self-announcement.
+            return FT4Fields(isCQ: false, to: "", de: t[1], extra: extraField(Array(t.dropFirst(2))))
+        }
+        guard isCallToken(t[0]) else { return nil }                  // free text / telemetry
+        if t.count == 1 { return FT4Fields(isCQ: false, to: t[0], de: "", extra: "") }
+        if isCallToken(t[1]) {
+            return FT4Fields(isCQ: false, to: t[0], de: t[1], extra: extraField(Array(t.dropFirst(2))))
+        }
+        // `<call> <grid>`: the call is the SENDER (no addressee). Anything else after a
+        // lone call (a report or RR73 with no sender) is addressed to that call.
+        if isGrid(t[1]) { return FT4Fields(isCQ: false, to: "", de: t[0], extra: t[1]) }
+        return FT4Fields(isCQ: false, to: t[0], de: "", extra: extraField(Array(t.dropFirst(1))))
     }
+
+    /// The meaningful trailing field: a grid, report, or sign-off token. A roger-grid
+    /// (`R FN42`, EU VHF style) yields the grid.
+    private nonisolated static func extraField(_ rest: [String]) -> String {
+        guard let first = rest.first else { return "" }
+        if first == "R", rest.count > 1, isGrid(rest[1]) { return rest[1] }
+        return first
+    }
+
+    /// Strip the brackets ft8_lib puts around a call resolved from its hash (`<K1ABC>` →
+    /// `K1ABC`); an unresolved `<...>` is kept as is.
+    nonisolated static func normalizeCallToken(_ s: String) -> String {
+        guard s.count > 2, s.hasPrefix("<"), s.hasSuffix(">"), s != "<...>" else { return s }
+        return String(s.dropFirst().dropLast())
+    }
+
+    /// A CQ modifier: letters only (DX, POTA, TEST, NA, EU…) or a 1–3 digit number.
+    nonisolated static func isCQModifier(_ s: String) -> Bool {
+        guard !s.isEmpty, s != "<...>" else { return false }
+        if s.allSatisfy({ $0.isASCII && $0.isLetter }) { return true }
+        return s.count <= 3 && s.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
+    /// Callsign-shaped token: a standard or compound call (`K1ABC`, `K1ABC/P`, `SM/R1CR`,
+    /// `PJ4/K1ABC`) or an unresolved hash `<...>`. Needs at least one letter and one digit,
+    /// only A–Z / 0–9 / `/`, and is never a grid, report, or sign-off token.
+    nonisolated static func isCallToken(_ s: String) -> Bool {
+        if s == "<...>" { return true }
+        guard (3...11).contains(s.count), !s.hasPrefix("/"), !s.hasSuffix("/"), !s.contains("//") else { return false }
+        guard s.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "/") }) else { return false }
+        guard s.contains(where: { $0.isLetter }), s.contains(where: { $0.isNumber }) else { return false }
+        return !isGrid(s) && !isReportToken(s) && !isSignoffToken(s)
+    }
+
+    /// RR73 / RRR / 73.
+    nonisolated static func isSignoffToken(_ s: String) -> Bool { s == "RR73" || s == "RRR" || s == "73" }
 
     /// Begin calling CQ (auto-seq will engage the first station that answers).
     func callCQ() {
@@ -539,22 +637,118 @@ final class FT4Engine: ObservableObject {
         workedCall = ""; workedGrid = ""; reportIn = nil; logged = false
         txMessage = myGridSeq.isEmpty ? "CQ \(myCallSeq)" : "CQ \(myCallSeq) \(myGridSeq)"
         autoSequence = true; txEnabled = true
-        seqStatus = "Calling CQ"
+        // Never send a grid-less CQ silently: the Next-TX panel says so (and the card
+        // shows a persistent missing-grid warning).
+        seqStatus = myGridSeq.isEmpty ? "Calling CQ without a grid" : "Calling CQ"
     }
+
+    /// Whether the session's locator is missing (CQ/replies go out without a grid).
+    var gridMissing: Bool { myGridSeq.isEmpty }
 
     /// Start working a decoded station (tap any decode). Answers a CQ, or calls a
     /// station heard in a directed message; the auto-sequencer takes it from there.
     func work(_ d: FT4DecodedMessage) {
         guard let f = FT4Engine.parse(d.text), !myCallSeq.isEmpty else { return }
-        let their = f.isCQ ? f.de : (f.de.isEmpty ? f.to : f.de)
-        guard !their.isEmpty else { return }
+        // The other station: the caller of a CQ / `<call> <grid>`; in a directed message
+        // the sender — unless that's us (our own echo), then the addressee.
+        let their: String
+        if f.isGeneralCall { their = f.de }
+        else if !f.de.isEmpty && f.de != myCallSeq { their = f.de }
+        else { their = f.to }
+        // Can't call ourselves, or a hashed call we never resolved.
+        guard !their.isEmpty, their != myCallSeq, their != "<...>" else { return }
         workedCall = their; workedGrid = FT4Engine.isGrid(f.extra) ? f.extra : ""; reportIn = nil; logged = false
+        stopAfterThisTx = false
         reportOut = d.snr        // our report to them = their decoded SNR
         let mine = myGridSeq.isEmpty ? FT4Engine.reportString(reportOut) : myGridSeq
         txMessage = "\(their) \(myCallSeq) \(mine)"
-        autoSequence = true; txEnabled = true
+        autoSequence = true
         txOnEvenSlots = (d.atSlot % 2 != 0)     // transmit opposite to their slot
+        txEnabled = true                        // last: may late-start this slot
         seqStatus = "Working \(their)"
+    }
+
+    // MARK: Wait-and-pounce + CQ block list
+
+    /// The pounce targets as normalized tokens (callsigns and/or grids).
+    var pounceTokens: [String] { FT4Engine.listTokens(pounceTargets) }
+
+    nonisolated static func listTokens(_ s: String) -> [String] {
+        s.uppercased().split(whereSeparator: { $0 == " " || $0 == "," || $0 == ";" || $0 == "\n" })
+            .map(String.init).filter { !$0.isEmpty }
+    }
+
+    /// Whether `call` matches a target callsign, ignoring a compound prefix/suffix
+    /// (target `K1ABC` matches `K1ABC/P` and `PJ4/K1ABC`).
+    nonisolated static func callMatches(_ call: String, _ target: String) -> Bool {
+        let c = call.uppercased(), t = target.uppercased()
+        guard !c.isEmpty, !t.isEmpty, c != "<...>" else { return false }
+        return c == t || c.split(separator: "/").contains { String($0) == t }
+    }
+
+    /// Does this decode match a pounce target? A CQ (or `<call> <grid>`) from a target
+    /// call or from a station in a target grid, or any message to me from a target call.
+    nonisolated static func pounceMatches(_ f: FT4Fields, targets: [String], myCall: String) -> Bool {
+        for target in targets {
+            if isGrid(target) {
+                guard f.isGeneralCall, isGrid(f.extra) else { continue }
+                let g = f.extra.uppercased()
+                if g.hasPrefix(target) || target.hasPrefix(g) { return true }
+            } else if callMatches(f.de, target) {
+                if f.isGeneralCall || (!myCall.isEmpty && f.to == myCall) { return true }
+            }
+        }
+        return false
+    }
+
+    /// Pounce: while idle (not mid-QSO), automatically work the first decode this slot
+    /// that matches a target. Fires once, then turns itself off so a completed QSO isn't
+    /// repeated on the station's next CQ.
+    private func pounceIfMatched(_ found: [(text: String, snr: Int, freq: Double)], endedSlot: Int) {
+        guard pounceEnabled, workedCall.isEmpty, !myCallSeq.isEmpty else { return }
+        let targets = pounceTokens
+        guard !targets.isEmpty else { return }
+        for d in found {
+            guard let f = FT4Engine.parse(d.text), f.de != myCallSeq,
+                  FT4Engine.pounceMatches(f, targets: targets, myCall: myCallSeq) else { continue }
+            let msg = FT4DecodedMessage(text: d.text, snr: d.snr, freqHz: d.freq, atSlot: endedSlot)
+            work(msg)
+            guard !workedCall.isEmpty else { continue }
+            pounceEnabled = false
+            seqStatus = "Pounced on \(workedCall)"
+            ODLog.shared.log("FT4 pounce: \(d.text)", category: "ft4")
+            return
+        }
+    }
+
+    /// Whether a call is on the CQ block list (never auto-answered while calling CQ).
+    func isBlocked(_ call: String) -> Bool {
+        cqBlockList.contains { FT4Engine.callMatches(call, $0) }
+    }
+
+    func block(_ call: String) {
+        let c = FT4Engine.normalizeCallToken(call.uppercased())
+        guard FT4Engine.isCallToken(c), c != "<...>", !cqBlockList.contains(c) else { return }
+        cqBlockList.append(c)
+    }
+
+    /// Remove every block-list entry that covers `call` (exact, or its base call).
+    func unblock(_ call: String) { cqBlockList.removeAll { FT4Engine.callMatches(call, $0) || $0 == call.uppercased() } }
+
+    /// Set a single pounce target from a decode (context menu) and arm pounce.
+    func pounce(on d: FT4DecodedMessage) {
+        guard let f = FT4Engine.parse(d.text) else { return }
+        let call = (!f.de.isEmpty && f.de != myCallSeq) ? f.de : f.to
+        guard FT4Engine.isCallToken(call), call != "<...>", call != myCallSeq else { return }
+        pounceTargets = call
+        pounceEnabled = true
+    }
+
+    /// The other station in a decode (for the context-menu labels), or nil.
+    func otherStation(_ d: FT4DecodedMessage) -> String? {
+        guard let f = FT4Engine.parse(d.text) else { return nil }
+        let call = (!f.de.isEmpty && f.de != myCallSeq) ? f.de : f.to
+        return (FT4Engine.isCallToken(call) && call != "<...>" && call != myCallSeq) ? call : nil
     }
 
     /// Whether a decode is addressed to us (for highlighting).
@@ -591,8 +785,14 @@ final class FT4Engine: ObservableObject {
     private func advance(_ found: [(text: String, snr: Int, freq: Double)], endedSlot: Int) {
         guard !myCallSeq.isEmpty else { return }
         for d in found {
-            guard let f = FT4Engine.parse(d.text), !f.isCQ, f.to == myCallSeq else { continue }
-            if workedCall.isEmpty { workedCall = f.de; txOnEvenSlots = (endedSlot % 2 != 0); reportOut = d.snr }
+            guard let f = FT4Engine.parse(d.text), !f.isCQ, f.to == myCallSeq,
+                  !f.de.isEmpty, f.de != "<...>" else { continue }
+            if workedCall.isEmpty {
+                // Calling CQ: engage the first answering station — unless it's on the
+                // block list (a manual tap on its decode still works it).
+                if isBlocked(f.de) { continue }
+                workedCall = f.de; txOnEvenSlots = (endedSlot % 2 != 0); reportOut = d.snr
+            }
             guard f.de == workedCall else { continue }
             let extra = f.extra
 
@@ -650,26 +850,105 @@ final class FT4Engine: ObservableObject {
         seqStatus = last.isEmpty ? "" : "Logged \(last) ✓"
     }
 
-    static func reportString(_ r: Int) -> String { String(format: "%+03d", r) }
-    static func parseReport(_ s: String) -> Int? { Int(s.hasPrefix("R") ? String(s.dropFirst()) : s) }
-    static func isReportToken(_ s: String) -> Bool {
+    nonisolated static func reportString(_ r: Int) -> String { String(format: "%+03d", r) }
+    nonisolated static func parseReport(_ s: String) -> Int? { Int(s.hasPrefix("R") ? String(s.dropFirst()) : s) }
+    /// A signal report: `-10`, `+05`, or a roger report `R-10` / `R+05`.
+    nonisolated static func isReportToken(_ s: String) -> Bool {
         var t = s; if t.hasPrefix("R") { t.removeFirst() }
-        guard t.hasPrefix("+") || t.hasPrefix("-") else { return false }
-        return Int(t) != nil
+        guard t.count >= 2, t.hasPrefix("+") || t.hasPrefix("-") else { return false }
+        return t.dropFirst().allSatisfy { $0.isASCII && $0.isNumber }
     }
-    static func isGrid(_ s: String) -> Bool {
-        s.count == 4 && s.prefix(2).allSatisfy { $0.isLetter } && s.suffix(2).allSatisfy { $0.isNumber }
+    /// A 4- or 6-character Maidenhead locator (`FN42`, `FN42ab`). `RR73` matches the
+    /// pattern but is the sign-off token in FT4/FT8, so it's never a grid.
+    nonisolated static func isGrid(_ s: String) -> Bool {
+        let c = Array(s.uppercased())
+        guard c.count == 4 || c.count == 6, s.uppercased() != "RR73" else { return false }
+        func inRange(_ ch: Character, _ lo: Character, _ hi: Character) -> Bool { ch >= lo && ch <= hi }
+        guard inRange(c[0], "A", "R"), inRange(c[1], "A", "R"),
+              inRange(c[2], "0", "9"), inRange(c[3], "0", "9") else { return false }
+        return c.count == 4 || (inRange(c[4], "A", "X") && inRange(c[5], "A", "X"))
     }
 
     // MARK: Transmit
 
-    private func beginTransmit(pttAlreadyKeyed: Bool = false) {
-        guard let source, !isTransmitting else { return }
+    /// Late start: TX requested (tap a decode, Call CQ, Enable TX, or an edited message) for
+    /// the CURRENT slot's parity within the first `kFT4LateStartWindow` s of the slot goes
+    /// out now instead of waiting a full slot pair. If a burst for this slot is already on
+    /// the air and the message changed inside the window, the burst switches to the new
+    /// message. Coalesced: the re-check runs once after the current main-actor turn, so
+    /// several property changes (as `work()` makes) trigger one decision.
+    private func requestLateStart() {
+        guard isRunning, !lateStartPending else { return }
+        lateStartPending = true
+        Task { @MainActor in
+            self.lateStartPending = false
+            await self.lateStartIfWanted()
+        }
+    }
+
+    /// The current slot index and seconds into it, if it's our TX parity and still inside
+    /// the late-start window.
+    private func lateStartSlot() -> Int? {
+        let now = Date().timeIntervalSince1970
+        let slot = Int((now / kFT4SlotSeconds).rounded(.down))
+        let into = now - Double(slot) * kFT4SlotSeconds
+        guard into <= kFT4LateStartWindow, (slot % 2 == 0) == txOnEvenSlots else { return nil }
+        return slot
+    }
+
+    private func lateStartIfWanted() async {
+        guard isRunning, txEnabled, !txMessage.isEmpty, let slot = lateStartSlot() else { return }
+        if isTransmitting {
+            if txSlotIndex == slot, txMessage != txOnAirMessage { switchTransmitMessage(slot: slot) }
+            return
+        }
+        // Usual ordering: let any pre-arm / boundary dial step land, step the dial for this
+        // slot if nothing has yet, THEN key PTT and play — never retune on the air.
+        await preArmTask?.value
+        await dialStepTask?.value
+        func stillWanted() -> Bool {
+            isRunning && !isTransmitting && txEnabled && !txMessage.isEmpty && lateStartSlot() == slot
+        }
+        guard stillWanted() else { return }
+        if let rig, rig.holdDoppler, dialSteppedForSlot != slot {
+            dialSteppedForSlot = slot
+            let step = Task { @MainActor in await rig.stepDopplerNow() }
+            dialStepTask = step
+            await step.value
+            guard stillWanted() else { return }
+        }
+        // A pre-arm for this slot (TX was already due) has PTT up — hand it over.
+        let armed = pttArmed && armedSlotIndex == slot
+        if armed { pttArmed = false }
+        ODLog.shared.log("FT4 late start in slot \(slot)", category: "ft4")
+        beginTransmit(slot: slot, pttAlreadyKeyed: armed, lateStart: true)
+    }
+
+    /// Swap the on-air burst to the current `txMessage`, keeping the play position: both
+    /// waveforms are laid on the same slot timeline, so the remaining symbols stay aligned.
+    private func switchTransmitMessage(slot: Int) {
+        guard let source else { return }
         guard let tones = FT4Engine.encodeTones(txMessage) else { errorText = "Could not encode \"\(txMessage)\"."; return }
-        // The slot we're transmitting on (its UTC start anchors both the Doppler slope and
-        // the dT diagnostic below).
-        let txSlot = Int((Date().timeIntervalSince1970 / kFT4SlotSeconds).rounded())
-        let slotStart = Date(timeIntervalSince1970: Double(txSlot) * kFT4SlotSeconds)
+        let tx = makeTXWaveform(tones: tones, slot: slot, rate: source.sampleRate)
+        let swapped = txLock.withLock { () -> Bool in
+            guard !txDone, tx.count == txBuffer.count else { return false }
+            txBuffer = tx
+            return true
+        }
+        guard swapped else { return }
+        txOnAirMessage = txMessage
+        status = "Transmitting: \(txMessage)"
+        if let i = decodes.lastIndex(where: { $0.kind == .sent && $0.atSlot == slot }) {
+            decodes[i] = FT4DecodedMessage(text: txMessage, snr: 0, freqHz: txAudioFreq, atSlot: slot, kind: .sent)
+        }
+        qso?.addFT4Traffic([FT4TrafficEntry(date: Date(timeIntervalSince1970: Double(slot) * kFT4SlotSeconds),
+                                            sat: satName, text: txMessage, snr: 0, freqHz: Int(txAudioFreq), sent: true)])
+        ODLog.shared.log("FT4 TX switched mid-window → \"\(txMessage)\"", category: "ft4")
+    }
+
+    /// Synthesize the burst for `slot`, with the uplink-Doppler pre-compensation.
+    private func makeTXWaveform(tones: [UInt8], slot: Int, rate: Double) -> [Float] {
+        let slotStart = Date(timeIntervalSince1970: Double(slot) * kFT4SlotSeconds)
         // Uplink-Doppler pre-compensation: `holdDoppler` freezes the CAT dial for the whole
         // slot, so we cancel the within-burst uplink drift in the audio domain — a smooth
         // chirp that keeps the emitted RF fixed in the transponder passband. Sample the
@@ -689,9 +968,21 @@ final class FT4Engine: ObservableObject {
                 offset = { elapsed in sign * slope * elapsed }  // cancel the drift
             }
         }
-        let tx = FT4Engine.synthesize(tones: tones, rate: source.sampleRate, f0: txAudioFreq, offsetHz: offset)
+        return FT4Engine.synthesize(tones: tones, rate: rate, f0: txAudioFreq, offsetHz: offset)
+    }
+
+    /// Start the burst for `slot`. `lateStart` plays from the slot clock's current offset
+    /// (the elapsed part of the waveform is skipped) so the symbols land where the other
+    /// stations' decoders expect them; otherwise the burst plays from its start.
+    private func beginTransmit(slot txSlot: Int, pttAlreadyKeyed: Bool = false, lateStart: Bool = false) {
+        guard let source, !isTransmitting else { return }
+        guard let tones = FT4Engine.encodeTones(txMessage) else { errorText = "Could not encode \"\(txMessage)\"."; return }
+        let rate = source.sampleRate
+        let tx = makeTXWaveform(tones: tones, slot: txSlot, rate: rate)
         txLock.lock(); txBuffer = tx; txIndex = 0; txDone = false; txPeak = 0; txLock.unlock()
         isTransmitting = true
+        txSlotIndex = txSlot
+        txOnAirMessage = txMessage
         status = "Transmitting: \(txMessage)"
         // Log our own transmission so it shows in the activity panel even when the
         // full-duplex receiver doesn't decode it back.
@@ -711,15 +1002,30 @@ final class FT4Engine: ObservableObject {
         }
         // Transmission is a fixed length; end it on a timer so PTT always unkeys and
         // the UI clears even if the audio output node never pulls the buffer dry.
-        let txDuration = Double(tx.count) / source.sampleRate + 0.4
         Task {
             // PTT is already up when the slot was pre-armed; otherwise key it now.
             if !pttAlreadyKeyed { await rig?.setPTT(true) }
             // Diagnostic: how late the burst starts relative to the slot boundary. WSJT-X
             // stations see this as the decode's dT; aim for well under a few hundred ms.
             let dT = Date().timeIntervalSince1970 - Double(txSlot) * kFT4SlotSeconds
+            // Late start: skip the part of the burst whose time has already passed (sampled
+            // AFTER the PTT round-trip, right before playback), with a short fade-in at the
+            // cut so it doesn't click.
+            var skip = 0
+            if lateStart, dT > 0 {
+                skip = min(tx.count, Int(dT * rate))
+                self.txLock.withLock {
+                    self.txIndex = skip
+                    let ramp = min(Int(rate * 0.005), self.txBuffer.count - skip)
+                    for i in 0..<max(0, ramp) {
+                        self.txBuffer[skip + i] *= Float(0.5 - 0.5 * cos(Double.pi * Double(i) / Double(ramp)))
+                    }
+                }
+            }
+            let txDuration = Double(tx.count - skip) / rate + 0.4
             ODLog.shared.log(String(format: "FT4 TX dT=%+.2fs%@ · \"%@\"", dT,
-                                    pttAlreadyKeyed ? " (pre-armed)" : "", txMessage), category: "ft4")
+                                    pttAlreadyKeyed ? " (pre-armed)" : (lateStart ? " (late start, aligned)" : ""),
+                                    txMessage), category: "ft4")
             do {
                 try source.startPlayback(pull: { [weak self] count in self?.pullTX(count) ?? [] })
             } catch { errorText = error.localizedDescription; await endTransmit(); return }
@@ -810,7 +1116,10 @@ final class FT4Engine: ObservableObject {
             // ftx_message_decode dereferences `offsets` unconditionally — passing
             // nil (as before) null-derefs and crashes on the first real decode.
             var offsets = ftx_message_offsets_t()
-            _ = ftx_message_decode(&msg, nil, &text, &offsets)
+            // The hash interface resolves `<...>` calls from FT4CallsignHashes and teaches
+            // it every call this decode carries.
+            var hashIF = FT4CallsignHashes.cInterface
+            _ = ftx_message_decode(&msg, &hashIF, &text, &offsets)
             let s = String(cString: text)
             // ftx_decode_candidate leaves status.freq at 0 — compute the audio
             // frequency from the candidate bin: Hz = (min_bin + freq_offset +
@@ -889,9 +1198,17 @@ final class FT4Engine: ObservableObject {
     nonisolated static func snr(fromScore s: Int) -> Int { max(-24, min(24, s / 7 - 12)) }
 
     /// Encode a text message to FT4 tones (0…3), or nil if it can't be packed.
+    /// Calls shown in brackets (`<PJ4/K1ABC>`, resolved from a hash) are sent as plain
+    /// calls — ft8_lib can't pack the brackets and hashes non-standard calls itself; the
+    /// hash interface records them so our own echo and the replies resolve. An unresolved
+    /// `<...>` can't be sent.
     nonisolated static func encodeTones(_ text: String) -> [UInt8]? {
+        let tokens = text.uppercased().split(separator: " ").map { normalizeCallToken(String($0)) }
+        guard !tokens.contains("<...>") else { return nil }
+        let packed = tokens.joined(separator: " ")
         var msg = ftx_message_t()
-        let rc = text.withCString { ftx_message_encode(&msg, nil, $0) }
+        var hashIF = FT4CallsignHashes.cInterface
+        let rc = packed.withCString { ftx_message_encode(&msg, &hashIF, $0) }
         guard rc == FTX_MESSAGE_RC_OK else { return nil }
         var tones = [UInt8](repeating: 0, count: Int(FT4_NN))
         withUnsafeMutablePointer(to: &msg.payload) { pl in
@@ -934,6 +1251,176 @@ final class FT4Engine: ObservableObject {
 }
 
 // ===========================================================================
+//  FT4CallsignHashes — ft8_lib callsign-hash memory
+//
+//  FT4/FT8 send non-standard and compound calls (PJ4/K1ABC, SM/R1CR) as 22/12/10-bit
+//  hashes in most messages; the receiver shows them as `<...>` unless it has seen the
+//  full call before. ft8_lib asks the host through `ftx_callsign_hash_interface_t`:
+//  `save_hash` for every call it packs or unpacks, `lookup_hash` to resolve a hash.
+//
+//  The C callbacks are plain function pointers (no captured context), so they reach a
+//  single global store guarded by a lock — decodes run on the slot queue while encodes
+//  run on the main actor. Remembered: up to 150 non-standard/compound calls (persisted
+//  between sessions), a session-only ring of recent standard calls (a type-4 message
+//  hashes the standard partner call), our own call, and up to 50 recent log calls.
+// ===========================================================================
+
+final class FT4CallsignHashes: @unchecked Sendable {
+    static let shared = FT4CallsignHashes()
+
+    static let nonStandardCap = 150
+    static let standardCap = 150
+    static let logCap = 50
+
+    private let lock = NSLock()
+    private var nonStandard: [String] = []     // persisted, newest last
+    private var standard: [String] = []        // session only, newest last
+    private var logCalls: [String] = []        // preloaded from the QSO log
+    private var myCall = ""
+    private var byHash: [UInt32: String] = [:] // n22 → call (rebuilt on change)
+
+    init(persist: Bool = true) {
+        self.persist = persist
+        if persist {
+            nonStandard = Array((UserDefaults.standard.stringArray(forKey: FT4Settings.hashedCallsKey) ?? [])
+                .compactMap(Self.clean).suffix(Self.nonStandardCap))
+        }
+        rebuild()
+    }
+    private let persist: Bool
+
+    /// The C interface handed to `ftx_message_decode` / `ftx_message_encode`. The closures
+    /// capture nothing (required for `@convention(c)`); they reach `shared`.
+    static let cInterface = ftx_callsign_hash_interface_t(
+        lookup_hash: { type, hash, out in
+            guard let out, let call = FT4CallsignHashes.shared.lookup(type: type, hash: hash) else { return false }
+            // ft8_lib's buffer is char[12]: at most 11 characters + NUL.
+            let bytes = Array(call.utf8.prefix(11))
+            for (i, b) in bytes.enumerated() { out[i] = CChar(bitPattern: b) }
+            out[bytes.count] = 0
+            return true
+        },
+        save_hash: { callsign, n22 in
+            guard let callsign else { return }
+            FT4CallsignHashes.shared.save(String(cString: callsign), n22: n22)
+        }
+    )
+
+    /// Resolve a 22/12/10-bit hash. Priority: our call, recent non-standard, recent
+    /// standard, then log calls — newest first within each, so a short-hash collision
+    /// picks the most recently heard station.
+    func lookup(type: ftx_callsign_hash_type_t, hash: UInt32) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        switch type {
+        case FTX_CALLSIGN_HASH_22_BITS:
+            return byHash[hash & 0x3F_FFFF]
+        default:
+            let shift: UInt32 = type == FTX_CALLSIGN_HASH_12_BITS ? 10 : 12
+            for call in priorityOrder() {
+                if let h = Self.hash22(call), h >> shift == hash { return call }
+            }
+            return nil
+        }
+    }
+
+    /// Record a call ft8_lib packed/unpacked (from the C callback).
+    func save(_ raw: String, n22: UInt32? = nil) {
+        guard let call = Self.clean(raw) else { return }
+        var snapshot: [String]?
+        lock.lock()
+        if Self.isStandard(call) {
+            if standard.last != call {
+                standard.removeAll { $0 == call }; standard.append(call)
+                if standard.count > Self.standardCap { standard.removeFirst(standard.count - Self.standardCap) }
+                rebuild()
+            }
+        } else if nonStandard.last != call {
+            nonStandard.removeAll { $0 == call }; nonStandard.append(call)
+            if nonStandard.count > Self.nonStandardCap { nonStandard.removeFirst(nonStandard.count - Self.nonStandardCap) }
+            rebuild()
+            snapshot = nonStandard
+        }
+        lock.unlock()
+        if persist, let snapshot { UserDefaults.standard.set(snapshot, forKey: FT4Settings.hashedCallsKey) }
+    }
+
+    /// Our own call (so a station replying with `<OURCALL>` resolves) and the most recent
+    /// distinct log calls (newest first in `logCalls`).
+    func preload(myCall: String, logCalls calls: [String]) {
+        var seen = Set<String>(), picked: [String] = []
+        for c in calls {
+            guard let call = Self.clean(c), !seen.contains(call) else { continue }
+            seen.insert(call); picked.append(call)
+            if picked.count == Self.logCap { break }
+        }
+        lock.lock()
+        self.myCall = Self.clean(myCall) ?? ""
+        logCalls = picked.reversed()            // newest last, like the other lists
+        rebuild()
+        lock.unlock()
+    }
+
+    /// Every remembered call, highest priority first. Caller holds the lock.
+    private func priorityOrder() -> [String] {
+        (myCall.isEmpty ? [] : [myCall]) + nonStandard.reversed() + standard.reversed() + logCalls.reversed()
+    }
+
+    /// Caller holds the lock. Lower-priority entries are inserted first so higher ones win.
+    private func rebuild() {
+        var map: [UInt32: String] = [:]
+        for call in priorityOrder().reversed() { if let h = Self.hash22(call) { map[h] = call } }
+        byHash = map
+    }
+
+    /// Uppercased, bracket-free call in ft8_lib's hash alphabet (A–Z 0–9 /), 3–11 chars.
+    static func clean(_ raw: String) -> String? {
+        var s = raw.uppercased().trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("<") && s.hasSuffix(">") { s = String(s.dropFirst().dropLast()) }
+        guard (3...11).contains(s.count), s != "...",
+              s.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "/") }) else { return nil }
+        return s
+    }
+
+    /// A standard call (ft8_lib's basecall: 1–2 char prefix, a digit, 1–3 letter suffix;
+    /// /P and /R suffixes allowed) — everything else is "non-standard/compound".
+    static func isStandard(_ call: String) -> Bool {
+        var base = call
+        if base.hasSuffix("/P") || base.hasSuffix("/R") { base.removeLast(2) }
+        guard !base.contains("/") else { return false }
+        let c = Array(base)
+        guard (3...6).contains(c.count) else { return false }
+        // The area digit is the last digit (position 2 or 3); the 1–2 character prefix
+        // before it needs a letter, and the suffix after it is 1–3 letters.
+        guard let d = c.lastIndex(where: { $0.isNumber }), d >= 1, d <= 2 else { return false }
+        let suffix = c[(d + 1)...]
+        return (1...3).contains(suffix.count) && suffix.allSatisfy { $0.isLetter }
+            && c[..<d].contains { $0.isLetter }
+    }
+
+    /// ft8_lib's 22-bit callsign hash (message.c `save_callsign`): the call as base-38
+    /// digits over " 0-9A-Z/", right-padded with spaces to 11, times 47055833459, top 22
+    /// bits of the 64-bit product.
+    static func hash22(_ call: String) -> UInt32? {
+        var n58: UInt64 = 0
+        var count = 0
+        for ch in call.utf8.prefix(11) {
+            let j: UInt64
+            switch ch {
+            case 0x20: j = 0
+            case 0x30...0x39: j = UInt64(ch - 0x30) + 1
+            case 0x41...0x5A: j = UInt64(ch - 0x41) + 11
+            case 0x2F: j = 37
+            default: return nil
+            }
+            n58 = n58 &* 38 &+ j
+            count += 1
+        }
+        while count < 11 { n58 = n58 &* 38; count += 1 }
+        return UInt32((47_055_833_459 &* n58) >> (64 - 22)) & 0x3F_FFFF
+    }
+}
+
+// ===========================================================================
 //  PSKReporter — reception-report upload (opt-in)
 //
 //  Sends FT4 reception reports (spots) to PSKReporter over UDP using its IPFIX wire
@@ -964,6 +1451,13 @@ enum FT4Settings {
     /// Automatically refine the per-satellite transponder calibration from our own decoded
     /// FT4 signal (full duplex). Opt-in — it edits the saved calibration for the satellite.
     static let autoCalibrateKey = "orbitdeck.ft4.autoCalibrate"
+    /// Wait-and-pounce targets (free text: calls/grids) and whether pounce is armed.
+    static let pounceTargetsKey = "orbitdeck.ft4.pounceTargets"
+    static let pounceEnabledKey = "orbitdeck.ft4.pounceEnabled"
+    /// Callsigns never auto-answered while calling CQ ([String]).
+    static let cqBlockListKey = "orbitdeck.ft4.cqBlockList"
+    /// Remembered non-standard/compound callsigns for ft8_lib hash resolution ([String]).
+    static let hashedCallsKey = "orbitdeck.ft4.hashedCalls"
 }
 
 /// One reception report.

@@ -143,7 +143,7 @@ struct OrbitalAnalysisView: View {
                         TransponderPicker(transponders: satellite.transponders, selection: $selectedTransponderID)
                             .equatable()
                     }
-                    let cal = store.downlinkCalibrationHz(for: satellite.id, invert: transponder.invert)
+                    let cal = store.downlinkCalibrationHz(for: satellite.id, transponder: transponder.id, invert: transponder.invert)
                     // Calibrated dials for the tune readouts; the uncalibrated pair
                     // gives the true Doppler shift shown on the Doppler (DN/UP) rows.
                     let corrected = OrbitPredictor.dopplerFrequencies(downlinkHz: transponder.downlinkCenter, uplinkHz: transponder.uplinkCenter, rangeRateKmS: look.rangeRateKmS,

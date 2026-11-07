@@ -89,6 +89,7 @@ struct HomeFT4Card: View {
     @AppStorage(FT4Settings.dataModeKey) private var ft4DataMode = true
     @AppStorage(FT4Settings.autoCalibrateKey) private var ft4AutoCal = false
     @State private var showSetup = false
+    @State private var newBlockedCall = ""
     let satellite: SatelliteRecord
 
     private var visible: Bool {
@@ -352,7 +353,7 @@ struct HomeFT4Card: View {
             .defaultScrollAnchor(.bottom)
 
             Divider().overlay(ODTheme.muted.opacity(0.3))
-            Text("Tap a station to work it").font(.system(size: 10)).foregroundStyle(ODTheme.muted)
+            Text("Tap a station to work it · long-press to pounce or block").font(.system(size: 10)).foregroundStyle(ODTheme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10).padding(.vertical, 4)
         }
@@ -398,6 +399,19 @@ struct HomeFT4Card: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if d.kind != .sent, let call = ft4.otherStation(d) {
+                Button { ft4.work(d) } label: { Label("Work \(call)", systemImage: "arrowshape.turn.up.right") }
+                Button { ft4.pounce(on: d) } label: { Label("Pounce on this station", systemImage: "scope") }
+                if ft4.isBlocked(call) {
+                    Button { ft4.unblock(call) } label: { Label("Allow auto-reply to \(call)", systemImage: "checkmark.circle") }
+                } else {
+                    Button(role: .destructive) { ft4.block(call) } label: {
+                        Label("Block from auto-reply", systemImage: "hand.raised")
+                    }
+                }
+            }
+        }
     }
 
     /// The essentials, always visible: enable TX, auto-sequence, and the big Call CQ.
@@ -423,6 +437,34 @@ struct HomeFT4Card: View {
             } else if !ft4.seqStatus.isEmpty && !(ft4.txEnabled && !ft4.txMessage.isEmpty) {
                 // Show the sequence status here only when the Next-TX panel isn't up.
                 Text(ft4.seqStatus).font(.caption).foregroundStyle(ODTheme.accent)
+            }
+            if gridMissing {
+                Text("Your grid is missing — CQ and replies will go out without a locator. Set your station location in Settings.")
+                    .font(.caption2).foregroundStyle(ODTheme.warning)
+            }
+            pounceControls
+        }
+    }
+
+    /// The operator's locator can't go on the air (no valid 4-character grid) — either the
+    /// station location yields none, or the running session started without one.
+    private var gridMissing: Bool {
+        !FT4Engine.isGrid(String(store.operatorGrid6.prefix(4))) || (ft4.isRunning && ft4.gridMissing)
+    }
+
+    /// Wait-and-pounce: a target field (calls and/or grids) plus an arm toggle.
+    private var pounceControls: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                TextField("Pounce on (call or grid)", text: $ft4.pounceTargets)
+                    .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                    .textFieldStyle(.odField)
+                Toggle("Pounce", isOn: $ft4.pounceEnabled).fixedSize()
+                    .disabled(ft4.pounceTokens.isEmpty || qso.config.myCall.isEmpty)
+            }
+            if ft4.pounceEnabled && !ft4.pounceTokens.isEmpty {
+                Text("Waiting for \(ft4.pounceTokens.joined(separator: ", ")) — answers their CQ (or their call to you) automatically, once.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
     }
@@ -461,7 +503,41 @@ struct HomeFT4Card: View {
                 Text("No CAT PTT — use VOX or key manually when the TX indicator shows. Configure a CAT radio (CI-V / Yaesu / Kenwood / rigctld / Icom network) for automatic keying.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
+            Divider().opacity(0.4)
+            cqBlockListEditor
         }
+    }
+
+    /// Callsigns never auto-answered while calling CQ (tapping their decode still works them).
+    private var cqBlockListEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("CQ block list").font(.caption.weight(.semibold))
+            Text("Stations here are never answered automatically while you call CQ. Tapping their decode still works them.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+            HStack(spacing: 8) {
+                TextField("Add callsign", text: $newBlockedCall)
+                    .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                    .textFieldStyle(.odField)
+                    .onSubmit(addBlockedCall)
+                Button("Add", action: addBlockedCall)
+                    .font(.caption).buttonStyle(.bordered)
+                    .disabled(newBlockedCall.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            ForEach(ft4.cqBlockList, id: \.self) { call in
+                HStack {
+                    Text(call).font(.caption.monospaced())
+                    Spacer()
+                    Button { ft4.unblock(call) } label: { Image(systemName: "minus.circle.fill") }
+                        .buttonStyle(.borderless).foregroundStyle(ODTheme.warning)
+                        .accessibilityLabel("Remove \(call) from the block list")
+                }
+            }
+        }
+    }
+
+    private func addBlockedCall() {
+        for token in FT4Engine.listTokens(newBlockedCall) { ft4.block(token) }
+        newBlockedCall = ""
     }
 
     private func toggleRun() {
@@ -488,7 +564,8 @@ struct HomeFT4Card: View {
             // bird — matching what the CAT path reports, so audio-only spots are
             // calibration-aware too. (Doppler isn't added: on a fixed manual dial it's
             // already carried in each decode's audio offset.)
-            let calHz = store.downlinkCalibrationHz(for: satellite.id, invert: transponder?.invert ?? false)
+            let calHz = store.downlinkCalibrationHz(for: satellite.id, transponder: transponder?.id,
+                                                    invert: transponder?.invert ?? false)
             let dlCenter = Double(transponder?.downlinkCenter ?? 0)
             let calibratedCenter = dlCenter > 0 ? dlCenter + calHz : 0
             ft4.rxBaseHzProvider = { [weak rig] in
@@ -496,18 +573,23 @@ struct HomeFT4Card: View {
                 return dial > 0 ? dial : calibratedCenter
             }
             // Automatic transponder calibration (opt-in): fold the error between our own
-            // decoded FT4 signal and our TX audio frequency into the saved per-satellite
-            // calibration, damped and clamped so a stray decode can't yank it. Only for a
-            // linear transponder — FM birds don't need audio-domain calibration.
-            if ft4AutoCal, transponder?.isLinear == true {
-                let norad = satellite.id
+            // decoded FT4 signal and our TX audio frequency into the saved calibration for
+            // THIS transponder (a learned downlink offset on top of the per-satellite value,
+            // which is what a transponder without its own entry keeps using), damped and
+            // clamped so a stray decode can't yank it. Only for a linear transponder — FM
+            // birds don't need audio-domain calibration.
+            if ft4AutoCal, let tp = transponder, tp.isLinear {
+                let norad = satellite.id, tpID = tp.id
                 ft4.ownSignalCalibration = { [weak store] errHz in
                     guard let store else { return }
-                    var cal = store.calibration(for: norad)
+                    let base = store.calibration(for: norad).downlinkHz
+                    let extra = store.transponderCalibrationOffsetHz(for: norad, transponder: tpID) ?? 0
                     let step = max(-2000.0, min(2000.0, errHz)) * 0.4    // damped residual
-                    cal.downlinkHz = max(-20_000, min(20_000, cal.downlinkHz + step))
-                    store.setCalibration(cal, for: norad)
-                    ODLog.shared.log(String(format: "FT4 auto-cal: sat %u downlink cal → %+.0f Hz", norad, cal.downlinkHz), category: "ft4")
+                    // Clamp the EFFECTIVE downlink calibration to ±20 kHz, as before.
+                    let total = max(-20_000, min(20_000, base + extra + step))
+                    store.setTransponderCalibrationOffsetHz(total - base, for: norad, transponder: tpID)
+                    ODLog.shared.log(String(format: "FT4 auto-cal: sat %u transponder %@ downlink cal → %+.0f Hz",
+                                            norad, tpID, total), category: "ft4")
                 }
             } else {
                 ft4.ownSignalCalibration = nil
