@@ -2125,8 +2125,11 @@ struct SpaceWeatherService {
 }
 
 struct AmsatStatusService {
+    /// AMSAT satellite status API (moved from www.amsat.org/status on Nov 4, 2026; ANS-305).
+    static let apiBase = "https://status.amsat.org/api/v1"
+
     static func fetchSummary(hours: Int = 24) async throws -> [AmsatStatusSummaryRecord] {
-        guard let url = URL(string: "https://www.amsat.org/status/api/v1/summary.php?hours=\(hours)") else { return [] }
+        guard let url = URL(string: "\(apiBase)/summary.php?hours=\(hours)") else { return [] }
         let data = try await requestData(url)   // browser UA + retry (some CDNs block custom agents)
         let object = try JSONSerialization.jsonObject(with: data)
         let records: [[String: Any]]
@@ -3511,7 +3514,7 @@ extension AmsatStatusService {
 
     static func catalogNames() async throws -> [String] {
         if let cached = await AmsatCatalogCache.shared.get(), !cached.isEmpty { return cached }
-        let url = URL(string: "https://www.amsat.org/status/api/v1/catalog.php")!
+        let url = URL(string: "\(apiBase)/catalog.php")!
         let data = try await requestData(url)
         let object = try JSONSerialization.jsonObject(with: data)
         let rows: [[String: Any]]
@@ -3536,7 +3539,7 @@ extension AmsatStatusService {
     }
 
     static func fetchReports(apiName: String, hours: Int = 24, limit: Int = 200) async throws -> [AmsatReportRecord] {
-        var comps = URLComponents(string: "https://www.amsat.org/status/api/v1/reports.php")!
+        var comps = URLComponents(string: "\(apiBase)/reports.php")!
         comps.queryItems = [URLQueryItem(name: "name", value: apiName), URLQueryItem(name: "hours", value: String(hours)), URLQueryItem(name: "limit", value: String(limit))]
         let data = try await requestData(comps.url!)
         let object = try JSONSerialization.jsonObject(with: data)
@@ -3565,7 +3568,7 @@ extension AmsatStatusService {
         var body: [String: Any] = ["name": apiName, "report": status, "callsign": call, "reported_at": iso.string(from: date)]
         if !grid.isEmpty { body["grid_square"] = grid.uppercased() }
         let data = try JSONSerialization.data(withJSONObject: body)
-        let url = URL(string: "https://www.amsat.org/status/api/v1/reports.php")!
+        let url = URL(string: "\(apiBase)/reports.php")!
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = data; request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(ActivationService.browserUserAgent, forHTTPHeaderField: "User-Agent")

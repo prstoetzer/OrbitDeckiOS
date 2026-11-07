@@ -50,7 +50,7 @@ enum AO7ServiceError: LocalizedError {
 
 enum AO7Service {
     static let ao7Norad: UInt = 7530
-    private static let reportBase = "https://www.amsat.org/status/api/v1/reports.php"
+    private static let reportBase = "\(AmsatStatusService.apiBase)/reports.php"
     private static let modeNames = [0: "AO-7_[V/a]", 1: "AO-7_[U/v]"]
     private static let positiveWeight = 1.0
     private static let negativeWeight = 0.35
@@ -83,7 +83,8 @@ enum AO7Service {
         if let catalog = try? await AmsatStatusService.catalogNames() {
             for name in catalog {
                 let tag = name.uppercased()
-                guard tag.contains("AO-7") || tag.contains("OSCAR 7") || tag.contains("OSCAR-7") else { continue }
+                // Anchor on a non-digit after the 7 so AO-73_[U/v] isn't taken for AO-7.
+                guard tag.range(of: #"(AO-7|OSCAR[ -]7)(\D|$)"#, options: .regularExpression) != nil else { continue }
                 if tag.contains("V/A") { resolved[0] = name }
                 else if tag.contains("U/V") { resolved[1] = name }
             }
