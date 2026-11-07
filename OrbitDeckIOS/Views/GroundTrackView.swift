@@ -43,6 +43,8 @@ struct GroundTrackView: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let current = livePoint(at: context.date) ?? nearestToNow
                     let heading = travelBearing(at: context.date)
+                    let satColor = store.selectedSatellite.map { store.satellitePalette.color($0.id) } ?? ODTheme.accent
+                    let minElevation = store.preferences.minElevation
                     Map(position: $cameraPosition) {
                         Marker(
                             store.preferences.observer.name,
@@ -55,7 +57,7 @@ struct GroundTrackView: View {
 
                         ForEach(Array(trackSegments.enumerated()), id: \.offset) { _, segment in
                             MapPolyline(coordinates: segment)
-                                .stroke(ODTheme.accent, lineWidth: 2.5)
+                                .stroke(satColor, lineWidth: 2.5)
                         }
 
                         if let current {
@@ -67,8 +69,18 @@ struct GroundTrackView: View {
                             // horizon). This boundary is the true 0°-elevation circle.
                             MapPolygon(coordinates: footprintBoundary(
                                 center: current.coordinate, altitudeKm: current.altitudeKm))
-                            .foregroundStyle(ODTheme.accent.opacity(0.12))
-                            .stroke(ODTheme.accent.opacity(0.7), lineWidth: 1.5)
+                            .foregroundStyle(satColor.opacity(0.12))
+                            .stroke(satColor.opacity(0.7), lineWidth: 1.5)
+
+                            // Dashed ring where the satellite stands at the
+                            // operator's minimum elevation: the usable footprint.
+                            if minElevation > 0 {
+                                MapPolygon(coordinates: footprintBoundary(
+                                    center: current.coordinate, altitudeKm: current.altitudeKm,
+                                    elevation: minElevation))
+                                .foregroundStyle(.clear)
+                                .stroke(satColor.opacity(0.9), style: StrokeStyle(lineWidth: 1.2, dash: [6, 4]))
+                            }
 
                             Annotation(store.selectedSatellite?.name ?? "Satellite", coordinate: current.coordinate) {
                                 Image(systemName: "arrowtriangle.up.fill")
@@ -154,26 +166,15 @@ struct GroundTrackView: View {
         return bearing
     }
 
-    /// The true 0°-elevation footprint boundary: the ring of points at the
-    /// Earth-central angle acos(Re/(Re+h)) from the sub-point, walked by bearing.
-    /// Geodesically exact, unlike a projected MapCircle.
-    private func footprintBoundary(center: CLLocationCoordinate2D, altitudeKm: Double, samples: Int = 180) -> [CLLocationCoordinate2D] {
-        let re = 6371.0
-        let gamma = acos(max(-1, min(1, re / (re + max(0, altitudeKm)))))
-        let lat0 = center.latitude * .pi / 180, lon0 = center.longitude * .pi / 180
-        let sinLat0 = sin(lat0), cosLat0 = cos(lat0), sinG = sin(gamma), cosG = cos(gamma)
-        var coords: [CLLocationCoordinate2D] = []
-        coords.reserveCapacity(samples + 1)
-        for i in 0...samples {
-            let theta = Double(i) / Double(samples) * 2 * .pi
-            let lat = asin(sinLat0 * cosG + cosLat0 * sinG * cos(theta))
-            let lon = lon0 + atan2(sin(theta) * sinG * cosLat0, cosG - sinLat0 * sin(lat))
-            var lonDeg = lon * 180 / .pi
-            while lonDeg > 180 { lonDeg -= 360 }
-            while lonDeg < -180 { lonDeg += 360 }
-            coords.append(CLLocationCoordinate2D(latitude: lat * 180 / .pi, longitude: lonDeg))
-        }
-        return coords
+    /// The true footprint boundary for `elevation` (0° = the horizon footprint):
+    /// the ring of points at the Earth-central angle `FootprintGeometry.centralAngle`
+    /// from the sub-point, walked by bearing. Geodesically exact, unlike a
+    /// projected MapCircle.
+    private func footprintBoundary(center: CLLocationCoordinate2D, altitudeKm: Double,
+                                   elevation: Double = 0) -> [CLLocationCoordinate2D] {
+        let angle = FootprintGeometry.centralAngle(altitudeKm: altitudeKm, elevation: elevation)
+        return FootprintGeometry.ring(latitude: center.latitude, longitude: center.longitude, angleDeg: angle)
+            .map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
     }
 
     private var trackSegments: [[CLLocationCoordinate2D]] {

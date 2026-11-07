@@ -18,6 +18,7 @@ struct SkyRadarView: View {
         // synchronously here.
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let blips = computeBlips(at: context.date)
+            let palette = store.satellitePalette
             VStack(spacing: 0) {
                 HStack {
                     Text("Sky Radar").font(.headline)
@@ -32,7 +33,7 @@ struct SkyRadarView: View {
 
                 ScrollView {
                     VStack(spacing: 14) {
-                        radar(blips)
+                        radar(blips, palette: palette)
                             .aspectRatio(1, contentMode: .fit)
                             .padding()
 
@@ -42,13 +43,15 @@ struct SkyRadarView: View {
                         } else {
                             LazyVStack(spacing: 0) {
                                 ForEach(blips) { blip in
+                                    let selected = blip.id == store.selectedSatellite?.id
                                     Button { store.select(blip.id) } label: {
                                         HStack {
                                             Circle()
-                                                .fill(blip.id == store.selectedSatellite?.id ? ODTheme.accent : ODTheme.good)
+                                                .fill(palette.color(blip.id))
                                                 .frame(width: 8, height: 8)
+                                                .overlay { if selected { Circle().stroke(.white, lineWidth: 1.5).padding(-2) } }
                                             Text(blip.name)
-                                                .foregroundStyle(blip.id == store.selectedSatellite?.id ? ODTheme.accent : .primary)
+                                                .fontWeight(selected ? .bold : .regular)
                                             Spacer()
                                             Text("el \(ODFormat.angle(blip.elevation)) · \(ODFormat.compass(blip.azimuth)) \(ODFormat.angle(blip.azimuth, decimals: 0))")
                                                 .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
@@ -80,7 +83,7 @@ struct SkyRadarView: View {
         return output.sorted { $0.elevation > $1.elevation }
     }
 
-    private func radar(_ blips: [RadarBlip]) -> some View {
+    private func radar(_ blips: [RadarBlip], palette: SatellitePalette) -> some View {
         Canvas { context, size in
             let side = min(size.width, size.height)
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -131,15 +134,25 @@ struct SkyRadarView: View {
                 context.draw(resolved, at: p)
             }
 
-            for blip in blips {
+            // The selected satellite is drawn last (on top), larger and ringed in
+            // white; every satellite keeps its own palette color.
+            let selectedID = store.selectedSatellite?.id
+            for blip in blips.sorted(by: { ($0.id == selectedID ? 1 : 0) < ($1.id == selectedID ? 1 : 0) }) {
                 let r = outer * (90 - max(0, min(90, blip.elevation))) / 90
                 let a = blip.azimuth * .pi / 180
                 let p = CGPoint(x: center.x + r * sin(a), y: center.y - r * cos(a))
-                let color = blip.id == store.selectedSatellite?.id ? ODTheme.accent : ODTheme.good
-                context.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(color))
-                let resolved = context.resolve(Text(blip.name).font(.system(size: 8, weight: .semibold)).foregroundStyle(color))
-                let labelPos = placeLabel(resolved, near: CGPoint(x: p.x, y: p.y - 11))
-                if abs(labelPos.y - (p.y - 11)) > 6 {
+                let color = palette.color(blip.id)
+                let selected = blip.id == selectedID
+                let dot: CGFloat = selected ? 6 : 4
+                context.fill(Path(ellipseIn: CGRect(x: p.x - dot, y: p.y - dot, width: 2 * dot, height: 2 * dot)), with: .color(color))
+                if selected {
+                    context.stroke(Path(ellipseIn: CGRect(x: p.x - 8.5, y: p.y - 8.5, width: 17, height: 17)),
+                                   with: .color(.white.opacity(0.85)), lineWidth: 1.2)
+                }
+                let resolved = context.resolve(Text(blip.name).font(.system(size: selected ? 10 : 8, weight: selected ? .bold : .semibold)).foregroundStyle(color))
+                let lift: CGFloat = selected ? 15 : 11
+                let labelPos = placeLabel(resolved, near: CGPoint(x: p.x, y: p.y - lift))
+                if abs(labelPos.y - (p.y - lift)) > 6 {
                     var leader = Path()
                     leader.move(to: CGPoint(x: p.x, y: p.y))
                     leader.addLine(to: labelPos)

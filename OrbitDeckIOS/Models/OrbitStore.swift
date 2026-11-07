@@ -978,7 +978,7 @@ final class AutoSwitchController: ObservableObject {
         // (≈1°/10 s near the horizon on LEO).
         let lowest = min(preemptElevation, threshold)
         let padding: TimeInterval = lowest < 0 ? max(120, -lowest * 60) : 0
-        let passes = PassTimeline.load(priorities.enumerated().map { (record: $0.element, colorIndex: $0.offset) },
+        let passes = PassTimeline.load(priorities,
                                        observer: observer, from: start, to: end, padding: padding)
         let bySat = Dictionary(grouping: passes, by: \.norad)
         // Outside every sampled window the satellite is well below the horizon.
@@ -999,7 +999,7 @@ final class AutoSwitchController: ObservableObject {
         func closeSpan(at t: Date) {
             guard let open = openSpan else { return }
             spans.append(TimelineSpan(id: spans.count, norad: open.norad, name: names[open.norad] ?? "",
-                                      colorIndex: rank[open.norad] ?? 0, start: open.start, end: t))
+                                      start: open.start, end: t))
             openSpan = nil
         }
 

@@ -970,13 +970,12 @@ struct DopplerFrequencyLine: View {
 
 // MARK: - Pass timeline (KlaTrack-style)
 
-/// One satellite pass on a `PassTimelineChart`: its elevation profile plus the
-/// series color slot it is drawn in.
+/// One satellite pass on a `PassTimelineChart`: its elevation profile. It is
+/// drawn in the satellite's `SatellitePalette` color.
 struct TimelinePass: Identifiable, Sendable {
     let id: String
     let norad: UInt
     let name: String
-    let colorIndex: Int
     let samples: [ElevationSample]
 
     var peak: ElevationSample? { samples.max { $0.elevation < $1.elevation } }
@@ -1001,30 +1000,98 @@ struct TimelineSpan: Identifiable, Sendable {
     let id: Int
     let norad: UInt
     let name: String
-    let colorIndex: Int
     let start: Date
     let end: Date
 }
 
+/// One deterministic color per satellite, shared by every view that draws
+/// several satellites (pass timelines, sky radar, globe, ground track) so a
+/// satellite keeps its color from screen to screen. Favorites take palette slots
+/// in NORAD order; any other satellite hashes its NORAD ID onto a slot no
+/// favorite holds (or onto the whole palette once favorites fill it). Views show
+/// the selected satellite by weight/size, never by changing its hue.
+struct SatellitePalette: Sendable {
+    /// GitHub Primer dark-theme accents: ODTheme's background and panels are that
+    /// theme's canvas colors, and these stay distinct and legible on them.
+    static let colors: [Color] = ["#58a6ff", "#f0883e", "#3fb950", "#db61a2",
+                                  "#a371f7", "#e3b341", "#39c5cf", "#ff7b72"].map { Color(hex: $0) }
+
+    /// Favorite NORAD IDs in ascending order (slot order).
+    let favorites: [UInt]
+
+    init(favorites: Set<UInt> = []) { self.favorites = favorites.sorted() }
+
+    /// Index into `colors` for `norad`.
+    func slot(_ norad: UInt) -> Int {
+        let count = Self.colors.count
+        if let index = favorites.firstIndex(of: norad) { return index % count }
+        let hash = Self.mix(UInt64(norad))
+        let firstFree = min(favorites.count, count)
+        guard firstFree < count else { return Int(hash % UInt64(count)) }
+        return firstFree + Int(hash % UInt64(count - firstFree))
+    }
+
+    func color(_ norad: UInt) -> Color { Self.colors[slot(norad)] }
+
+    /// SplitMix64 finalizer, so neighboring NORAD IDs land on unrelated slots.
+    static func mix(_ value: UInt64) -> UInt64 {
+        var z = value &+ 0x9E37_79B9_7F4A_7C15
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+extension OrbitStore {
+    /// The app-wide per-satellite colors for the current favorites.
+    var satellitePalette: SatellitePalette { SatellitePalette(favorites: preferences.favorites) }
+}
+
+/// Footprint rings for the map views.
+enum FootprintGeometry {
+    /// Earth-central angle (degrees) from the sub-satellite point to the ring of
+    /// ground points that see the satellite at `elevation` degrees. In the triangle
+    /// Earth center–observer–satellite the observer's angle is 90° + ε, so by the
+    /// law of sines the satellite's angle is asin(Re·cos ε / (Re + h)) and the
+    /// central angle is λ = acos(Re·cos ε / (Re + h)) − ε (ε = 0 gives the horizon
+    /// footprint acos(Re / (Re + h))).
+    static func centralAngle(altitudeKm: Double, elevation: Double = 0) -> Double {
+        let re = OrbitPredictor.earthRadiusKm
+        let eps = max(-90, min(90, elevation)) * .pi / 180
+        let ratio = re * cos(eps) / (re + max(0, altitudeKm))
+        return max(0, acos(max(-1, min(1, ratio))) - eps) * 180 / .pi
+    }
+
+    /// Points `angleDeg` of arc from `latitude`/`longitude`, walked by bearing
+    /// (closed: the last point repeats the first). Longitudes wrap to ±180°.
+    static func ring(latitude: Double, longitude: Double, angleDeg: Double,
+                     samples: Int = 180) -> [(latitude: Double, longitude: Double)] {
+        let lat0 = latitude * .pi / 180, lon0 = longitude * .pi / 180, g = angleDeg * .pi / 180
+        let sinLat0 = sin(lat0), cosLat0 = cos(lat0), sinG = sin(g), cosG = cos(g)
+        return (0...max(3, samples)).map { i in
+            let theta = Double(i) / Double(max(3, samples)) * 2 * .pi
+            let lat = asin(max(-1, min(1, sinLat0 * cosG + cosLat0 * sinG * cos(theta))))
+            let lon = lon0 + atan2(sin(theta) * sinG * cosLat0, cosG - sinLat0 * sin(lat))
+            var lonDeg = lon * 180 / .pi
+            while lonDeg > 180 { lonDeg -= 360 }
+            while lonDeg < -180 { lonDeg += 360 }
+            return (lat * 180 / .pi, lonDeg)
+        }
+    }
+}
+
 enum PassTimeline {
-    /// Solarized accents (as KlaTrack uses), which stay distinct on the dark theme.
-    static let palette: [Color] = ["#b58900", "#cb4b16", "#dc322f", "#d33682",
-                                   "#6c71c4", "#268bd2", "#2aa198", "#859900"].map { Color(hex: $0) }
-
-    static func color(_ index: Int) -> Color { palette[((index % palette.count) + palette.count) % palette.count] }
-
     /// Predict every pass of `satellites` that overlaps `start…end` and sample its
-    /// elevation profile. CPU-bound: call from a detached task. Each entry carries
-    /// the color slot to draw it in.
+    /// elevation profile. CPU-bound: call from a detached task.
     /// `padding` extends each pass's samples that far before AOS and after LOS (with
     /// negative elevations), for the auto-switch simulator's pre-AOS rule. The chart
     /// clamps those to the horizon, so they draw as baseline.
-    nonisolated static func load(_ satellites: [(record: SatelliteRecord, colorIndex: Int)],
+    nonisolated static func load(_ satellites: [SatelliteRecord],
                                  observer: ObserverSite, from start: Date, to end: Date,
                                  padding: TimeInterval = 0) -> [TimelinePass] {
         let days = max(1.0 / 24, end.timeIntervalSince(start) / 86400)
         var output: [TimelinePass] = []
-        for (record, colorIndex) in satellites {
+        for record in satellites {
             guard let passes = try? OrbitPredictor.predictPasses(record, observer: observer, from: start,
                                                                  minElevation: 0, maxCount: 60, horizonDays: days)
             else { continue }
@@ -1040,7 +1107,7 @@ enum PassTimeline {
                 guard let samples = try? OrbitPredictor.elevationProfile(record, observer: observer, pass: pass, step: step),
                       samples.count > 1 else { continue }
                 output.append(TimelinePass(id: "\(record.id)-\(pass.aos.timeIntervalSince1970)", norad: record.id,
-                                           name: record.name, colorIndex: colorIndex, samples: samples))
+                                           name: record.name, samples: samples))
             }
         }
         return output
@@ -1061,6 +1128,8 @@ struct PassTimelineChart: View {
     var eclipseShading = false
     var spans: [TimelineSpan] = []
     var highlighted: UInt?
+    /// Per-satellite colors; pass `store.satellitePalette` to match the other views.
+    var palette = SatellitePalette()
     var onSelect: ((UInt) -> Void)?
 
     private let leftInset: CGFloat = 26
@@ -1154,7 +1223,7 @@ struct PassTimelineChart: View {
     private func drawPass(_ pass: TimelinePass, in ctx: inout GraphicsContext, plot: CGRect) {
         let points = pass.samples.map { CGPoint(x: x($0.date, plot), y: y($0.elevation, plot)) }
         guard let first = points.first, let last = points.last else { return }
-        let color = PassTimeline.color(pass.colorIndex)
+        let color = palette.color(pass.norad)
         let emphasized = highlighted == pass.norad
 
         if eclipseShading {
@@ -1199,7 +1268,7 @@ struct PassTimelineChart: View {
         }
         for (pass, peak) in candidates {
             let text = ctx.resolve(Text(pass.name).font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(eclipseShading ? Color.white : PassTimeline.color(pass.colorIndex)))
+                .foregroundStyle(eclipseShading ? Color.white : palette.color(pass.norad)))
             let measured = text.measure(in: CGSize(width: 200, height: 20))
             let px = min(max(x(peak.date, plot), plot.minX + measured.width / 2), plot.maxX - measured.width / 2)
             var rect = CGRect(x: px - measured.width / 2, y: y(peak.elevation, plot) - measured.height - 1,
@@ -1244,7 +1313,7 @@ struct PassTimelineChart: View {
             let x0 = max(plot.minX, x(span.start, plot)), x1 = min(plot.maxX, x(span.end, plot))
             guard x1 > x0 else { continue }
             let rect = CGRect(x: x0, y: top, width: max(2, x1 - x0), height: stripHeight)
-            ctx.fill(Path(roundedRect: rect, cornerRadius: 3), with: .color(PassTimeline.color(span.colorIndex)))
+            ctx.fill(Path(roundedRect: rect, cornerRadius: 3), with: .color(palette.color(span.norad)))
             let text = ctx.resolve(Text(span.name).font(.system(size: 8, weight: .bold)).foregroundStyle(Color.black))
             if text.measure(in: CGSize(width: 300, height: 20)).width + 4 < rect.width {
                 ctx.draw(text, at: CGPoint(x: rect.midX, y: rect.midY))

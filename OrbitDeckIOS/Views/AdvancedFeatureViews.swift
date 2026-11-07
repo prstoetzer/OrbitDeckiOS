@@ -348,6 +348,14 @@ struct OscarLocatorView: View {
                 let angular = footprintAngle(altitudeKm: look.altitudeKm)
                 let circle = destinationCircle(latitude: look.subLatitude, longitude: look.subLongitude, radiusDeg: angular)
                 drawGeoPath(circle, mode: mode, center: center, radius: radius, context: &context, color: ODTheme.good, width: 1.2, dashed: true)
+                // Inner ring where the satellite stands at the operator's minimum elevation.
+                let minElevation = store.preferences.minElevation
+                if minElevation > 0 {
+                    let usable = destinationCircle(latitude: look.subLatitude, longitude: look.subLongitude,
+                                                   radiusDeg: FootprintGeometry.centralAngle(altitudeKm: max(1, look.altitudeKm), elevation: minElevation))
+                    drawGeoPath(usable, mode: mode, center: center, radius: radius, context: &context,
+                                color: ODTheme.good.opacity(0.85), width: 0.9, dashed: true)
+                }
             }
 
             if let q = projected(latitude: store.preferences.observer.latitude, longitude: store.preferences.observer.longitude, mode: mode, center: center, radius: radius) {
