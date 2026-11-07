@@ -26,6 +26,7 @@ struct HomeSSTVCard: View {
     var body: some View {
         if visible {
             SectionCard("SSTV") {
+                AudioHealthBanner(active: decoder.isListening)
                 if !decoder.errorText.isEmpty {
                     Text(decoder.errorText).font(.caption).foregroundStyle(ODTheme.warning)
                 }

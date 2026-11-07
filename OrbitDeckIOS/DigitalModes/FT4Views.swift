@@ -99,6 +99,7 @@ struct HomeFT4Card: View {
         if visible {
             SectionCard("FT4 (full duplex)") {
                 cautionBanner
+                AudioHealthBanner(active: ft4.isRunning)
                 if !ft4.errorText.isEmpty {
                     Text(ft4.errorText).font(.caption).foregroundStyle(ODTheme.warning)
                 }
@@ -603,6 +604,7 @@ struct HomePacketCard: View {
     var body: some View {
         if visible {
             SectionCard("Packet / APRS") {
+                AudioHealthBanner(active: packet.isRunning && packet.settings.transport == .builtInModem)
                 if !packet.errorText.isEmpty {
                     Text(packet.errorText).font(.caption).foregroundStyle(ODTheme.warning)
                 }

@@ -21,6 +21,7 @@ struct HomeRecordingCard: View {
     var body: some View {
         if visible {
             SectionCard("Pass recording") {
+                AudioHealthBanner(active: recorder.isRecording)
                 if !recorder.errorText.isEmpty {
                     Text(recorder.errorText).font(.caption).foregroundStyle(ODTheme.warning)
                 }

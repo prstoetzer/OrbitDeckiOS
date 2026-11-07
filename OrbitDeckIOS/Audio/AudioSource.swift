@@ -37,6 +37,16 @@ protocol AudioSource: AnyObject {
     /// an empty array when idle.
     func startPlayback(pull: @escaping (_ count: Int) -> [Float]) throws
     func stopPlayback()
+
+    /// Rebuild a capture that has stopped delivering frames (called by the AudioHub's
+    /// stall watchdog), keeping the same frame/pull handlers. Must not block the caller.
+    func restartCapture()
+}
+
+extension AudioSource {
+    /// Default: nothing to rebuild. The RS-BA1 source relies on its transport's own
+    /// stream watchdog (re-opening the stream from two places would fight).
+    func restartCapture() {}
 }
 
 /// Persists audio-setup slider values (input/output gain) across launches so the
