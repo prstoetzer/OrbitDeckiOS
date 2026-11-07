@@ -52,26 +52,34 @@ final class USBAudioSource: AudioSource, @unchecked Sendable {
             guard let self,
                   let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
-            self.q.async { self.restartCapture(reason: "interruption ended") }
+            self.q.async { self.rebuildCapture(reason: "interruption ended") }
         })
         observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
                                         object: nil, queue: nil) { [weak self] _ in
-            self?.q.async { self?.restartCapture(reason: "media services reset") }
+            guard let self else { return }
+            self.q.async { self.rebuildCapture(reason: "media services reset") }
         })
     }
 
     deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
 
+    /// Stall-watchdog entry point (AudioHub): the hub throttles and logs the attempts, so
+    /// this rebuild is silent. A no-op once `stop()` has cleared the frame handler.
+    func restartCapture() {
+        q.async { [weak self] in self?.rebuildCapture(reason: nil) }
+    }
+
     /// Rebuild the capture/playback graph in place, keeping the same frame/pull handlers,
     /// so decoders and the recorder resume transparently. Runs on `q`; the `restarting`
-    /// guard blocks re-entrancy from overlapping notifications.
-    private func restartCapture(reason: String) {
+    /// guard blocks re-entrancy from overlapping notifications. The engine is stopped
+    /// BEFORE the tap and source node come off — never mutate a running graph.
+    private func rebuildCapture(reason: String?) {
         guard frameHandler != nil, !restarting else { return }
         restarting = true
-        ODLog.shared.log("usb-audio: restarting capture (\(reason))", category: "audio")
+        if let reason { ODLog.shared.log("usb-audio: restarting capture (\(reason))", category: "audio") }
+        engine.stop()
         if capturing { engine.inputNode.removeTap(onBus: 0); capturing = false }
         if let node = sourceNode { engine.detach(node); sourceNode = nil }
-        engine.stop()
         converter = nil
         beginCapture()
         restarting = false
@@ -141,9 +149,9 @@ final class USBAudioSource: AudioSource, @unchecked Sendable {
         q.async { [weak self] in
             guard let self else { return }
             self.pullHandler = nil
+            self.engine.stop()      // stop first: never mutate a running graph
             if self.capturing { self.engine.inputNode.removeTap(onBus: 0); self.capturing = false }
             if let node = self.sourceNode { self.engine.detach(node); self.sourceNode = nil }
-            self.engine.stop()
             self.frameHandler = nil
             self.converter = nil
             try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])

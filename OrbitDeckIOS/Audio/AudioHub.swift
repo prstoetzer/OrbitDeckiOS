@@ -1,6 +1,9 @@
 import Foundation
 import AVFoundation
+import Accelerate
 import Combine
+import SwiftUI
+import UIKit
 
 // ===========================================================================
 //  AudioHub.swift — shared audio capture hub + availability
@@ -17,7 +20,33 @@ import Combine
 //
 //  Also tracks whether an audio interface is present (`audioAvailable`, the gate for
 //  the audio Home cards) and observes route changes.
+//
+//  Input health: while a capture is live, a 1 Hz watchdog checks that buffers keep
+//  arriving (stall → throttled restart of the capture) and that they aren't digital
+//  silence (wrong device / unplugged cable). The result is `inputHealth`, shown by
+//  `AudioHealthBanner` in each consumer card. The audio thread only bumps a counter and
+//  a running peak; nothing runs when no subscriber is attached.
 // ===========================================================================
+
+/// Health of the shared capture, as surfaced to the operator.
+enum AudioInputHealth: Equatable {
+    case ok
+    /// Capture is running but no buffers are arriving; the hub is restarting it.
+    case stalled
+    /// The USB interface the capture was using is gone; waiting for it to come back.
+    case deviceMissing
+    /// Buffers arrive but stay at digital silence.
+    case silent
+
+    var message: String? {
+        switch self {
+        case .ok: nil
+        case .stalled: "Audio input stalled — restarting capture…"
+        case .deviceMissing: "Audio interface disconnected — reconnect it to resume."
+        case .silent: "Silent input — check the selected audio device/cable."
+        }
+    }
+}
 
 /// Tracks whether any digital-audio operation (FT4 RX/TX, SSTV decode, pass
 /// recording, remote voice) is active. When active, notification *alert sounds* are
@@ -102,10 +131,27 @@ final class AudioHub: ObservableObject {
 
     func attach(_ rig: RigController) {
         self.rig = rig
-        NotificationCenter.default.addObserver(
+        let nc = NotificationCenter.default
+        nc.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
+        }
+        // Interruptions and media-services resets are recovered by the source itself, so
+        // the stall watchdog stands down while one is in progress and then allows a grace
+        // period, rather than fighting the source's own restart.
+        nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
+            let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            let began = raw.flatMap(AVAudioSession.InterruptionType.init(rawValue:)) == .began
+            Task { @MainActor in self?.noteInterruption(began: began) }
+        }
+        nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.noteInterruption(began: false) }
+        }
+        // iOS doesn't always post an interruption "ended"; returning to the foreground
+        // means any interruption is over.
+        nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in if self?.interrupted == true { self?.noteInterruption(began: false) } }
         }
         rig.$connected.receive(on: RunLoop.main).sink { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -164,6 +210,7 @@ final class AudioHub: ObservableObject {
                 captureSource = nil
                 throw error
             }
+            startHealthMonitor()
         }
         subLock.lock(); subscribers[sub.id] = sub; subLock.unlock()
     }
@@ -191,6 +238,7 @@ final class AudioHub: ObservableObject {
     func setOutputGain(_ g: Float) { if g != outputGain { outputGain = g } }
 
     private func teardownCapture() {
+        stopHealthMonitor()
         txOwner = nil; txSub = nil
         captureSource?.stopPlayback()
         captureSource?.stop()
@@ -199,6 +247,7 @@ final class AudioHub: ObservableObject {
     }
 
     private func reportError(_ m: String) {
+        captureErrored = true
         subLock.lock(); let subs = Array(subscribers.values); subLock.unlock()
         for s in subs { s.deliverError(m) }
     }
@@ -211,9 +260,139 @@ final class AudioHub: ObservableObject {
             let g = s.subGain
             s.deliver(g == 1 ? frames : frames.map { $0 * g })
         }
+        guard !frames.isEmpty else { return }
         var peak: Float = 0
-        for s in frames { let a = abs(s); if a > peak { peak = a } }
-        levelLock.lock(); if peak > levelPeak { levelPeak = peak }; levelLock.unlock()
+        vDSP_maxmgv(frames, 1, &peak, vDSP_Length(frames.count))
+        levelLock.lock()
+        if peak > levelPeak { levelPeak = peak }
+        if peak > healthPeak { healthPeak = peak }
+        healthBuffers += 1
+        levelLock.unlock()
+    }
+
+    // MARK: Input health (stall + silence watchdog)
+
+    /// Watchdog thresholds.
+    enum Health {
+        /// Main-thread check interval.
+        static let tick: TimeInterval = 1
+        /// No buffers for this long while capturing = stalled.
+        static let stallAfter: TimeInterval = 2.5
+        /// Interval between restart attempts while stalled.
+        static let retryEvery: TimeInterval = 3
+        /// Arm stall detection this long after start even if no buffer has arrived yet
+        /// (unless the start reported an error, e.g. microphone permission denied).
+        static let startupGrace: TimeInterval = 5
+        /// Peak level at or below which audio counts as digital silence.
+        static let silenceDBFS: Float = -80
+        /// Continuous silence needed before warning.
+        static let silentAfter: TimeInterval = 10
+        /// After the first few, log restart attempts at most this often.
+        static let logEvery: TimeInterval = 30
+        static let silencePeak: Float = powf(10, silenceDBFS / 20)
+    }
+
+    @Published private(set) var inputHealth: AudioInputHealth = .ok
+    // Written on the audio thread under levelLock; drained by the watchdog tick.
+    private nonisolated(unsafe) var healthPeak: Float = 0
+    private nonisolated(unsafe) var healthBuffers = 0
+    private var healthTimer: DispatchSourceTimer?
+    private var captureStartedAt = Date()
+    private var lastBufferAt = Date()
+    private var sawBuffer = false
+    private var captureErrored = false
+    private var interrupted = false
+    private var stallSince: Date?
+    private var lastRestartAt = Date.distantPast
+    private var lastStallLog = Date.distantPast
+    private var restartAttempts = 0
+    private var silentSince: Date?
+
+    /// Arm the watchdog for a fresh capture. The timer runs on the main queue, so its
+    /// handler is main-actor safe; per-buffer work stays on the audio thread (count + peak).
+    private func startHealthMonitor() {
+        stopHealthMonitor()
+        let now = Date()
+        captureStartedAt = now; lastBufferAt = now
+        sawBuffer = false; captureErrored = false; interrupted = false
+        stallSince = nil; restartAttempts = 0; lastRestartAt = .distantPast; silentSince = nil
+        levelLock.withLock { healthPeak = 0; healthBuffers = 0 }
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + Health.tick, repeating: Health.tick)
+        t.setEventHandler { [weak self] in self?.healthTick() }
+        t.resume()
+        healthTimer = t
+    }
+
+    private func stopHealthMonitor() {
+        healthTimer?.cancel(); healthTimer = nil
+        if inputHealth != .ok { inputHealth = .ok }
+    }
+
+    private func noteInterruption(began: Bool) {
+        guard healthTimer != nil else { return }
+        interrupted = began
+        lastBufferAt = Date()            // grace period for the source's own restart
+        stallSince = nil; silentSince = nil
+        if inputHealth != .ok { inputHealth = .ok }
+    }
+
+    private func healthTick() {
+        guard captureSource != nil else { return }
+        let (buffers, peak) = levelLock.withLock { () -> (Int, Float) in
+            let v = (healthBuffers, healthPeak); healthBuffers = 0; healthPeak = 0; return v
+        }
+        let now = Date()
+
+        if buffers > 0 {
+            lastBufferAt = now; sawBuffer = true; interrupted = false
+            if let since = stallSince {
+                ODLog.shared.log(String(format: "audio-hub: capture recovered after %.0f s (%d restart attempt(s))",
+                                        now.timeIntervalSince(since), restartAttempts), category: "audio")
+                stallSince = nil; restartAttempts = 0
+            }
+            var next: AudioInputHealth = .ok
+            if peak <= Health.silencePeak {
+                if silentSince == nil { silentSince = now }
+                if let s = silentSince, now.timeIntervalSince(s) >= Health.silentAfter { next = .silent }
+            } else {
+                silentSince = nil
+            }
+            if next != inputHealth {
+                if next == .silent {
+                    ODLog.shared.log("audio-hub: input at digital silence for \(Int(Health.silentAfter)) s — check the audio device/cable", category: "audio")
+                } else if inputHealth == .silent {
+                    ODLog.shared.log("audio-hub: input signal returned", category: "audio")
+                }
+                inputHealth = next
+            }
+            return
+        }
+
+        // No buffers this tick. Only judge a capture that's confirmed running (or past the
+        // startup grace without a start error), and never during an interruption.
+        guard !interrupted,
+              sawBuffer || (!captureErrored && now.timeIntervalSince(captureStartedAt) >= Health.startupGrace),
+              now.timeIntervalSince(lastBufferAt) >= Health.stallAfter else { return }
+        silentSince = nil
+        if stallSince == nil {
+            stallSince = now; lastRestartAt = .distantPast
+            ODLog.shared.log(String(format: "audio-hub: capture stalled — no audio buffers for %.1f s",
+                                    now.timeIntervalSince(lastBufferAt)), category: "audio")
+        }
+        // A USB capture whose interface is gone would "recover" onto the built-in mic —
+        // wrong audio for a decoder, and TX out the phone speaker. Wait for it to return.
+        let missing = captureSource is USBAudioSource && !usbConnected && !micFallbackWanted
+        let state: AudioInputHealth = missing ? .deviceMissing : .stalled
+        if inputHealth != state { inputHealth = state }
+        guard !missing, now.timeIntervalSince(lastRestartAt) >= Health.retryEvery else { return }
+        lastRestartAt = now
+        restartAttempts += 1
+        if restartAttempts <= 3 || now.timeIntervalSince(lastStallLog) >= Health.logEvery {
+            lastStallLog = now
+            ODLog.shared.log("audio-hub: restarting stalled capture (attempt \(restartAttempts))", category: "audio")
+        }
+        captureSource?.restartCapture()
     }
 
     // MARK: Shared input-level meter (for the monitor/voice card)
@@ -236,6 +415,20 @@ final class AudioHub: ObservableObject {
         levelTimer = t
     }
     func stopLevelMeter() { levelTimer?.cancel(); levelTimer = nil; inputLevel = 0 }
+}
+
+/// Compact warning for the consumer cards when the shared capture is stalled or silent.
+/// `active` = the hosting feature is using the hub's capture, so idle cards stay quiet.
+struct AudioHealthBanner: View {
+    @EnvironmentObject private var audio: AudioHub
+    var active = true
+
+    var body: some View {
+        if active, let m = audio.inputHealth.message {
+            Label(m, systemImage: audio.inputHealth == .silent ? "speaker.slash" : "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(ODTheme.warning)
+        }
+    }
 }
 
 /// A subscriber's handle onto the shared capture. Conforms to `AudioSource` so existing
