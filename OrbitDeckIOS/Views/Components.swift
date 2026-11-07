@@ -955,7 +955,7 @@ struct DopplerFrequencyLine: View {
             guard tp.isLinear, u > 0 else { return u }
             return tp.invert ? u - offset : u + offset
         }()
-        let cal = store.downlinkCalibrationHz(for: satellite.id, invert: tp.invert)
+        let cal = store.downlinkCalibrationHz(for: satellite.id, transponder: tp.id, invert: tp.invert)
         let c = OrbitPredictor.dopplerFrequencies(downlinkHz: downlink, uplinkHz: uplink,
                                                   rangeRateKmS: look.rangeRateKmS,
                                                   downlinkCalibrationHz: cal, uplinkCalibrationHz: 0)

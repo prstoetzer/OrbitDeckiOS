@@ -147,6 +147,8 @@ final class SSTVDecoder: ObservableObject {
     /// True while the current session was started by the elevation trigger (so it's
     /// the one stopped automatically at set).
     @Published private(set) var autoStarted = false
+    /// The satellite an auto-started session is following (its set ends the session).
+    private var autoRunningSatellite: SatelliteRecord?
     @Published private(set) var autoSatelliteName = ""
     /// Armed = auto start/stop is on, a satellite is targeted, and we're waiting for it.
     var isArmed: Bool { autoArm && !autoSatelliteName.isEmpty && !isListening }
@@ -336,6 +338,7 @@ final class SSTVDecoder: ObservableObject {
         levelSmoothed = 0; inputLevel = 0
         isListening = false
         autoStarted = false
+        autoRunningSatellite = nil
         AudioActivity.end()
         AudioActivity.releaseCapture("SSTV")
         lock.lock()
@@ -397,12 +400,18 @@ final class SSTVDecoder: ObservableObject {
         guard autoArm, let sat = autoSatellite, let store = autoStore else { return }
         // Respect the card being hidden: no capture for a feature the operator turned off.
         if UserDefaults.standard.string(forKey: FeatureVisibility.sstvKey) == FeatureVisibility.off.rawValue { return }
-        guard let el = try? OrbitPredictor.look(sat, observer: store.preferences.observer).elevation else { return }
-        if el < 0 {
-            if isListening, autoStarted {
+        let observer = store.preferences.observer
+        // Stop on the satellite that started the session, not whatever is selected now (a
+        // new selection below the horizon must not cut a decode in progress).
+        if isListening, autoStarted, let running = autoRunningSatellite {
+            if let rel = try? OrbitPredictor.look(running, observer: observer).elevation, rel < 0 {
                 stop()
-                status = "Auto-stopped — \(sat.name) set"
+                status = "Auto-stopped — \(running.name) set"
             }
+            return
+        }
+        guard let el = try? OrbitPredictor.look(sat, observer: observer).elevation else { return }
+        if el < 0 {
             autoAttempted = false          // re-arm for the next pass
             return
         }
@@ -415,6 +424,7 @@ final class SSTVDecoder: ObservableObject {
         start(source: src, satellite: sat.name, noradID: sat.id)
         if isListening {
             autoStarted = true
+            autoRunningSatellite = sat
             status = "Auto-started — \(sat.name) above \(Int(autoMinElevation))°"
         }
     }
@@ -746,7 +756,8 @@ final class SSTVDecoder: ObservableObject {
         // what places it: the signal stopping (syncs gone for a while) or the next
         // picture's VIS header means the transmission's last line has been heard.
         if !lockedByVIS {
-            let endRun = max(3, Int((0.6 / (m.lineMs / 1000.0)).rounded(.up)))
+            // ≥ 2 s of missing syncs: shorter dropouts (spin fades) happen mid-picture.
+            let endRun = max(3, Int((2.0 / (m.lineMs / 1000.0)).rounded(.up)))
             if missedSyncRun >= endRun { partialEnded = true; return .ended }
             if !syncOK {
                 let from = max(0, offset - Int(1.2 * r))
@@ -1341,7 +1352,11 @@ final class SSTVDecoder: ObservableObject {
         let expected = SSTVModes.expected(norad: nil, name: satellite)
         let candidates = forced.map { [$0] } ?? expected
         var plan: (mode: SSTVMode, start: Int, pending: PendingMode?, byVIS: Bool)?
-        if let hit = Self.findStart(f, rate: r, forced: forced), let p = Self.startPlan(hit, forced: forced, expected: expected) {
+        // The recording runs from just before the chosen picture to the end of the session,
+        // so only look for its header near the start: a later picture's clean header must
+        // not win (and a whole-session prefix sum would cost hundreds of MB).
+        let head = Array(f.prefix(Int(r * 4)))
+        if let hit = Self.findStart(head, rate: r, forced: forced), let p = Self.startPlan(hit, forced: forced, expected: expected) {
             plan = (p.mode, hit.startIndex, p.pending, true)
         } else if !candidates.isEmpty {
             // No header: scan the recording in overlapping windows for a line-sync lock.

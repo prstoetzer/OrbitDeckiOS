@@ -100,7 +100,13 @@ final class RigController: ObservableObject {
     /// while any client (FT4, packet, SSTV — see `setDigitalDataMode`) wants it, so the
     /// ACC/USB data port carries the audio rather than the mic. Only affects data-capable
     /// rigs (`isDataModeCapable`).
-    private(set) var useDataModeForDigital = false
+    /// A client's request is scoped to the satellite/transponder CAT was on when it asked,
+    /// so FT4's USB-D or packet's FM-D never follows CAT onto another bird (e.g. an FM
+    /// voice satellite after automatic switching, where FM-D would cut the mic).
+    private var useDataModeForDigital: Bool {
+        let now = currentSatTp()
+        return dataModeClients.values.contains { $0.isEmpty || $0 == now }
+    }
     /// Legs we put in a DATA sub-mode and must take out again, per radio and leg (a
     /// single flag was cleared by whichever leg ran first, stranding the other in USB-D).
     private var dataModeLegs = Set<String>()
@@ -135,8 +141,10 @@ final class RigController: ObservableObject {
         }
     }
 
-    /// Digital-mode clients (FT4, packet, SSTV) currently asking for the DATA sub-mode.
-    private var dataModeClients = Set<String>()
+    /// Digital-mode clients (FT4, packet, SSTV) currently asking for the DATA sub-mode,
+    /// with the "<NORAD>|<transponder id>" each asked on ("" = not known yet; adopts the
+    /// first transponder seen).
+    private var dataModeClients: [String: String] = [:]
     /// Whether a mode carries the digital data path: SSB (USB-D/LSB-D) or FM (FM-D/PKT).
     private func dataModeSuits(_ mode: RigMode) -> Bool {
         mode == .usb || mode == .lsb || mode.isFM
@@ -146,11 +154,10 @@ final class RigController: ObservableObject {
     /// data mode stays on while any client wants it. When the overall state changes the
     /// modes are re-applied on the next tick (the engage key includes the flag).
     func setDigitalDataMode(_ on: Bool, client: String = "ft4") {
-        if on { dataModeClients.insert(client) } else { dataModeClients.remove(client) }
-        let want = !dataModeClients.isEmpty
-        ODLog.shared.log("setDigitalDataMode(\(on)) client=\(client) clients=\(dataModeClients.sorted()) connected=\(connected) hold=\(holdDoppler)", category: "cat")
-        guard want != useDataModeForDigital else { return }
-        useDataModeForDigital = want
+        let before = useDataModeForDigital
+        if on { dataModeClients[client] = currentSatTp() } else { dataModeClients[client] = nil }
+        ODLog.shared.log("setDigitalDataMode(\(on)) client=\(client) clients=\(dataModeClients.sorted { $0.key < $1.key }) connected=\(connected) hold=\(holdDoppler)", category: "cat")
+        guard useDataModeForDigital != before else { return }
         lastEngageKey = ""     // force applyModes() to run again
         if connected, dopplerHeld() { Task { await stepDopplerNow() } }   // FT4 is slot-gated
     }
@@ -245,6 +252,9 @@ final class RigController: ObservableObject {
 
     func connect() {
         guard !connecting, !connected else { return }
+        // The exit sequence of a just-requested disconnect is still talking to the old
+        // links; connecting now would let its teardown remove the new ones.
+        guard !disconnecting else { statusText = "Disconnecting…"; return }
         guard config.isConfigured, let slot0 = config.slots.first, let spec0 = slot0.spec else {
             errorText = "Configure a radio first."; return
         }
@@ -359,7 +369,12 @@ final class RigController: ObservableObject {
         return nil
     }
 
+    /// True while an operator disconnect's exit sequence (tone off, SATL/split/sat-mode
+    /// exits, teardown) is still running.
+    @Published private(set) var disconnecting = false
+
     func disconnect() {
+        guard !disconnecting else { return }
         timer?.cancel(); timer = nil
         SSTVDopplerFeed.set(0)      // stop feeding a stale Doppler residual to the SSTV decoder
         // Clear `connected` BEFORE tearing the transports down: closing a socket can fire
@@ -372,7 +387,9 @@ final class RigController: ObservableObject {
         // Leave the radio the way we found it on an operator-initiated disconnect
         // (best-effort; the link is still up here): uplink tone off, Kenwood out of SATL,
         // split off on VFO A, Icom satellite mode off on MAIN.
+        disconnecting = true
         Task {
+            defer { disconnecting = false }
             // Let an in-flight tick finish so its frames don't interleave with the exit.
             var waited = 0
             while isTicking, waited < 2000 { await pace(20); waited += 20 }
@@ -798,6 +815,8 @@ final class RigController: ObservableObject {
         // Re-apply mode + step (and tone) whenever the satellite, transponder, mode or
         // uplink tone changes — the frequency band changes with them.
         let tone = SatelliteTones.resolve(norad: sat.id, uplinkHz: tp.uplinkCenter, tuning: config.tuning)
+        // A data-mode request made before any transponder was known adopts this one.
+        for (client, satTp) in dataModeClients where satTp.isEmpty { dataModeClients[client] = "\(sat.id)|\(tp.id)" }
         let key = "\(sat.id)|\(tp.id)|\(dlMode.rawValue)|\(ulMode.rawValue)|\(useDataModeForDigital)|\(tone.hz)"
         if key != lastEngageKey {
             // A passband trim belongs to one bird/transponder: reset it when that changes

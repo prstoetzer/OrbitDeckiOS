@@ -90,6 +90,10 @@ struct HomeFT4Card: View {
     @AppStorage(FT4Settings.autoCalibrateKey) private var ft4AutoCal = false
     @State private var showSetup = false
     @State private var newBlockedCall = ""
+    /// Manual TX message being typed; committed to the engine on Return so a half-typed
+    /// message can't late-start or replace a burst already on the air.
+    @State private var messageDraft = ""
+    @FocusState private var messageFocused: Bool
     let satellite: SatelliteRecord
 
     private var visible: Bool {
@@ -495,8 +499,13 @@ struct HomeFT4Card: View {
                 Text("Call CQ, or tap a decoded station to answer it — the exchange (grid → report → RR73) and logging run automatically; your report is set from their decoded SNR.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             } else {
-                TextField("TX message (e.g. CQ N8HM FM18)", text: $ft4.txMessage)
+                TextField("TX message (e.g. CQ N8HM FM18)", text: $messageDraft)
                     .textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.odField)
+                    .focused($messageFocused)
+                    .submitLabel(.done)
+                    .onSubmit { ft4.txMessage = messageDraft.trimmingCharacters(in: .whitespaces).uppercased() }
+                    .onAppear { messageDraft = ft4.txMessage }
+                    .onChange(of: ft4.txMessage) { _, new in if !messageFocused { messageDraft = new } }
                 Toggle("Transmit on even slots", isOn: $ft4.txOnEvenSlots)
             }
             if !ft4.pttOverCAT {

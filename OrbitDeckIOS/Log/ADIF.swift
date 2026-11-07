@@ -106,18 +106,22 @@ enum ADIF {
     // MARK: Import
 
     /// Parse an ADIF document into QSO records (best-effort; unknown fields ignored).
+    /// Works on UTF-8 bytes: an ADIF length is a byte count (as `field` writes it), so a
+    /// non-ASCII value (a name, a comment) must be sliced by bytes, not characters.
     static func parse(_ text: String) -> [QSORecord] {
+        let bytes = Array(text.utf8)
+        let n = bytes.count
+        let lt = UInt8(ascii: "<"), gt = UInt8(ascii: ">")
+
+        func tagText(_ a: Int, _ b: Int) -> String {
+            String(decoding: bytes[a..<b], as: UTF8.self).lowercased()
+        }
         // Skip the header (everything up to and including <EOH>).
-        let lower = text.lowercased()
-        var scan = text.startIndex
-        if let eoh = lower.range(of: "<eoh>") { scan = eoh.upperBound }
+        var i = 0
+        if let eoh = firstTag("eoh", in: bytes) { i = eoh }
 
         var records: [QSORecord] = []
         var fields: [String: String] = [:]
-        let chars = Array(text)
-        var i = text.distance(from: text.startIndex, to: scan)
-        let n = chars.count
-
         func flush() {
             guard !fields.isEmpty else { return }
             records.append(recordFrom(fields))
@@ -125,26 +129,32 @@ enum ADIF {
         }
 
         while i < n {
-            guard chars[i] == "<" else { i += 1; continue }
-            guard let close = nextIndex(of: ">", in: chars, from: i + 1) else { break }
-            let tag = String(chars[(i + 1)..<close]).lowercased()
+            guard bytes[i] == lt else { i += 1; continue }
+            guard let close = bytes[(i + 1)...].firstIndex(of: gt) else { break }
+            let tag = tagText(i + 1, close)
             if tag == "eor" { flush(); i = close + 1; continue }
             if tag == "eoh" { i = close + 1; continue }
             let parts = tag.split(separator: ":")
-            guard parts.count >= 2, let len = Int(parts[1]) else { i = close + 1; continue }
+            guard parts.count >= 2, let len = Int(parts[1]), len >= 0 else { i = close + 1; continue }
             let valStart = close + 1
             let valEnd = min(n, valStart + len)
-            let value = String(chars[valStart..<valEnd])
-            fields[String(parts[0])] = value
+            fields[String(parts[0])] = String(decoding: bytes[valStart..<valEnd], as: UTF8.self)
             i = valEnd
         }
         flush()
         return records
     }
 
-    private static func nextIndex(of ch: Character, in chars: [Character], from: Int) -> Int? {
-        var j = from
-        while j < chars.count { if chars[j] == ch { return j }; j += 1 }
+    /// Byte offset just past the first `<name>` tag (case-insensitive), or nil.
+    private static func firstTag(_ name: String, in bytes: [UInt8]) -> Int? {
+        let pattern = Array("<\(name)>".utf8)
+        guard bytes.count >= pattern.count else { return nil }
+        func lower(_ b: UInt8) -> UInt8 { (b >= 65 && b <= 90) ? b + 32 : b }
+        for start in 0...(bytes.count - pattern.count) {
+            var ok = true
+            for k in 0..<pattern.count where lower(bytes[start + k]) != pattern[k] { ok = false; break }
+            if ok { return start + pattern.count }
+        }
         return nil
     }
 

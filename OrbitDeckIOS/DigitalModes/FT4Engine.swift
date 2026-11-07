@@ -78,8 +78,10 @@ final class FT4Engine: ObservableObject {
     @Published var pounceTargets = UserDefaults.standard.string(forKey: FT4Settings.pounceTargetsKey) ?? "" {
         didSet { UserDefaults.standard.set(pounceTargets, forKey: FT4Settings.pounceTargetsKey) }
     }
-    @Published var pounceEnabled = UserDefaults.standard.bool(forKey: FT4Settings.pounceEnabledKey) {
-        didSet { UserDefaults.standard.set(pounceEnabled, forKey: FT4Settings.pounceEnabledKey) }
+    /// Armed state is deliberately not persisted (the targets are): a session started
+    /// later just to monitor must never transmit on its own.
+    @Published var pounceEnabled = false {
+        didSet { if pounceEnabled != oldValue { ODLog.shared.log("FT4 pounce \(pounceEnabled ? "armed" : "off")", category: "ft4") } }
     }
     /// Callsigns never auto-answered while calling CQ (a manual tap still works them).
     /// Persisted.
@@ -705,7 +707,9 @@ final class FT4Engine: ObservableObject {
     /// that matches a target. Fires once, then turns itself off so a completed QSO isn't
     /// repeated on the station's next CQ.
     private func pounceIfMatched(_ found: [(text: String, snr: Int, freq: Double)], endedSlot: Int) {
-        guard pounceEnabled, workedCall.isEmpty, !myCallSeq.isEmpty else { return }
+        // Idle only: no QSO in progress and no manual (non-sequenced) transmission running.
+        guard pounceEnabled, workedCall.isEmpty, !myCallSeq.isEmpty,
+              !(txEnabled && !autoSequence) else { return }
         let targets = pounceTokens
         guard !targets.isEmpty else { return }
         for d in found {
@@ -1453,7 +1457,6 @@ enum FT4Settings {
     static let autoCalibrateKey = "orbitdeck.ft4.autoCalibrate"
     /// Wait-and-pounce targets (free text: calls/grids) and whether pounce is armed.
     static let pounceTargetsKey = "orbitdeck.ft4.pounceTargets"
-    static let pounceEnabledKey = "orbitdeck.ft4.pounceEnabled"
     /// Callsigns never auto-answered while calling CQ ([String]).
     static let cqBlockListKey = "orbitdeck.ft4.cqBlockList"
     /// Remembered non-standard/compound callsigns for ft8_lib hash resolution ([String]).
@@ -3165,7 +3168,7 @@ final class PacketEngine: ObservableObject {
         }
         source = nil
         demodQueue.sync { demod = nil }
-        if engagedDataMode { rig?.setDigitalDataMode(false); engagedDataMode = false }
+        if engagedDataMode { rig?.setDigitalDataMode(false, client: "packet"); engagedDataMode = false }
         kissReader?.cancel(); kissReader = nil
         if let link = kissLink {
             let restore = settings.bbLinkTune && tunedForSatellite != nil
@@ -3212,7 +3215,7 @@ final class PacketEngine: ObservableObject {
         // and never on the KISS path (the radio's own TNC).
         if settings.useDataMode, let rig, rig.connected,
            audio.usbConnected || rig.icomAudioTransport != nil {
-            rig.setDigitalDataMode(true)
+            rig.setDigitalDataMode(true, client: "packet")
             engagedDataMode = true
         }
         // Stuck-PTT recovery: make sure the radio isn't left keyed from a previous run.

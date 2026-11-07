@@ -53,8 +53,8 @@ struct HomeQuickLogCard: View {
     let satellite: SatelliteRecord
 
     @State private var call = ""
-    @State private var rstSent = "59"
-    @State private var rstRcvd = "59"
+    @State private var rstSent = ""
+    @State private var rstRcvd = ""
     @State private var theirGrid = ""
     @State private var justLogged = false
 
@@ -81,7 +81,8 @@ struct HomeQuickLogCard: View {
                 Text("Saved to the Log. Upload to LoTW / Cloudlog from the Log screen.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
-            .onAppear { resetRst() }
+            // Don't clobber a report the operator typed when they come back to this tab.
+            .onAppear { if rstSent.isEmpty && rstRcvd.isEmpty { resetRst() } }
             .onChange(of: satellite.id) { _, _ in resetRst() }
         }
     }

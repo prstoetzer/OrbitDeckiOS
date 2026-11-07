@@ -368,7 +368,10 @@ final class RotatorController: ObservableObject {
     /// reaches the tracking threshold. Cached until its LOS so the flip decision is made
     /// once per pass and can't change as the remaining track shrinks after TCA.
     private func passPlan(sat: SatelliteRecord, observer: ObserverSite, look: LiveLook, now: Date) -> PassPlan? {
-        let key = PlanKey(satID: sat.id, latitude: observer.latitude, longitude: observer.longitude,
+        // Location rounded to ~1 km so a device-location observer's small GPS updates
+        // don't re-plan (and re-search the pass) every tick.
+        let key = PlanKey(satID: sat.id, latitude: (observer.latitude * 100).rounded() / 100,
+                          longitude: (observer.longitude * 100).rounded() / 100,
                           azOffsetDeg: config.azOffsetDeg, minElevationDeg: config.minElevationDeg,
                           azRange: config.azRange, flip: config.flipEnabled)
         // Hold the plan a little past LOS so a marginal end-of-pass sample doesn't re-plan.
