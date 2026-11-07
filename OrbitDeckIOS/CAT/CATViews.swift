@@ -517,6 +517,9 @@ struct HomeRigControlCard: View {
                 } else {
                     if !rig.connected, !rig.errorText.isEmpty {
                         Text(rig.errorText).font(.caption).foregroundStyle(ODTheme.warning)
+                        if let hintText = rig.statuses.first?.hint {
+                            Text(hintText).font(.caption2).foregroundStyle(ODTheme.good)
+                        }
                     }
                 }
                 if rig.connected {

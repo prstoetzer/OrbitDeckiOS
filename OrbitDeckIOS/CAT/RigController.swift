@@ -230,10 +230,6 @@ final class RigController: ObservableObject {
         for link in built {
             ODLog.shared.log("connect start: \(link.spec.name) via \(String(describing: link.slot.transport)) leg=\(String(describing: link.leg)) host=\(link.slot.host):\(link.slot.port)", category: "cat")
         }
-        guard let store = self.store else {
-            ODLog.shared.log("OrbitStore not attached")
-            return
-        }
 
         Task {
             // Connect all radios concurrently so both progress at once. Capture the
@@ -242,11 +238,7 @@ final class RigController: ObservableObject {
                 for (i, link) in links.enumerated() {
                     let t = link.transport
                     group.addTask {
-                        do {
-                            try await t.connect();
-                            try await t.postConnect(store: store);
-                            return (i, nil)
-                        }
+                        do { try await t.connect(); return (i, nil) }
                         catch { return (i, error) }
                     }
                 }
@@ -256,11 +248,8 @@ final class RigController: ObservableObject {
                         let errorText = err.localizedDescription
                         statuses[i].error = errorText
                         ODLog.shared.log("connect failed [\(statuses[i].radioName)]: \(errorText)", category: "cat")
-                        
                         if statuses[i].transport == .bleicom,
-                           let bleError = err as? IComBLESerialTransport.BLEError,
-                           bleError == .commandTimeout
-                        {
+                           err as? IComBLESerialTransport.BLEError == .accessNotGranted {
                             statuses[i].hint = "Hint: If you are pairing your Icom radio via Bluetooth for the first time, go to Menu > Set > Bluetooth Set > Pairing Reception and then try to connect again."
                         }
                     } else {

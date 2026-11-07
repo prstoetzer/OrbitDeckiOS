@@ -38,7 +38,6 @@ enum CATError: LocalizedError {
 /// Common transport interface used by `RigController`.
 protocol CATTransport: AnyObject, Sendable {
     func connect() async throws
-    func postConnect(store: OrbitStore) async throws
     func disconnect() async
     func send(_ bytes: [UInt8]) async throws
     /// Return bytes received so far, waiting up to `maxWait` for the first byte.
@@ -148,8 +147,6 @@ final class BLESerialTransport: NSObject, CATTransport, @unchecked Sendable {
         case .failure(let e): c.resume(throwing: e)
         }
     }
-    
-    func postConnect(store: OrbitStore) async throws { /* no-op */ }
 
     func disconnect() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
@@ -278,31 +275,52 @@ extension BLESerialTransport: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 }
 
-
-/// ICOM BLE UART serial transport (CoreBluetooth). Thread-safety is hand-managed with
-/// a dedicated queue + lock, so the type is `@unchecked Sendable`.
+/// Icom native Bluetooth CI-V (IC-705 / IC-905). The radio exposes a single GATT
+/// characteristic (write + notify) in its own service and only opens the CI-V bus
+/// after a short sign-in: our ID as a 36-character ASCII UUID string, a 16-byte
+/// device name, then a fixed token. The radio answers each with an `FE F1 00 cc … FD`
+/// config frame and grants bus access with `FE F1 00 64 FD`. The name is only
+/// answered while the radio is in Pairing Reception. Protocol behavior per K7MDL2's
+/// IC-705 BLE example. Thread-safety is hand-managed with a dedicated queue + lock,
+/// so the type is `@unchecked Sendable`.
 final class IComBLESerialTransport: NSObject, CATTransport, @unchecked Sendable {
-    // Bluetooth device name - must be exactly 16 bytes, can be padded with spaces
-    static let ourDeviceName: String = "ORBITDECK APP   "
-    
-    // Icom UART Service and characteristics UUIDs.
+    /// Name shown in the radio's Pairing/Connect list. Must be exactly 16 bytes.
+    static let ourDeviceName = "ORBITDECK APP   "
+
+    // Icom UART service; one characteristic carries both directions.
     // Computed (not stored) so the non-Sendable CBUUID isn't a shared global.
     static var icomService: CBUUID { CBUUID(string: "14CF8001-1EC2-D408-1B04-2EB270F14203") }
-    static var icomRXCharacteristic: CBUUID { CBUUID(string: "14CF8002-1EC2-D408-1B04-2EB270F14203") }  // write
-    static var icomTXCharacteristic: CBUUID { CBUUID(string: "14CF8002-1EC2-D408-1B04-2EB270F14203") }  // notify
+    static var icomCharacteristic: CBUUID { CBUUID(string: "14CF8002-1EC2-D408-1B04-2EB270F14203") }
+
+    /// Stable per-install ID the radio uses (with the name) to remember this pairing.
+    static var installationID: String {
+        let key = "OrbitDeckIOS.installationUUID"
+        if let id = UserDefaults.standard.string(forKey: key), id.count == 36 { return id }
+        let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }
+
+    enum BLEError: LocalizedError, Equatable {
+        case accessNotGranted
+        var errorDescription: String? {
+            switch self {
+            case .accessNotGranted: "The radio did not grant CI-V access over Bluetooth."
+            }
+        }
+    }
 
     private let identifier: UUID
     private let queue = DispatchQueue(label: "org.orbitdeck.cat.icomble")
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
-    private var writeChar: CBCharacteristic?
-    private var notifyChar: CBCharacteristic?
+    private var ioChar: CBCharacteristic?
 
     private let lock = NSLock()
     private var rxBuffer: [UInt8] = []
     private var lastRxNanos: UInt64 = 0
+    private var configSeen: Set<UInt8> = []     // sign-in replies received (cmd bytes)
     private var connectCont: CheckedContinuation<Void, Error>?
-    private var writeResponseContinuation: CheckedContinuation<Data, Error>?
     private var poweredOn = false
     private var wantConnect = false
     private var connected = false
@@ -319,12 +337,21 @@ final class IComBLESerialTransport: NSObject, CATTransport, @unchecked Sendable 
     }
 
     func connect() async throws {
+        try await connectGATT()
+        do {
+            try await signIn()
+        } catch {
+            await disconnect()
+            throw error
+        }
+        lock.withLock { connected = true }
+    }
+
+    private func connectGATT() async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             queue.async {
                 self.connectCont = cont
                 self.wantConnect = true
-                // Fail if we never reach a connected state in time. Route through
-                // finishConnect so the scan is stopped and intent cleared.
                 self.queue.asyncAfter(deadline: .now() + 12) { [weak self] in
                     guard let self, self.connectCont != nil else { return }
                     self.wantConnect = false
@@ -335,10 +362,46 @@ final class IComBLESerialTransport: NSObject, CATTransport, @unchecked Sendable 
         }
     }
 
+    /// Sign in to the radio's CI-V bus. Each step waits briefly for its reply so the
+    /// writes don't collide; only the final access grant is required.
+    private func signIn() async throws {
+        lock.withLock { configSeen.removeAll(); rxBuffer.removeAll() }
+        write(CATCodec.civBLEConfigFrame(cfgCommand: 0x61, payload: Array(Self.installationID.utf8)))
+        _ = await awaitConfig(0x61, timeout: 0.5)
+        write(CATCodec.civBLEConfigFrame(cfgCommand: 0x62, payload: Array(Self.ourDeviceName.utf8)))
+        _ = await awaitConfig(0x62, timeout: 0.5)
+        write(CATCodec.civBLEConfigFrame(cfgCommand: 0x63, payload: [0xEE, 0x39, 0x09, 0x10]))
+        guard await awaitConfig(0x64, timeout: 5) else { throw BLEError.accessNotGranted }
+        ODLog.shared.log("icom BT: CI-V access granted", category: "cat")
+    }
+
+    private func write(_ bytes: [UInt8]) {
+        queue.async {
+            guard let p = self.peripheral, let ch = self.ioChar else { return }
+            p.writeValue(Data(bytes), for: ch, type: .withResponse)
+        }
+    }
+
+    /// Wait (on the BLE queue) until a sign-in reply with `cmd` arrives or `timeout` passes.
+    private func awaitConfig(_ cmd: UInt8, timeout: TimeInterval) async -> Bool {
+        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            queue.async {
+                let deadline = DispatchTime.now() + timeout
+                @Sendable func poll() {
+                    self.lock.lock(); let seen = self.configSeen.contains(cmd); self.lock.unlock()
+                    if seen || DispatchTime.now() >= deadline {
+                        cont.resume(returning: seen)
+                    } else {
+                        self.queue.asyncAfter(deadline: .now() + .milliseconds(20)) { poll() }
+                    }
+                }
+                poll()
+            }
+        }
+    }
+
     private func tryConnect() {
         guard poweredOn, wantConnect else { return }
-        // Prefer a known (bonded/connected) peripheral; otherwise scan and match by
-        // identifier — a freshly discovered adapter isn't retrievable until paired.
         if let p = central.retrievePeripherals(withIdentifiers: [identifier]).first {
             connectPeripheral(p)
         } else if !scanning {
@@ -359,47 +422,9 @@ final class IComBLESerialTransport: NSObject, CATTransport, @unchecked Sendable 
         if scanning { central.stopScan(); scanning = false }
         guard let c = connectCont else { return }
         connectCont = nil
-        
         switch result {
-        case .success: connected = true; c.resume()
+        case .success: c.resume()
         case .failure(let e): c.resume(throwing: e)
-        }
-    }
-    
-    func postConnect(store: OrbitStore) async throws {
-        let deviceUUID = await store.installationUUID
-        var uuidValue = UUID(uuidString: deviceUUID)
-        let deviceUUIDBytes = withUnsafeBytes(of: &uuidValue) { Array($0) }
-        
-        let deviceUUIDMessage = CATCodec.civBLEConfigFrame(cfgCommand: 0x61, payload: deviceUUIDBytes)
-        
-        let deviceNameBytes: [UInt8] = Array(IComBLESerialTransport.ourDeviceName.utf8)
-        let deviceNameMessage = CATCodec.civBLEConfigFrame(cfgCommand: 0x62, payload: deviceNameBytes)
-        
-        let tokenMessage = CATCodec.civBLEConfigFrame(cfgCommand: 0x63, payload: [0xEE, 0x39, 0x09, 0x10])
-        let civAccessGrantedReply = CATCodec.civBLEConfigFrame(cfgCommand: 0x64, payload: [])
-        
-        // Step 1: Send 'device UUID' message
-        _ = try await sendCommandAndWaitForReply(deviceUUIDMessage)
-
-        // Step 2: Send 'device name' message
-        do {
-            _ = try await sendCommandAndWaitForReply(deviceNameMessage)
-        } catch BLEError.commandTimeout {
-            // Ignore timeout exception intentionally as the radio only replies until it is registered for the first time
-        } catch {
-            throw error
-        }
-        
-        // Step 3: Send 'token' message
-        do {
-            let tokenMessageReply = try await sendCommandAndWaitForReply(tokenMessage)
-            
-            if tokenMessageReply != Data(civAccessGrantedReply) {
-                throw PairingError.accessGrantedMismatch(expected: civAccessGrantedReply.description, received: tokenMessageReply.description)
-            }
-        } catch {
-            throw error
         }
     }
 
@@ -407,10 +432,9 @@ final class IComBLESerialTransport: NSObject, CATTransport, @unchecked Sendable 
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             queue.async {
                 self.wantConnect = false
-                self.connected = false
+                self.lock.lock(); self.connected = false; self.lock.unlock()
                 if self.scanning { self.central.stopScan(); self.scanning = false }
                 if let p = self.peripheral { self.central.cancelPeripheralConnection(p) }
-                // Resolve a still-pending connect (disconnect tapped mid-connect).
                 if let c = self.connectCont { self.connectCont = nil; c.resume(throwing: CATError.notConnected) }
                 cont.resume()
             }
@@ -418,23 +442,16 @@ final class IComBLESerialTransport: NSObject, CATTransport, @unchecked Sendable 
     }
 
     func send(_ bytes: [UInt8]) async throws {
-        guard isConnected, let p = peripheral, let ch = writeChar else { throw CATError.notConnected }
-        
-        let type: CBCharacteristicWriteType = ch.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
-        // Chunk to a conservative MTU so large ASCII commands still get through.
+        guard isConnected else { throw CATError.notConnected }
         let chunk = 180
         var i = 0
         while i < bytes.count {
-            let slice = Array(bytes[i..<min(i + chunk, bytes.count)])
-            queue.async { p.writeValue(Data(slice), for: ch, type: type) }
+            write(Array(bytes[i..<min(i + chunk, bytes.count)]))
             i += chunk
         }
     }
 
     func readAvailable(maxWait: TimeInterval) async -> [UInt8] {
-        // Poll on the BLE queue (reliable GCD timing), resuming once the reply has
-        // gone quiet for ~80 ms or the hard deadline passes. No Task.sleep, so this
-        // never stalls the main thread.
         await withCheckedContinuation { (cont: CheckedContinuation<[UInt8], Never>) in
             queue.async {
                 let start = DispatchTime.now().uptimeNanoseconds
@@ -456,83 +473,22 @@ final class IComBLESerialTransport: NSObject, CATTransport, @unchecked Sendable 
             }
         }
     }
-    
-    
-func sendCommandAndWaitForReply(_ bytes: [UInt8]) async throws -> Data {
-        try await withThrowingTaskGroup(of: Data.self) { group in
-            // Task for sending and consequent waiting for reply
-            group.addTask { [self] in
-                try await withCheckedThrowingContinuation { continuation in
-                    self.lock.lock()
-                    self.writeResponseContinuation = continuation
-                    self.lock.unlock()
-                    
-                    guard isConnected, let p = peripheral, let ch = writeChar else {
-                        self.clearContinuation(with: .failure(CATError.notConnected))
-                        return
-                    }
-                    p.writeValue(Data(bytes), for: ch, type: .withResponse)
-                }
-            }
-            
-            // Task handling timeout (sleep)
-            group.addTask {
-                try await Task.sleep(nanoseconds: 3 * 1_000_000_000) // 3 seconds
-                throw BLEError.commandTimeout
-            }
-            
-            // whichever task completes first, wins
-            do {
-                let firstResult = try await group.next()!
-                group.cancelAll()
-                return firstResult
-            } catch {
-                group.cancelAll()
-                // if the timeout task has won, clean up the Bluetooth continuation
-                self.clearContinuation(with: .failure(CATError.notConnected))
-                throw error
-            }
-        }
-    }
 
-    
-    
-    // Helper method to atomically clear and resume the continuation under a lock
-    private func clearContinuation(with result: Result<Data, Error>) {
-        self.lock.lock()
-        guard let continuation = self.writeResponseContinuation else {
-            self.lock.unlock()
-            return
-        }
-        self.writeResponseContinuation = nil
-        self.lock.unlock()
-        
-        // Resume outside of the lock scope to prevent potential deadlocks
-        continuation.resume(with: result)
-    }
-    
-    enum PairingError: Error, CustomStringConvertible {
-        case accessGrantedMismatch(expected: String, received: String)
-        
-        var description: String {
-            switch self {
-            case .accessGrantedMismatch(let expected, let received):
-                return "Expected receiving CI-V access granted reply from radio (\(expected)), but received (\(received))"
+    /// Pull complete `FE F1 00 cc … FD` sign-in frames out of `rxBuffer` (so the CI-V
+    /// parser never sees them) and record their command bytes. Call with `lock` held.
+    private func extractConfigFrames() {
+        var i = 0
+        while i + 3 < rxBuffer.count {
+            guard rxBuffer[i] == 0xFE, rxBuffer[i + 1] == 0xF1, rxBuffer[i + 2] == 0x00 else { i += 1; continue }
+            guard let end = rxBuffer[(i + 3)...].firstIndex(of: 0xFD) else { return }   // incomplete
+            let cmd = rxBuffer[i + 3]
+            if cmd == 0x63, end > i + 4 {
+                ODLog.shared.log("icom BT: token reply \(rxBuffer[i + 4] == 0x01 ? "pairing accepted" : "already paired")", category: "cat")
             }
+            configSeen.insert(cmd)
+            rxBuffer.removeSubrange(i...end)
         }
     }
-
-    enum BLEError: Error, LocalizedError {
-        case commandTimeout
-        
-        var errorDescription: String? {
-            switch self {
-            case .commandTimeout:
-                return "The radio did not respond to the BT command in time (timeout)."
-            }
-        }
-    }
-
 }
 
 // CoreBluetooth delegates all run on `queue`.
@@ -550,7 +506,7 @@ extension IComBLESerialTransport: CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        peripheral.discoverServices(nil)
+        peripheral.discoverServices([Self.icomService])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -562,46 +518,39 @@ extension IComBLESerialTransport: CBCentralManagerDelegate, CBPeripheralDelegate
         if connectCont != nil {
             finishConnect(.failure(error ?? CATError.notConnected))
         } else if wasConnected, wantConnect {
-            // Live drop after a good connect (adapter out of range / powered off), not a
-            // caller-initiated disconnect (which clears wantConnect first).
+            // Live drop after a good connect, not a caller-initiated disconnect.
             onDisconnect?()
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let services = peripheral.services else { finishConnect(.failure(CATError.characteristicsNotFound)); return }
-        for s in services {
-            peripheral.discoverCharacteristics(nil, for: s)
+        guard let s = peripheral.services?.first(where: { $0.uuid == Self.icomService }) else {
+            finishConnect(.failure(CATError.characteristicsNotFound)); return
         }
+        peripheral.discoverCharacteristics([Self.icomCharacteristic], for: s)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        guard let chars = service.characteristics else { return }
-        for c in chars {
-            // Use Icom read/write characteristic if present.
-            if c.uuid == Self.icomRXCharacteristic || (writeChar == nil && (c.properties.contains(.write) || c.properties.contains(.writeWithoutResponse))) {
-                if c.uuid == Self.icomRXCharacteristic || writeChar == nil { writeChar = c }
-            }
-            if c.uuid == Self.icomTXCharacteristic || (notifyChar == nil && c.properties.contains(.notify)) {
-                if c.uuid == Self.icomTXCharacteristic || notifyChar == nil {
-                    notifyChar = c
-                    peripheral.setNotifyValue(true, for: c)
-                }
-            }
+        guard let c = service.characteristics?.first(where: { $0.uuid == Self.icomCharacteristic }) else {
+            finishConnect(.failure(CATError.characteristicsNotFound)); return
         }
-        if writeChar != nil, notifyChar != nil { finishConnect(.success(())) }
+        ioChar = c
+        peripheral.setNotifyValue(true, for: c)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard characteristic.uuid == Self.icomCharacteristic else { return }
+        // Only start the sign-in once notifications are on, or the replies are lost.
+        if let error { finishConnect(.failure(error)) } else { finishConnect(.success(())) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard let data = characteristic.value else { return }
-        lock.lock(); rxBuffer.append(contentsOf: data); lastRxNanos = DispatchTime.now().uptimeNanoseconds; lock.unlock()
-        
-        // Unblock the awaiting async execution thread
-        if let error = error {
-            self.clearContinuation(with: .failure(error))
-        } else {
-            self.clearContinuation(with: .success(data))
-        }
+        lock.lock()
+        rxBuffer.append(contentsOf: data)
+        lastRxNanos = DispatchTime.now().uptimeNanoseconds
+        extractConfigFrames()
+        lock.unlock()
     }
 }
 
