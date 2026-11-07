@@ -973,9 +973,11 @@ final class AutoSwitchController: ObservableObject {
                                  preemptElevation: Double = 0,
                                  initial: UInt?) -> (passes: [TimelinePass], spans: [TimelineSpan], events: [AutoSwitchEvent]) {
         let end = start.addingTimeInterval(hours * 3600)
-        // A pre-AOS switch elevation needs elevations just below the horizon, so
-        // sample a few minutes either side of each pass (≈1°/10 s near the horizon on LEO).
-        let padding: TimeInterval = preemptElevation < 0 ? max(120, -preemptElevation * 60) : 0
+        // A pre-AOS switch elevation (negative take-over or switch-in) needs elevations
+        // just below the horizon, so sample a few minutes either side of each pass
+        // (≈1°/10 s near the horizon on LEO).
+        let lowest = min(preemptElevation, threshold)
+        let padding: TimeInterval = lowest < 0 ? max(120, -lowest * 60) : 0
         let passes = PassTimeline.load(priorities.enumerated().map { (record: $0.element, colorIndex: $0.offset) },
                                        observer: observer, from: start, to: end, padding: padding)
         let bySat = Dictionary(grouping: passes, by: \.norad)

@@ -363,6 +363,16 @@ struct AutoSwitchSettings: Codable, Equatable, Sendable {
     }
 }
 
+extension AutoSwitchSettings {
+    /// Where a rising higher-priority satellite takes over, for display:
+    /// "at AOS (0°)", "at −5°, before AOS" or "at 5°".
+    var takeOverPhrase: String {
+        let el = ODFormat.angle(preemptElevation, decimals: 0)
+        if preemptElevation == 0 { return "at AOS (0°)" }
+        return preemptElevation < 0 ? "at \(el), before AOS" : "at \(el)"
+    }
+}
+
 /// A priority satellite's state at one instant, as the rules see it.
 struct AutoSwitchCandidate: Sendable {
     let norad: UInt

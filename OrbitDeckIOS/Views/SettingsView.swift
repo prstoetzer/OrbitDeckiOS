@@ -736,7 +736,7 @@ struct AutoSwitchView: View {
                     }
                 }
             } footer: {
-                Text("Modeled on SatPC32's automatic satellite change. When no priority satellite is being tracked, OrbitDeck selects the highest-priority one as soon as it reaches the switch-in elevation. If a higher-priority satellite rises during another's pass, it takes over right away (at 0°) so none of its pass is lost. When the tracked satellite sets, OrbitDeck falls back to a lower-priority one that is still up. CAT Doppler and the rotator follow the selection.")
+                Text("Modeled on SatPC32's automatic satellite change. When no priority satellite is being tracked, OrbitDeck selects the highest-priority one as soon as it reaches the switch-in elevation (\(ODFormat.angle(auto.threshold(for: store), decimals: 0))). \(preemptionSummary) When the tracked satellite sets, OrbitDeck falls back to a lower-priority one that is still up. CAT Doppler and the rotator follow the selection.")
             }
 
             Section {
@@ -841,12 +841,22 @@ struct AutoSwitchView: View {
         store.satellites.first { $0.id == norad }?.name ?? "NORAD \(norad)"
     }
 
+    /// The take-over rule as currently configured, for the footer.
+    private var preemptionSummary: String {
+        let s = auto.settings
+        guard s.preemption == .atRise else {
+            return "If a higher-priority satellite rises during another's pass, OrbitDeck finishes the current pass first."
+        }
+        let lost = s.preemptElevation > 0 ? "" : " so none of its pass is lost"
+        return "If a higher-priority satellite rises during another's pass, it takes over \(s.takeOverPhrase)\(lost)."
+    }
+
     private func reasonText(_ reason: AutoSwitchReason) -> String {
         switch reason {
         case .reachedMinimum:
             return "reaches \(ODFormat.angle(auto.threshold(for: store), decimals: 0))"
         case .preempted(let other):
-            return "rises during \(name(other))'s pass and takes over (higher priority)"
+            return "takes over from \(name(other)) \(auto.settings.takeOverPhrase) (higher priority)"
         case .fellBack(let other):
             return "\(name(other)) set; still in range"
         }

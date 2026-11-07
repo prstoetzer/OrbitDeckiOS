@@ -68,9 +68,7 @@ private struct AutoSwitchBanner: View {
         case .reachedMinimum:
             return "Next: \(target) at \(when), when it reaches \(ODFormat.angle(auto.threshold(for: store), decimals: 0))."
         case .preempted(let from):
-            let el = auto.settings.preemptElevation
-            let at = el == 0 ? "at AOS (0°)" : (el < 0 ? "at \(ODFormat.angle(el, decimals: 0)), before AOS" : "at \(ODFormat.angle(el, decimals: 0))")
-            return "Next: \(target) at \(when), taking over from \(name(from)) \(at)."
+            return "Next: \(target) at \(when), taking over from \(name(from)) \(auto.settings.takeOverPhrase)."
         case .fellBack(let from):
             return "Next: \(target) at \(when), when \(name(from)) sets."
         }
