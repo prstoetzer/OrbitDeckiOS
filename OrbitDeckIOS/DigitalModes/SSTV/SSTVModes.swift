@@ -114,4 +114,39 @@ enum SSTVModes {
     ]
 
     static func mode(forVIS vis: Int) -> SSTVMode? { all.first { $0.vis == vis } }
+    static func mode(named name: String) -> SSTVMode? { all.first { $0.name == name } }
+
+    /// Modes a damaged VIS code could plausibly have been: every known mode whose VIS
+    /// differs from `vis` by exactly one bit (Robot 36 0x08 vs Robot 72 0x0C is the
+    /// classic weak-signal confusion).
+    static func oneBitNeighbors(ofVIS vis: Int) -> [SSTVMode] {
+        all.filter { ($0.vis ^ vis).nonzeroBitCount == 1 }
+    }
+
+    // MARK: Per-satellite expected modes
+
+    /// Modes a satellite is known to transmit, most likely first. Used when the VIS
+    /// header is damaged or missed entirely (decoding started mid-picture): the line
+    /// sync period then picks among these. ISS is keyed by NORAD ID; the small Russian
+    /// cubesats by catalog name, since their IDs/names vary between catalogs.
+    private static let expectedByNORAD: [UInt: [String]] = [
+        25544: ["PD 120", "PD 180", "Robot 36"]      // ISS (ARISS SSTV events)
+    ]
+    private static let expectedByName: [(match: String, modes: [String])] = [
+        ("UMKA", ["Robot 36"]),                       // UmKA-1 (RS40S)
+        ("SAKHACUBE", ["Robot 36"])
+    ]
+
+    static func expected(norad: UInt?, name: String) -> [SSTVMode] {
+        if let norad, let names = expectedByNORAD[norad] { return names.compactMap(mode(named:)) }
+        // Normalize to letters/digits so "SakhaCube", "SAKHA-CUBE" and "UmKA-1 (RS40S)" match.
+        let key = name.uppercased().filter { $0.isLetter || $0.isNumber }
+        // ISS by name only as a whole token, so e.g. "SWISSCUBE" doesn't match.
+        let tokens = name.uppercased().split { !$0.isLetter && !$0.isNumber }
+        if tokens.contains("ISS") || tokens.contains("ZARYA") {
+            return expectedByNORAD[25544, default: []].compactMap(mode(named:))
+        }
+        for e in expectedByName where key.contains(e.match) { return e.modes.compactMap(mode(named:)) }
+        return []
+    }
 }
