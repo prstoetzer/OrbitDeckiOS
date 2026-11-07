@@ -2524,6 +2524,270 @@ struct Biquad {
     }
 }
 
+/// What the packet engine needs from a built-in demodulator (AFSK 1200 or G3RUH 9600).
+protocol PacketDemodulator: AnyObject {
+    /// True if a frame has been in progress within the last ~250 ms.
+    var channelBusy: Bool { get }
+    /// Feed audio; returns frames (address…info, FCS checked and removed).
+    func process(_ samples: [Float]) -> [AX25Frame]
+}
+
+extension AFSKDemodulator: PacketDemodulator {}
+
+// ===========================================================================
+//  G3RUH 9600 — K9NG/G3RUH 9600 bps FSK modem (pure, testable)
+//
+//  Baseband FSK: the HDLC/NRZI bit stream is scrambled with the self-
+//  synchronizing polynomial 1 + x^12 + x^17 and sent as a shaped ±1 level that
+//  directly frequency-modulates the transmitter (no audio tones). It needs the
+//  radio's 9600 data port (flat, DC-coupled-ish discriminator audio in and a
+//  direct modulator input out); speaker/mic audio is too filtered to decode.
+//
+//  Receiver: low-pass, then a bank of slicers whose thresholds track the
+//  discriminator's DC offset in different ways (a mistuned FM receiver, e.g.
+//  between CAT Doppler steps, shifts the whole baseband up or down), each with
+//  its own interpolating DPLL clock recovery, descrambler and HDLC decoder.
+//  Duplicate frames from the bank are dropped. The receive path should reach
+//  down to ~50 Hz: a steeper or higher high-pass (some sound-card inputs) makes
+//  the baseline wander enough to close the eye. Written from the G3RUH/K9NG
+//  modem description and the AX.25 specification.
+// ===========================================================================
+
+/// K9NG/G3RUH self-synchronizing scrambler, polynomial 1 + x^12 + x^17. Applied to
+/// the NRZI line levels (after NRZI on transmit, before NRZI decoding on receive).
+/// The descrambler resynchronizes by itself 17 bits into any stream, and an
+/// inverted channel only inverts the output — which NRZI ignores — so the
+/// receiver doesn't care about the radio's discriminator polarity.
+struct G3RUHScrambler {
+    private var state: UInt32 = 0          // recent line bits, newest in bit 0
+
+    init() {}
+
+    /// TX: out = in ⊕ out(n−12) ⊕ out(n−17).
+    nonisolated mutating func scramble(_ bit: Bool) -> Bool {
+        let out = (bit ? 1 : 0) ^ (state >> 11 & 1) ^ (state >> 16 & 1)
+        state = state << 1 | out
+        return out == 1
+    }
+
+    /// RX: out = in ⊕ in(n−12) ⊕ in(n−17).
+    nonisolated mutating func descramble(_ bit: Bool) -> Bool {
+        let b: UInt32 = bit ? 1 : 0
+        let out = b ^ (state >> 11 & 1) ^ (state >> 16 & 1)
+        state = state << 1 | b
+        return out == 1
+    }
+}
+
+// MARK: - G3RUH modulator
+
+enum G3RUHModulator {
+    static let baud = 9600.0
+    /// Raised-cosine roll-off: 50% keeps the occupied audio bandwidth to 7.2 kHz,
+    /// inside a 16 kHz (Icom network audio) path's Nyquist limit.
+    static let rollOff = 0.5
+    /// Pulse length each side of the bit center, in bits.
+    static let span = 4
+
+    /// Raised-cosine pulse at `x` bit periods from its center (1 at 0, 0 at other
+    /// integer offsets: no intersymbol interference at the bit centers).
+    nonisolated static func pulse(_ x: Double) -> Double {
+        let sinc = x == 0 ? 1 : sin(Double.pi * x) / (Double.pi * x)
+        let d = 1 - (2 * rollOff * x) * (2 * rollOff * x)
+        if abs(d) < 1e-9 { return Double.pi / 4 * sin(Double.pi / (2 * rollOff)) / (Double.pi / (2 * rollOff)) }
+        return sinc * cos(Double.pi * rollOff * x) / d
+    }
+
+    /// Scrambled, pulse-shaped baseband for an NRZI line-level sequence (from
+    /// `HDLC.encode`). Random data peaks up to ~1.5 × `amplitude`; clamped to ±1.
+    nonisolated static func modulate(_ levels: [Bool], sampleRate: Double, amplitude: Float = 0.5) -> [Float] {
+        var scrambler = G3RUHScrambler()
+        let symbols = levels.map { scrambler.scramble($0) ? 1.0 : -1.0 }
+        let n = Int(Double(symbols.count) * sampleRate / baud)
+        var out = [Float](repeating: 0, count: n)
+        let bitsPerSample = baud / sampleRate
+        for i in 0..<n {
+            let t = Double(i) * bitsPerSample            // time in bits; bit k is centered at k + 0.5
+            let k0 = Int(t)
+            var v = 0.0
+            for k in max(0, k0 - span)...min(symbols.count - 1, k0 + span) {
+                v += symbols[k] * pulse(t - (Double(k) + 0.5))
+            }
+            out[i] = max(-1, min(1, Float(v) * amplitude))
+        }
+        return out
+    }
+
+    /// A complete transmission: TX-delay flags, frame, tail flags, as baseband audio.
+    nonisolated static func transmission(_ frame: AX25Frame, sampleRate: Double, txDelayMs: Int, amplitude: Float = 0.5) -> [Float] {
+        let flags = max(16, Int((Double(txDelayMs) / 1000 * baud / 8).rounded()))
+        // A longer tail than AFSK: the receive filters and DPLL need a few bits to
+        // push the closing flag through.
+        return modulate(HDLC.encode(frame.encoded(), preambleFlags: flags, postambleFlags: 8),
+                        sampleRate: sampleRate, amplitude: amplitude)
+    }
+
+    /// Scrambled flags for `seconds` — the 9600 test signal for setting deviation.
+    nonisolated static func idle(seconds: Double, sampleRate: Double, amplitude: Float = 0.5) -> [Float] {
+        let flags = max(1, Int(seconds * baud / 8))
+        var bits: [Bool] = []
+        bits.reserveCapacity(flags * 8)
+        var level = true
+        for _ in 0..<flags {
+            for i in 0..<8 {
+                if (0x7E >> i) & 1 == 0 { level.toggle() }      // NRZI
+                bits.append(level)
+            }
+        }
+        return modulate(bits, sampleRate: sampleRate, amplitude: amplitude)
+    }
+}
+
+// MARK: - G3RUH demodulator
+
+/// Streaming G3RUH 9600 demodulator. Not thread-safe: feed it from one queue.
+///
+/// Rates below 38.4 kHz (Icom network audio is 16 kHz, under 2 samples per bit)
+/// are first interpolated by an integer factor with a windowed-sinc FIR, so the
+/// clock recovery has ≥ 4 samples per bit. Then a 2-pole low-pass at 6.5 kHz
+/// trims out-of-band noise, and the slicer bank:
+///  • two exponential DC trackers (≈ 8 and ≈ 32 bits), for a slowly drifting offset;
+///  • a peak/valley midpoint, which follows a DC step (a CAT Doppler retune) in a
+///    few bits, plus the midpoint ± 15% of the eye height for asymmetric eyes.
+/// Each slicer's DPLL locates zero crossings by linear interpolation between
+/// samples and nudges its phase so crossings fall on bit boundaries; it samples
+/// at mid-bit (interpolated), then descrambles and feeds its HDLC decoder.
+final class G3RUHDemodulator: PacketDemodulator {
+    let inputRate: Double
+    private let rate: Double                  // after interpolation
+    private let factor: Int
+    private let interpTaps: [Double]          // polyphase: tap p + j·factor for phase p
+    private var interpHistory: [Double]
+    private var interpIndex = 0
+    private var lp1: Biquad, lp2: Biquad
+
+    private enum Threshold { case fastMean, slowMean, envelope(Double) }
+
+    private struct Slicer {
+        let threshold: Threshold
+        var phase = 0.0
+        var prev = 0.0
+        var scrambler = G3RUHScrambler()
+        var hdlc = HDLC.Decoder()
+    }
+
+    private var slicers: [Slicer]
+    private let step: Double                  // bits per (interpolated) sample
+    private let fastDC: Double, slowDC: Double, release: Double
+    private var meanFast = 0.0, meanSlow = 0.0
+    private var hi = 0.0, lo = 0.0
+    private var recent: [(fcs: UInt16, at: Int)] = []
+    private var sampleCount = 0
+    private var lastInFrameSample = -1_000_000
+
+    init(sampleRate: Double) {
+        inputRate = sampleRate
+        let f = sampleRate < 38_400 ? Int((38_400 / sampleRate).rounded(.up)) : 1
+        factor = f
+        rate = sampleRate * Double(f)
+        // Windowed-sinc interpolator (Blackman, 16 input samples long), cutoff at
+        // 0.45 × the input rate, gain `factor` to make up for the zero stuffing.
+        let length = 16 * f
+        let wc = 0.45 / Double(f)                 // cycles per output sample
+        let center = Double(length - 1) / 2
+        interpTaps = (0..<length).map { i in
+            let x = Double(i) - center
+            let sinc = x == 0 ? 2 * wc : sin(2 * Double.pi * wc * x) / (Double.pi * x)
+            let w = 0.42 - 0.5 * cos(2 * Double.pi * Double(i) / Double(length - 1))
+                + 0.08 * cos(4 * Double.pi * Double(i) / Double(length - 1))
+            return sinc * w * Double(f)
+        }
+        interpHistory = Array(repeating: 0, count: 16)
+        lp1 = Biquad.lowPass(fc: 6500, fs: rate)
+        lp2 = Biquad.lowPass(fc: 6500, fs: rate, q: 0.54)
+        step = G3RUHModulator.baud / rate
+        let samplesPerBit = rate / G3RUHModulator.baud
+        fastDC = 1 / (8 * samplesPerBit)
+        slowDC = 1 / (32 * samplesPerBit)
+        release = 1 / (24 * samplesPerBit)
+        slicers = [Threshold.fastMean, .slowMean, .envelope(0), .envelope(0.15), .envelope(-0.15)]
+            .map { Slicer(threshold: $0) }
+    }
+
+    var channelBusy: Bool { sampleCount - lastInFrameSample < Int(rate * 0.25) }
+
+    func process(_ samples: [Float]) -> [AX25Frame] {
+        var frames: [AX25Frame] = []
+        let n = interpHistory.count
+        for s in samples {
+            if factor == 1 {
+                demodulate(Double(s), into: &frames)
+                continue
+            }
+            interpHistory[interpIndex] = Double(s)
+            for p in 0..<factor {
+                var y = 0.0
+                for j in 0..<n {
+                    y += interpTaps[p + j * factor] * interpHistory[(interpIndex - j + n) % n]
+                }
+                demodulate(y, into: &frames)
+            }
+            interpIndex = (interpIndex + 1) % n
+        }
+        return frames
+    }
+
+    private func demodulate(_ input: Double, into frames: inout [AX25Frame]) {
+        let x = lp2.process(lp1.process(input))
+        sampleCount += 1
+        meanFast += (x - meanFast) * fastDC
+        meanSlow += (x - meanSlow) * slowDC
+        // Peak/valley: jump out to new extremes, relax toward the signal otherwise.
+        hi += (x - hi) * (x > hi ? 0.5 : release)
+        lo += (x - lo) * (x < lo ? 0.5 : release)
+        let mid = (hi + lo) / 2, eye = hi - lo
+
+        var anyInFrame = false
+        for k in slicers.indices {
+            let thr: Double
+            switch slicers[k].threshold {
+            case .fastMean: thr = meanFast
+            case .slowMean: thr = meanSlow
+            case .envelope(let bias): thr = mid + bias * eye
+            }
+            let d = x - thr, prev = slicers[k].prev
+            let prevPhase = slicers[k].phase
+            slicers[k].phase += step
+            if (d >= 0) != (prev >= 0), prev != d {
+                // Crossing between the previous and this sample, at fraction f.
+                let f = prev / (prev - d)
+                var cross = prevPhase + f * step
+                cross -= cross.rounded(.down)
+                let gain = slicers[k].hdlc.inFrame ? 0.12 : 0.3
+                slicers[k].phase = max(0, slicers[k].phase - (cross - 0.5) * gain)
+            }
+            if slicers[k].phase >= 1 {
+                slicers[k].phase -= 1
+                // Mid-bit fell (phase / step) samples ago: interpolate the decision.
+                let back = min(1, max(0, slicers[k].phase / step))
+                let v = d + (prev - d) * back
+                let level = slicers[k].scrambler.descramble(v >= 0)
+                if let bytes = slicers[k].hdlc.push(level: level), let frame = AX25Frame.decode(bytes) {
+                    let fcs = AX25FCS.compute(bytes)
+                    recent.removeAll { sampleCount - $0.at > Int(rate) }
+                    if !recent.contains(where: { $0.fcs == fcs }) {
+                        recent.append((fcs, sampleCount))
+                        frames.append(frame)
+                    }
+                }
+            }
+            slicers[k].prev = d
+            if slicers[k].hdlc.inFrame { anyInFrame = true }
+        }
+        if anyInFrame { lastInFrameSample = sampleCount }
+    }
+}
+
 // ===========================================================================
 //  PacketEngine.swift — AX.25 / APRS packet terminal for satellite digipeaters
 //
@@ -2551,10 +2815,33 @@ enum PacketMessageFormat: String, Codable, CaseIterable, Identifiable, Sendable 
     var label: String { self == .aprs ? "APRS" : "Plain text (UISS)" }
 }
 
-/// Per-satellite packet setup (path and message format).
+/// Which built-in modem a satellite uses.
+enum PacketModem: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// From the satellite's packet transponder (≥ 4800 baud or "G3RUH"/"9600" → 9600).
+    case automatic
+    case afsk1200
+    case g3ruh9600
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .automatic: "Auto"; case .afsk1200: "1200 AFSK"; case .g3ruh9600: "9600 G3RUH" }
+    }
+}
+
+/// Per-satellite packet setup (path, message format and modem).
 struct PacketSatelliteProfile: Codable, Equatable, Sendable {
     var path: String
     var format: PacketMessageFormat
+    var modem: PacketModem = .automatic
+}
+
+extension PacketSatelliteProfile {
+    /// Tolerant: profiles saved before `modem` existed decode with Auto.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = (try? c.decodeIfPresent(String.self, forKey: .path)) ?? "ARISS"
+        format = (try? c.decodeIfPresent(PacketMessageFormat.self, forKey: .format)) ?? .aprs
+        modem = (try? c.decodeIfPresent(PacketModem.self, forKey: .modem)) ?? .automatic
+    }
 }
 
 /// How precisely our position is sent (APRS position ambiguity).
@@ -2622,6 +2909,9 @@ struct PacketSettings: Codable, Equatable, Sendable {
     var bbLinkTune = true
     var outputLevel: Float = 0.5
     var inputGain: Float = 1
+    /// Built-in modem with CAT connected: put the radio in its data sub-mode (e.g.
+    /// Icom FM-D / USB-D) so audio goes through the data port while packet runs.
+    var useDataMode = true
 
     static let defaultMacros = ["CQ {MYGRID4}", "{CALL} {MYGRID4} 599", "R 599 {MYGRID4}", "73 TU", "{HEARD}", "{POSITION}"]
 
@@ -2645,6 +2935,7 @@ struct PacketSettings: Codable, Equatable, Sendable {
         bleIdentifier = v(.bleIdentifier, d.bleIdentifier); bleName = v(.bleName, d.bleName)
         bbLinkTune = v(.bbLinkTune, d.bbLinkTune)
         outputLevel = v(.outputLevel, d.outputLevel); inputGain = v(.inputGain, d.inputGain)
+        useDataMode = v(.useDataMode, d.useDataMode)
     }
 }
 
@@ -2683,6 +2974,9 @@ struct PacketHeardStation: Identifiable, Sendable {
     /// Heard through a digipeater (i.e. via the satellite).
     var viaDigipeater = false
     var logged = false
+    /// APRS symbol (table `/`, `\` or an overlay character, and code), when sent.
+    var symbolTable: Character?
+    var symbolCode: Character?
 }
 
 @MainActor
@@ -2714,7 +3008,11 @@ final class PacketEngine: ObservableObject {
     // Built-in modem
     private var source: AudioSource?
     private let demodQueue = DispatchQueue(label: "org.orbitdeck.packet.demod")
-    private nonisolated(unsafe) var demod: AFSKDemodulator?
+    private nonisolated(unsafe) var demod: (any PacketDemodulator)?
+    /// The modem the built-in path is running (resolved from the satellite profile).
+    @Published private(set) var runningModem: PacketModem = .afsk1200
+    /// We put the radio in its data sub-mode at start (undone at stop).
+    private var engagedDataMode = false
     private nonisolated(unsafe) var peak: Float = 0
     private let txLock = NSLock()
     private nonisolated(unsafe) var txBuffer: [Float] = []
@@ -2787,14 +3085,37 @@ final class PacketEngine: ObservableObject {
     }
 
     /// A transponder suited to packet on this satellite (AFSK/APRS/packet digipeater),
-    /// else whatever CAT is tracking.
-    func packetTransponder(for sat: SatelliteRecord) -> TransponderRecord? {
-        let packetWords = ["APRS", "AFSK", "PACKET", "DIGI", "AX.25", "AX25"]
+    /// else whatever CAT is tracking. 1200-baud transponders come first unless the
+    /// satellite's profile asks for 9600.
+    func packetTransponder(for sat: SatelliteRecord, preferring: PacketModem? = nil) -> TransponderRecord? {
+        let packetWords = ["APRS", "AFSK", "PACKET", "DIGI", "AX.25", "AX25", "G3RUH"]
         let packetish = sat.transponders.filter { tp in
             let h = "\(tp.mode) \(tp.description)".uppercased()
-            return tp.isActive && packetWords.contains { h.contains($0) } && (tp.baud == 0 || tp.baud <= 1200)
+            return tp.isActive && packetWords.contains { h.contains($0) }
         }
-        return packetish.first { $0.isTwoWay } ?? packetish.first ?? rig?.transponder(for: sat)
+        let fast = packetish.filter(Self.is9600)
+        let slow = packetish.filter { !Self.is9600($0) && ($0.baud == 0 || $0.baud <= 1200) }
+        let ordered = (preferring ?? profile(for: sat.id).modem) == .g3ruh9600 ? fast + slow : slow + fast
+        return ordered.first { $0.isTwoWay } ?? ordered.first ?? rig?.transponder(for: sat)
+    }
+
+    /// A 9600-baud (G3RUH-family) packet transponder.
+    private static func is9600(_ tp: TransponderRecord) -> Bool {
+        let h = "\(tp.mode) \(tp.description)".uppercased()
+        return tp.baud >= 4800 || h.contains("G3RUH") || h.contains("9600") || h.contains("9K6")
+    }
+
+    /// The built-in modem for this satellite: the profile's choice, or Auto from its
+    /// packet transponder's baud rate (1200 AFSK when nothing says otherwise).
+    func modem(for sat: SatelliteRecord?) -> PacketModem {
+        guard let sat else { return .afsk1200 }
+        let chosen = profile(for: sat.id).modem
+        return chosen != .automatic ? chosen : autoModem(for: sat)
+    }
+
+    /// What Auto picks for this satellite (1200 unless its packet transponder is 9600).
+    func autoModem(for sat: SatelliteRecord) -> PacketModem {
+        packetTransponder(for: sat, preferring: .afsk1200).map(Self.is9600) == true ? .g3ruh9600 : .afsk1200
     }
 
     /// Full duplex only on a crossband transponder (we can hear our own downlink);
@@ -2827,7 +3148,7 @@ final class PacketEngine: ObservableObject {
         }
         heardSelfViaSatellite = false
         switch settings.transport {
-        case .builtInModem: startModem()
+        case .builtInModem: startModem(satellite: satellite)
         case .bleKISS: startKISS(satellite: satellite)
         }
         if isRunning { restartBeacon() } else { AudioActivity.releaseMode("Packet") }
@@ -2844,6 +3165,7 @@ final class PacketEngine: ObservableObject {
         }
         source = nil
         demodQueue.sync { demod = nil }
+        if engagedDataMode { rig?.setDigitalDataMode(false); engagedDataMode = false }
         kissReader?.cancel(); kissReader = nil
         if let link = kissLink {
             let restore = settings.bbLinkTune && tunedForSatellite != nil
@@ -2859,7 +3181,7 @@ final class PacketEngine: ObservableObject {
         AudioActivity.releaseMode("Packet")
     }
 
-    private func startModem() {
+    private func startModem(satellite: SatelliteRecord?) {
         guard let audio, let src = audio.makeSource(allowMicFallback: true) else {
             errorText = "No audio input. Connect a USB audio interface or an Icom network radio."
             return
@@ -2876,10 +3198,23 @@ final class PacketEngine: ObservableObject {
         source = src
         let rate = src.sampleRate
         let offsets = settings.offsetDecoders
-        demodQueue.sync { demod = AFSKDemodulator(sampleRate: rate, offsetDecoders: offsets) }
+        let chosen = modem(for: satellite)
+        runningModem = chosen
+        demodQueue.sync {
+            demod = chosen == .g3ruh9600 ? G3RUHDemodulator(sampleRate: rate)
+                : AFSKDemodulator(sampleRate: rate, offsetDecoders: offsets)
+        }
         isRunning = true
         AudioActivity.begin()
-        status = (rig?.pttSupported ?? false) ? "Listening — CAT PTT" : "Listening — key by VOX"
+        status = listeningStatus
+        // Radio audio under CAT control: ask for the data sub-mode so the modem uses
+        // the data port (9600 needs its flat path). Never for the phone-mic fallback,
+        // and never on the KISS path (the radio's own TNC).
+        if settings.useDataMode, let rig, rig.connected,
+           audio.usbConnected || rig.icomAudioTransport != nil {
+            rig.setDigitalDataMode(true)
+            engagedDataMode = true
+        }
         // Stuck-PTT recovery: make sure the radio isn't left keyed from a previous run.
         if rig?.pttSupported ?? false { Task { await rig?.setPTT(false) } }
         startMeter()
@@ -3063,10 +3398,12 @@ final class PacketEngine: ObservableObject {
             if let grid { heard[i].grid = grid }
             if let lat = aprs.latitude, let lon = aprs.longitude { heard[i].latitude = lat; heard[i].longitude = lon }
             if frame.wasDigipeated { heard[i].viaDigipeater = true }
+            if let code = aprs.symbolCode { heard[i].symbolTable = aprs.symbolTable; heard[i].symbolCode = code }
         } else {
             var station = PacketHeardStation(call: call, firstHeard: Date(), lastHeard: Date(), grid: grid,
                                              latitude: aprs.latitude, longitude: aprs.longitude,
-                                             viaDigipeater: frame.wasDigipeated)
+                                             viaDigipeater: frame.wasDigipeated,
+                                             symbolTable: aprs.symbolTable, symbolCode: aprs.symbolCode)
             if isCQ { station.cqs = 1 }
             if station.latitude == nil, let g = grid, let c = PacketText.gridCenter(g) {
                 station.latitude = c.latitude; station.longitude = c.longitude
@@ -3261,8 +3598,11 @@ final class PacketEngine: ObservableObject {
             errorText = "Channel busy for \(settings.maxChannelWaitSeconds) s — frame not sent."
             return
         }
-        let audioOut = AFSKModulator.transmission(frame, sampleRate: source.sampleRate,
-                                                  txDelayMs: settings.txDelayMs, amplitude: settings.outputLevel)
+        let audioOut = runningModem == .g3ruh9600
+            ? G3RUHModulator.transmission(frame, sampleRate: source.sampleRate,
+                                          txDelayMs: settings.txDelayMs, amplitude: settings.outputLevel)
+            : AFSKModulator.transmission(frame, sampleRate: source.sampleRate,
+                                         txDelayMs: settings.txDelayMs, amplitude: settings.outputLevel)
         await transmit(audioOut, label: "Transmitting…")
     }
 
@@ -3299,18 +3639,28 @@ final class PacketEngine: ObservableObject {
         isTransmitting = false
         // Half duplex: blank our own echo plus a 150 ms turnaround guard.
         rxBlankedUntil = Date().addingTimeInterval(0.15)
-        status = keyed ? "Listening — CAT PTT" : "Listening — key by VOX"
+        status = listeningStatus
         try? await Task.sleep(nanoseconds: 300_000_000)
     }
 
-    /// 3 s mark tone with PTT, for setting deviation into a dummy load.
+    private var listeningStatus: String {
+        let speed = runningModem == .g3ruh9600 ? "9600" : "1200"
+        return (rig?.pttSupported ?? false) ? "Listening \(speed) — CAT PTT" : "Listening \(speed) — key by VOX"
+    }
+
+    /// 3 s test signal with PTT, for setting deviation into a dummy load: a mark tone
+    /// for 1200 AFSK, scrambled flags (the real 9600 spectrum) for G3RUH.
     func sendTestTone() {
         guard isRunning, settings.transport == .builtInModem, let source, !isTransmitting else { return }
         let fs = source.sampleRate
-        let n = Int(fs * 3)
-        let step = 2 * Double.pi * 1200 / fs
-        let tone = (0..<n).map { Float(sin(Double($0) * step)) * settings.outputLevel }
-        Task { await transmit(tone, label: "Test tone…") }
+        let tone: [Float]
+        if runningModem == .g3ruh9600 {
+            tone = G3RUHModulator.idle(seconds: 3, sampleRate: fs, amplitude: settings.outputLevel)
+        } else {
+            let step = 2 * Double.pi * 1200 / fs
+            tone = (0..<Int(fs * 3)).map { Float(sin(Double($0) * step)) * settings.outputLevel }
+        }
+        Task { await transmit(tone, label: "Test signal…") }
     }
 
     private nonisolated func pullTX(_ n: Int) -> [Float] {
