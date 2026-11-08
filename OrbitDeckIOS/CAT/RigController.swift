@@ -2074,3 +2074,128 @@ final class TiltTuner {
         rig.nudgePassband(rate * dt)
     }
 }
+
+// MARK: - rigctld server bridge
+
+/// Entry points for the built-in Hamlib rigctld server (`RigctldServer`, in
+/// CATTransport.swift). Legs are addressed as `.downlink` (Hamlib VFOA) and `.uplink`
+/// (VFOB); frequencies are the radio's own dial (rig units, i.e. after any transverter
+/// LO is subtracted). Every bus access waits for and then holds the Doppler loop's tick
+/// lock, so a server read or write never interleaves with a tick on the same transport.
+extension RigController {
+    /// Whether the connected station has a radio carrying `leg`.
+    func serverHasLeg(_ leg: RigRole) -> Bool {
+        guard connected, let link = followLink(for: leg) else { return false }
+        return !(leg == .uplink && link.spec.rxOnly)
+    }
+
+    /// True while the Doppler loop is actively commanding the radio (connected, Track
+    /// Doppler on, a target computed, not held by FT4 or an external client).
+    var serverDopplerDriving: Bool {
+        connected && config.tuning.trackDoppler && !holdDoppler && lastTargetRx > 0
+    }
+
+    /// Whether Hamlib's "Main" VFO name means the uplink on this station.
+    var serverMainIsUplink: Bool {
+        guard let spec = links.first?.spec else { return config.tuning.mainIsUplink }
+        return mainCarriesUplink(spec)
+    }
+
+    /// The leg's current dial frequency. While the Doppler loop is driving the radio this
+    /// is the last commanded dial (no bus traffic, so a polling logger doesn't slow the
+    /// loop); otherwise it's read back from the radio, falling back to the last value sent.
+    func serverRigFrequency(leg: RigRole) async -> Int64? {
+        guard serverHasLeg(leg), let link = followLink(for: leg) else { return nil }
+        let lastSent = leg == .uplink ? lastSentTx : lastSentRx
+        if serverDopplerDriving, lastSent > 0 { return lastSent }
+        let read: UInt64? = await serverWithBus {
+            let f = await readLegFreq(link, leg: leg)
+            if leg == .uplink, link.leg == .both { await reselectDownlink(link) }
+            return f
+        }
+        if let read, read > 0 { return Int64(read) }
+        return lastSent > 0 ? lastSent : nil
+    }
+
+    /// Tune a leg to `hz` (dial units). The caller holds the Doppler loop first
+    /// (`serverBeginExternalHold`) so the loop doesn't immediately retune it.
+    func serverSetFrequency(leg: RigRole, hz: Int64, mode: RigMode?) async -> Bool {
+        guard hz > 0, serverHasLeg(leg), let link = followLink(for: leg) else { return false }
+        let ok: Bool = await serverWithBus {
+            let sent = await sendFreq(link, leg: leg, hz: hz, mode: mode ?? .usb)
+            if leg == .uplink, link.leg == .both { await reselectDownlink(link) }
+            return sent
+        }
+        if ok {
+            if leg == .uplink { lastSentTx = hz } else { lastSentRx = hz }
+        }
+        return ok
+    }
+
+    /// Set a leg's operating mode.
+    func serverSetMode(leg: RigRole, mode: RigMode) async -> Bool {
+        guard serverHasLeg(leg), let link = followLink(for: leg) else { return false }
+        await serverWithBus {
+            await sendModeCIVorOther(link, mode: mode, leg: leg)
+            if leg == .uplink, link.leg == .both { await reselectDownlink(link) }
+        }
+        return true
+    }
+
+    /// The mode OrbitDeck would put on a leg for the current transponder, if known.
+    func serverDerivedMode(leg: RigRole) -> RigMode? {
+        guard let sat = store?.selectedSatellite, let tp = transponder(for: sat) else { return nil }
+        var dl = RigMode.downlink(for: tp)
+        var ul = RigMode.uplink(for: tp, downlink: dl)
+        if config.tuning.linearCW, tp.isLinear, !useDataModeForDigital {
+            if dl == .usb || dl == .lsb { dl = .cw }
+            if ul == .usb || ul == .lsb { ul = .cw }
+        }
+        return leg == .uplink ? ul : dl
+    }
+
+    /// Whether OrbitDeck has keyed the uplink radio.
+    var serverPTT: Bool { pttKeyed }
+
+    /// Key/unkey through the normal PTT path. False when the uplink radio can't be keyed.
+    func serverSetPTT(_ on: Bool) async -> Bool {
+        guard pttSupported else { return false }
+        await setPTT(on)
+        return true
+    }
+
+    /// Hold the Doppler loop for an external client. Returns true if this call took the
+    /// hold (it was off). If it's already held (by this server or by FT4) the hold is just
+    /// re-scoped to the current satellite/transponder, so automatic switching can't
+    /// silently resume OrbitDeck's own Doppler while the client is still steering.
+    @discardableResult
+    func serverBeginExternalHold() -> Bool {
+        if holdDoppler {
+            holdSatTp = currentSatTp(); holdScopeMismatch = false
+            return false
+        }
+        holdDoppler = true
+        ODLog.shared.log("rigctld server: external client is tuning — OrbitDeck Doppler paused", category: "cat")
+        return true
+    }
+
+    /// Release a hold taken by `serverBeginExternalHold`, forcing both legs to be
+    /// re-commanded on the next tick.
+    func serverEndExternalHold() {
+        guard holdDoppler else { return }
+        holdDoppler = false
+        lastSentRx = 0; lastSentTx = 0
+        ODLog.shared.log("rigctld server: external control ended — OrbitDeck Doppler resumed", category: "cat")
+    }
+
+    /// Run `body` holding the tick lock (waits up to 2 s for an in-flight tick).
+    private func serverWithBus<T>(_ body: () async -> T) async -> T {
+        var waited = 0
+        while isTicking, waited < 2000 { await pace(20); waited += 20 }
+        let took = !isTicking
+        if took { isTicking = true }
+        let result = await body()
+        if took { isTicking = false }
+        return result
+    }
+}

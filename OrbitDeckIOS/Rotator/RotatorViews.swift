@@ -136,6 +136,8 @@ struct RotatorSettingsView: View {
                     Text("Offsets are added to the commanded bearing for alignment. On LOS or disconnect the rotator parks here.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 }
+
+                RotctldServerSection()
             }
         }
         .navigationTitle("Rotator Control")
@@ -510,5 +512,31 @@ struct RotatorMonitorView: View {
         }
         .navigationTitle("Rotator Monitor")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - rotctld server settings
+
+/// Settings section for the built-in rotctld server (bottom of the rotator screen).
+struct RotctldServerSection: View {
+    @ObservedObject private var server = RotctldServer.shared
+
+    var body: some View {
+        Section("rotctld server") {
+            Toggle("Run rotctld server", isOn: Binding(get: { server.enabled }, set: { server.setEnabled($0) }))
+            HamlibPortField(port: server.port, placeholder: "\(RotctldServer.defaultPort)") { server.setPort($0) }
+            if server.enabled {
+                HamlibServerStatusRows(port: server.port, listening: server.listening, errorText: server.errorText,
+                                       clientCount: server.clientCount, lastCommand: server.lastCommand)
+                if server.externalControl {
+                    Text("A client is pointing the rotator — OrbitDeck's tracking is paused until it disconnects.")
+                        .font(.caption).foregroundStyle(ODTheme.warning)
+                    Button("Resume OrbitDeck tracking") { server.resumeTracking() }
+                }
+            }
+            Text("Lets Gpredict or another Hamlib rotctld client on your local network point the connected rotator through OrbitDeck — enter an address below. A set-position, stop or park from the client pauses OrbitDeck's own tracking until that client disconnects; positions are sent as given (OrbitDeck's offsets and magnetic correction are not applied). Get-position reports the last commanded position.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+            HamlibServerLimitsNote()
+        }
     }
 }
