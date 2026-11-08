@@ -37,7 +37,7 @@ struct OrbitDeckIOSApp: App {
                 .task {
                     notifications.activate()
                     rig.attach(store)
-                    rotator.attach(store)
+                    rotator.attach(store, autoSwitch: autoSwitch)
                     audio.attach(rig)
                     qsoLog.attach()
                     recorder.attach(qsoLog)
