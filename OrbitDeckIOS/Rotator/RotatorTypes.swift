@@ -43,6 +43,68 @@ enum RotatorProtocolKind: String, Codable, Sendable, CaseIterable, Identifiable 
     var defaultPort: Int {
         switch self { case .rotctld: 4533; case .urc: 1111; default: 12000 }
     }
+    /// The controller answers a position query we can poll safely. PstRotator's UDP
+    /// path is one-way (its reply comes on another port), and SAEBRTrack has no query
+    /// that isn't misread as a goto.
+    var supportsReadBack: Bool { RotatorCodec.positionQuery(self) != nil }
+    /// The protocol has a stop / all-stop command.
+    var supportsStop: Bool { !RotatorCodec.stop(self).isEmpty }
+}
+
+/// What the pointing loop aims at. Satellite tracking is the normal mode; Sun and Moon
+/// are for sun-noise G/T checks and EME; `.fixed` is a manual az/el (true bearing,
+/// before alignment offsets) that holds until the target is set back.
+enum RotatorTarget: Equatable {
+    case satellite
+    case sun
+    case moon
+    case fixed(azimuth: Double, elevation: Double)
+
+    var kind: RotatorTargetKind {
+        switch self {
+        case .satellite: .satellite
+        case .sun: .sun
+        case .moon: .moon
+        case .fixed: .manual
+        }
+    }
+}
+
+/// The target picker's choices (`.manual` = a fixed az/el at the current position).
+enum RotatorTargetKind: String, CaseIterable, Identifiable {
+    case satellite, sun, moon, manual
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .satellite: "Satellite"; case .sun: "Sun"; case .moon: "Moon"; case .manual: "Manual" }
+    }
+}
+
+/// What to do while a Sun/Moon target is below the horizon.
+enum RotBelowHorizon: String, Codable, Sendable, CaseIterable, Identifiable {
+    case park   // go to the park position and wait for it to rise
+    case hold   // stay on the last bearing
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .park: "Park"; case .hold: "Hold last bearing" }
+    }
+}
+
+/// One line of the rotator monitor (a command sent or a reply received).
+struct RotatorMonitorLine: Identifiable, Sendable {
+    let id: Int
+    let date: Date
+    let outgoing: Bool
+    let text: String
+}
+
+/// One step of the rotator self-test.
+struct RotatorSelfTestStep: Identifiable, Sendable {
+    enum Result: Sendable { case running, pass, fail, info }
+    let id: Int
+    let title: String
+    var result: Result = .running
+    var detail = ""
+    var hint = ""
 }
 
 /// Azimuth-axis convention of the rotator (matches Gpredict's rotator setting).
@@ -83,6 +145,8 @@ struct RotatorConfig: Codable, Sendable, Equatable {
     var minElevationDeg = 0.0       // only track above this elevation (0 = whole visible pass)
     var updateMs = 1000             // pointing loop period
     var gs232AzOnly = false         // GS-232 azimuth-only controller: send "Maaa", not "Waaa eee"
+    var readBack = true             // poll the actual position (protocols with a position query)
+    var belowHorizon: RotBelowHorizon = .park   // Sun/Moon target below the horizon
 
     /// Azimuth-only pointing is in effect (only GS-232 offers the option).
     var azimuthOnly: Bool { proto == .gs232 && gs232AzOnly }
@@ -111,6 +175,7 @@ extension RotatorConfig {
         case enabled, proto, bleIdentifier, bleName, baud, host, port
         case leadSec, trackLeadSec, azLookSec, azRange, azOffsetDeg, elOffsetDeg, deadbandDeg
         case magCorrect, parkAz, parkEl, flip, minElevationDeg, updateMs, gs232AzOnly
+        case readBack, belowHorizon
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
@@ -136,6 +201,8 @@ extension RotatorConfig {
         r.minElevationDeg = c.value(Double.self, .minElevationDeg, r.minElevationDeg)
         r.updateMs = c.value(Int.self, .updateMs, r.updateMs)
         r.gs232AzOnly = c.value(Bool.self, .gs232AzOnly, r.gs232AzOnly)
+        r.readBack = c.value(Bool.self, .readBack, r.readBack)
+        r.belowHorizon = c.value(RotBelowHorizon.self, .belowHorizon, r.belowHorizon)
         self = r
     }
     func encode(to encoder: Encoder) throws {
@@ -161,5 +228,7 @@ extension RotatorConfig {
         try c.encode(minElevationDeg, forKey: .minElevationDeg)
         try c.encode(updateMs, forKey: .updateMs)
         try c.encode(gs232AzOnly, forKey: .gs232AzOnly)
+        try c.encode(readBack, forKey: .readBack)
+        try c.encode(belowHorizon, forKey: .belowHorizon)
     }
 }

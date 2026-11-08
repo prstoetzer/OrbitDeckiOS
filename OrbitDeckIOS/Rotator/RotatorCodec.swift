@@ -92,10 +92,11 @@ enum RotatorCodec {
         }
     }
 
-    /// Position-query command, or nil if the protocol has none we use.
-    static func positionQuery(_ proto: RotatorProtocolKind) -> [UInt8]? {
+    /// Position-query command, or nil if the protocol has none we use. An azimuth-only
+    /// GS-232 controller is asked with `C` (azimuth only) rather than `C2`.
+    static func positionQuery(_ proto: RotatorProtocolKind, azimuthOnly: Bool = false) -> [UInt8]? {
         switch proto {
-        case .gs232: ascii("C2\r")
+        case .gs232: ascii(azimuthOnly ? "C\r" : "C2\r")
         case .easycomm1, .easycomm2, .easycomm3: ascii("AZ EL\r")
         case .spid: spidStatus
         case .saebrtrack: nil            // fire-and-forget; a bare AZ/EL query is misread as goto-0
@@ -105,15 +106,31 @@ enum RotatorCodec {
         }
     }
 
-    /// Parse a position reply into (azimuth, elevation) degrees, if present.
-    static func parsePosition(_ proto: RotatorProtocolKind, _ bytes: [UInt8]) -> (az: Double, el: Double)? {
+    /// Parse a position reply into (azimuth, elevation) degrees, if present. With
+    /// `azimuthOnly` (GS-232 `C` reply, "AZ=aaa" / "+0aaa") elevation reads as 0.
+    static func parsePosition(_ proto: RotatorProtocolKind, _ bytes: [UInt8], azimuthOnly: Bool = false) -> (az: Double, el: Double)? {
         switch proto {
         case .spid:
             return spidReply(bytes)
         default:
             guard let s = String(bytes: bytes, encoding: .ascii) else { return nil }
+            if proto == .gs232, azimuthOnly {
+                if let r = s.range(of: "AZ="), let az = leadingNumber(after: r.upperBound, in: s) { return (az, 0) }
+                if let r = s.firstIndex(of: "+"), let az = Double(s[s.index(after: r)...].prefix(while: { $0.isNumber })) { return (az, 0) }
+                return nil
+            }
             return parseText(proto, s)
         }
+    }
+
+    /// A position reply that has fully arrived: text replies must end in their
+    /// terminator (CR/LF, or `}` for URC JSON) so a frame split across BLE
+    /// notifications isn't parsed half-read (e.g. "EL4" of "EL45.6").
+    static func completePosition(_ proto: RotatorProtocolKind, _ bytes: [UInt8], azimuthOnly: Bool = false) -> (az: Double, el: Double)? {
+        if proto == .spid { return spidReply(bytes) }
+        guard let last = bytes.last else { return nil }
+        let terminated = proto == .urc ? bytes.contains(UInt8(ascii: "}")) : (last == 0x0D || last == 0x0A)
+        return terminated ? parsePosition(proto, bytes, azimuthOnly: azimuthOnly) : nil
     }
 
     // MARK: text parsing
