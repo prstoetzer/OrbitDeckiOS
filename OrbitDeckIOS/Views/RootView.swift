@@ -8,6 +8,8 @@ import UserNotifications
 @MainActor
 final class NotificationRouter: NSObject, ObservableObject, @preconcurrency UNUserNotificationCenterDelegate {
     @Published var openHomeRequested = false
+    /// In-app navigation request (e.g. a readiness-checklist fix); RootView selects it.
+    @Published var openDestination: OrbitDestination?
 
     func activate() { UNUserNotificationCenter.current().delegate = self }
 
@@ -31,9 +33,9 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     case home, track, globe, radar, gridfinder
     case passes, skyglance, schedule, passdetail, groundtrack, tenday
     case orbit, orbithistory, illum, zones, ao7, mutual, transits, astronomy, skymap, conjunction, grids
-    case radio, log, sstv, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, nearby, oscarsim, oscarref, learn, references, exports
+    case radio, log, sstv, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, nearby, oscarsim, oscarref, learn, references, exports, notes
     case sunmoon, celestial, eme, spacewx, muf, propagation
-    case satellites, newlaunch, sites, calibrations, autoswitch, settings, about
+    case satellites, newlaunch, sites, calibrations, autoswitch, settings, help, about
 
     var id: String { rawValue }
 
@@ -76,6 +78,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .learn: "Learn"
         case .references: "References"
         case .exports: "Exports"
+        case .notes: "Notes"
         case .sunmoon: "Sun / Moon"
         case .celestial: "Celestial"
         case .eme: "EME"
@@ -88,6 +91,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .calibrations: "Calibrations"
         case .autoswitch: "Auto Switching"
         case .settings: "Settings"
+        case .help: "Help"
         case .about: "About"
         }
     }
@@ -131,6 +135,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .learn: "book"
         case .references: "books.vertical"
         case .exports: "square.and.arrow.up"
+        case .notes: "note.text"
         case .sunmoon: "sun.and.horizon"
         case .celestial: "moon.stars"
         case .eme: "moon"
@@ -143,6 +148,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .calibrations: "tuningfork"
         case .autoswitch: "arrow.triangle.swap"
         case .settings: "gearshape"
+        case .help: "questionmark.circle"
         case .about: "info.circle"
         }
     }
@@ -153,7 +159,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .radar, .gridfinder, .schedule, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
              .datafeeds, .nearby, .learn, .references, .newlaunch, .sites, .astronomy, .eme, .log, .sstv,
-             .satellites, .calibrations, .autoswitch, .settings, .about:
+             .satellites, .calibrations, .autoswitch, .settings, .about, .notes, .help:
             return false
         default:
             return true
@@ -166,7 +172,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
              .orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy,
              .skymap, .conjunction, .grids,
              .radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .nearby, .oscarsim, .oscarref, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
-             .satellites, .newlaunch, .sites, .calibrations, .autoswitch, .settings, .about:
+             .satellites, .newlaunch, .sites, .calibrations, .autoswitch, .settings, .about, .notes, .help:
             true
         default:
             false
@@ -184,9 +190,9 @@ private let navGroups: [NavGroup] = [
     NavGroup(id: "live", title: "LIVE", items: [.home, .globe, .radar, .gridfinder]),
     NavGroup(id: "passes", title: "PASSES", items: [.passes, .skyglance, .schedule, .groundtrack, .tenday]),
     NavGroup(id: "analysis", title: "ANALYSIS", items: [.orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy, .skymap, .conjunction, .grids]),
-    NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .nearby, .oscarsim, .oscarref, .learn, .references, .exports]),
+    NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .nearby, .oscarsim, .oscarref, .learn, .references, .exports, .notes]),
     NavGroup(id: "sky", title: "SKY & SPACE", items: [.sunmoon, .celestial, .eme, .spacewx, .muf, .propagation]),
-    NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .calibrations, .autoswitch, .settings, .about])
+    NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .calibrations, .autoswitch, .settings, .help, .about])
 ]
 
 struct RootView: View {
@@ -218,6 +224,8 @@ struct RootView: View {
     // the live screens (which recompute against the observer) update at most once
     // per second rather than on every high-rate GPS fix.
     @State private var lastLocationApply = Date.distantPast
+    @AppStorage("orbitdeck.readiness.firstRunShown") private var readinessShown = false
+    @State private var showReadiness = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -337,6 +345,22 @@ struct RootView: View {
         .onChange(of: notifications.openHomeRequested) { _, requested in
             if requested { selection = .home; notifications.openHomeRequested = false }
         }
+        .onChange(of: notifications.openDestination) { _, destination in
+            if let destination { selection = destination; notifications.openDestination = nil }
+        }
+        // Station readiness checklist, once on first run (not during screenshot automation).
+        .onAppear {
+            if !readinessShown && RootView.launchScreen == nil && !UserDefaults.standard.bool(forKey: "odDemo") {
+                readinessShown = true
+                showReadiness = true
+            }
+        }
+        .sheet(isPresented: $showReadiness) {
+            NavigationStack {
+                StationReadinessView(firstRun: true)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showReadiness = false } } }
+            }
+        }
         .onChange(of: autoLocation.location) { _, location in
             guard store.locationMode == .currentLocation, let location else { return }
             // Coalesce high-rate fixes to ~1 Hz so downstream live screens don't
@@ -436,6 +460,7 @@ struct RootView: View {
         case .learn: DeepLearnView()
         case .references: ReferencesView()
         case .exports: ExportsView()
+        case .notes: NotesView()
         case .sunmoon: SunMoonView()
         case .celestial: CelestialView()
         case .eme: EMEView()
@@ -446,6 +471,7 @@ struct RootView: View {
         case .newlaunch: NewLaunchesView()
         case .sites: SitesView()
         case .settings: SettingsView()
+        case .help: HelpView()
         case .about: AboutView()
         default: FeaturePlaceholderView(destination: destination)
         }

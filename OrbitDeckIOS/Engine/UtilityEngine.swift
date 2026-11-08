@@ -447,6 +447,94 @@ enum OrbitReferences {
         let orbitTypes = [("LEO","160–2000 km, 90–128 min","Most amateur satellites; short passes and high Doppler."),("Sun-synchronous","~600–800 km, i≈98°","Similar local-time crossings."),("MEO","2000–35786 km","Longer access and lower angular rates."),("Molniya","e≈0.74, i=63.4°, 12 h","Long dwell near high-latitude apogee."),("GEO","35786 km, i≈0°","Fixed in the sky; QO-100 is the amateur example."),("Polar","i≈90°","Reaches all latitudes."),("Retrograde","i>90°","Travels against Earth rotation.")].map { ReferenceRow(a:$0.0,b:ODFormat.units($0.1),c:$0.2) }
         let history = [("1961","OSCAR 1","First amateur satellite."),("1965","OSCAR 3","First amateur transponder."),("1974","AO-7","Mode A/B; returned to service after battery failure."),("1983","AO-10","Molniya-orbit Mode B satellite."),("1990","AO-16 / LO-19","Microsat digital store-and-forward era."),("1998","ISS","Amateur radio aboard the station."),("2013","FUNcube-1 / AO-73","Education payload and linear transponder."),("2019","QO-100","First amateur geostationary transponder."),("2022","IO-117 / GreenCube","MEO digipeater with long-range access.")].map { ReferenceRow(a:$0.0,b:$0.1,c:$0.2) }
         let bandPlan = [("2 m satellite","145.8–146.0 MHz","satellite subband"),("70 cm satellite","435–438 MHz","satellite subband"),("23 cm","1260–1270 MHz","common satellite uplink segment"),("13 cm","2400 MHz","S-band satellite use"),("3 cm","10.45 GHz","X-band satellite / microwave"),("Mode V/U (J)","145 up / 435 down","common LEO mode"),("Mode U/V (B)","435 up / 145 down","AO-7 Mode B etc."),("Mode L/U","1260 up / 435 down",""),("Mode U/S","435 up / 2400 down",""),("QO-100 NB","2400.25 up / 10489.75 down","geostationary")].map { ReferenceRow(a:$0.0,b:$0.1,c:$0.2) }
+        // Worldwide amateur bands, LF to light. Ported from CardSat's band-plan screen
+        // (the developer's own table) and expanded from the IARU Region 1, 2 and 3 band
+        // plans and ITU Radio Regulations Article 5 (allocations). R1 = Europe/Africa/
+        // Middle East, R2 = Americas, R3 = Asia-Pacific. A summary only: national
+        // rules govern what you may use.
+        let worldRaw: [(String, String, String)] = [
+            ("2200 m", "135.7–137.8 kHz", "All regions, secondary; 1 W EIRP. CW/QRSS, WSPR 136.000 dial"),
+            ("630 m", "472–479 kHz", "All regions, secondary; 1 W EIRP (5 W in places). WSPR 474.200 dial"),
+            ("160 m", "1.810–2.000 MHz", "R1 1.810–2.000, R2 1.800–2.000, R3 1.800–2.000. CW 1.810–1.838; FT8 1.840"),
+            ("80 m", "3.500–4.000 MHz", "R1 3.5–3.8, R2 3.5–4.0, R3 3.5–3.9. FT8 3.573; CW at the bottom"),
+            ("60 m", "5.3515–5.3665 MHz", "WRC-15 band, 15 W EIRP; many countries use channels instead. FT8 5.357"),
+            ("40 m", "7.000–7.300 MHz", "R1/R3 7.0–7.2, R2 7.0–7.3. FT8 7.074; CW QRP 7.030"),
+            ("30 m", "10.100–10.150 MHz", "WARC, secondary; CW and narrow data only, no phone. FT8 10.136"),
+            ("20 m", "14.000–14.350 MHz", "All regions. FT8 14.074; CW QRP 14.060; NCDXF beacons 14.100; SSTV 14.230"),
+            ("17 m", "18.068–18.168 MHz", "WARC. FT8 18.100; beacons 18.110"),
+            ("15 m", "21.000–21.450 MHz", "All regions. FT8 21.074; beacons 21.150; satellite H band"),
+            ("12 m", "24.890–24.990 MHz", "WARC. FT8 24.915; beacons 24.930"),
+            ("10 m", "28.000–29.700 MHz", "All regions. FT8 28.074; beacons 28.200; satellites 29.300–29.510; FM 29.520–29.700 (simplex 29.600)"),
+            ("6 m", "50–54 MHz", "R2/R3 50–54; R1 50–52 (WRC-19), national rules vary"),
+            ("6 m calling", "50.110 / 50.125 / 50.150", "50.110 intercontinental DX; 50.125 R2 SSB call; 50.150 R1 SSB; 50.090 CW; 50.313 FT8; 52.525 FM simplex (R2)"),
+            ("4 m", "70.0–70.5 MHz", "R1 only, some countries; none in R2/R3. 70.200 SSB call"),
+            ("2 m", "144–148 MHz", "R1 144–146, R2 144–148, R3 144–148 (144–146 in some countries)"),
+            ("2 m weak signal", "144.050 / 144.200 / 144.300", "144.050 CW call; SSB call 144.200 (R2) or 144.300 (R1); FT8 144.174"),
+            ("2 m EME", "144.100–144.160 MHz", "CW; JT65/Q65 around 144.115–144.140"),
+            ("2 m satellite", "145.800–146.000 MHz", "Worldwide amateur-satellite subband (ISS voice down 145.800)"),
+            ("2 m FM", "146.520 / 145.500 MHz", "National simplex calling: 146.520 (R2/US), 145.500 (R1)"),
+            ("1.25 m", "222–225 MHz", "R2 only (US also 219–220 data). 222.100 SSB/CW call; 223.500 FM simplex"),
+            ("70 cm", "430–440 MHz", "R1 430–440, R2 420–450 (US), R3 430–440"),
+            ("70 cm calling", "432.100 / 446.000 / 433.500", "432.100 SSB/CW; 432.174 FT8; 446.000 FM simplex (US); 433.500 FM (R1)"),
+            ("70 cm EME", "432.000–432.070 MHz", "CW; JT65/Q65 near 432.065"),
+            ("70 cm satellite", "435.000–438.000 MHz", "Worldwide amateur-satellite subband"),
+            ("33 cm", "902–928 MHz", "R2 only. Weak signal 902.100 / 903.100"),
+            ("23 cm", "1240–1300 MHz", "All regions, secondary. 1296.100 SSB/CW call; satellite uplinks 1260–1270"),
+            ("23 cm EME", "1296.000–1296.100 MHz", "CW from 1296.000; JT65/Q65 near 1296.065"),
+            ("13 cm", "2300–2450 MHz", "Segments vary by country. Weak signal 2304.100 (R2) / 2320.200 (R1); satellite 2400–2450"),
+            ("13 cm QO-100", "2400.050–2400.300 MHz", "QO-100 narrowband uplink (GEO, R1/R3 coverage); wideband 2401.5–2409.5"),
+            ("9 cm", "3300–3500 MHz", "Regional; R1 mostly 3400–3410. Weak signal 3400.100 / 3456.100"),
+            ("6 cm", "5650–5925 MHz", "Weak signal 5760.100; satellite uplink 5650–5670, downlink 5830–5850"),
+            ("3 cm", "10.000–10.500 GHz", "Weak signal/EME 10368.100; satellite 10.45–10.50"),
+            ("3 cm QO-100", "10489.550–10489.800 MHz", "QO-100 narrowband downlink; wideband 10491–10499"),
+            ("1.2 cm", "24.00–24.25 GHz", "Weak signal/EME 24048.100 (24192.100 in R2); satellite 24.00–24.05"),
+            ("6 mm", "47.0–47.2 GHz", "Weak signal 47088.100"),
+            ("4 mm", "76–81 GHz", "Weak signal near 76032 / 77500"),
+            ("2.5 mm", "122.25–123 GHz", "Secondary"),
+            ("2 mm", "134–141 GHz", ""),
+            ("1 mm", "241–250 GHz", ""),
+            ("Above 275 GHz", "275 GHz to light", "Terahertz and optical (laser/LED) experimentation; national rules"),
+            ("Sat band H", "21 MHz", "IARU satellite band letter"),
+            ("Sat band A", "29 MHz", "10 m"),
+            ("Sat band V", "145 MHz", "2 m"),
+            ("Sat band U", "435 MHz", "70 cm"),
+            ("Sat band L", "1.26 GHz", "23 cm (uplink)"),
+            ("Sat band S", "2.4 GHz", "13 cm"),
+            ("Sat band S2", "3.4 GHz", "9 cm"),
+            ("Sat band C", "5.8 GHz", "6 cm"),
+            ("Sat band X", "10.45 GHz", "3 cm"),
+            ("Sat band K", "24 GHz", "1.2 cm"),
+            ("Mode V/U (J)", "145 up / 435 down", "Most LEO linear and FM birds"),
+            ("Mode U/V (B)", "435 up / 145 down", "AO-7 Mode B and others"),
+            ("Mode L/U", "1260 up / 435 down", ""),
+            ("Mode U/S", "435 up / 2400 down", ""),
+            ("QO-100 NB", "2400.25 up / 10489.75 down", "Geostationary at 25.9° E; Europe, Africa, Middle East, South Asia")
+        ]
+        let world = worldRaw.map { ReferenceRow(a: $0.0, b: $0.1, c: $0.2) }
+        // CubeSatSim command & control crib, ported from CardSat (the developer's own
+        // table, verified against the CubeSatSim v2.x docs: cubesatsim.org Lite readme
+        // and the config script, Jul 2026). Offline reference only.
+        let cubesimRaw: [(String, String, String)] = [
+            ("C2C uplink", "435.000 MHz FM", "Default command receive frequency"),
+            ("DTMF", "<mode #> then #", "Dial the mode number, then #"),
+            ("APRS", "MODE=<letter>", "Packet text containing the mode letter"),
+            ("Carrier", "Key up briefly", "Mode steps +1 and the sim reboots; the green LED blinks the new mode number"),
+            ("Mode 1 · a", "APRS / AFSK", ""),
+            ("Mode 2 · f", "FSK / DUV", "Fox-style telemetry"),
+            ("Mode 3 · b", "BPSK", ""),
+            ("Mode 4 · s", "SSTV camera", ""),
+            ("Mode 5 · m", "CW beacon", ""),
+            ("Mode 6 · e", "X-band repeater", ""),
+            ("Mode 7 · j", "FUNcube", ""),
+            ("Console", "ssh pi@cubesatsim", "Then CubeSatSim/config -h for all options"),
+            ("config -q N", "Squelch", "8 turns the C2C receiver off"),
+            ("config -F", "TX/RX frequency", "420–450 MHz"),
+            ("config -A", "Command another sim", "Over APRS"),
+            ("config -o", "Telemetry beacon", "On/off"),
+            ("Sim TX", "~434.9 MHz FM", "Telemetry downlink"),
+            ("More", "github.com/alanbjohnston/CubeSatSim", "Wiki: Command and Control. Table per v2.x docs; check the wiki for your firmware version")
+        ]
+        let cubesim = cubesimRaw.map { ReferenceRow(a: $0.0, b: $0.1, c: $0.2) }
         let dxcc = DXCCData.entities.map { entity in
             let code = DXCCNumericData.codeByName[entity.name]
             let key = code.map { "\($0) · \(entity.prefix)" } ?? entity.prefix
@@ -467,9 +555,175 @@ enum OrbitReferences {
             .init(id:"orbitTypes",name:"Orbit types",description:"Orbit classes and their operating implications.",headers:["Type","Typical","Meaning"],rows:orbitTypes),
             .init(id:"history",name:"Satellite history",description:"Selected amateur-satellite milestones.",headers:["Year","Satellite","Milestone"],rows:history),
             .init(id:"bandPlan",name:"Satellite band plan",description:"Common amateur-satellite subbands and mode designators.",headers:["Band / mode","Frequency","Note"],rows:bandPlan),
+            .init(id:"worldBandPlan",name:"Worldwide band plan",description:"Amateur bands LF to light with ITU Region 1/2/3 differences, calling, EME and satellite frequencies. Summary of the IARU Region 1, 2 and 3 band plans and ITU Radio Regulations Art. 5 — your national rules govern.",headers:["Band","Range","Regions / notes"],rows:world),
+            .init(id:"cubesatsim",name:"CubeSatSim C2C",description:"Command & control crib for AMSAT's CubeSat Simulator: DTMF, APRS and carrier mode commands plus the config script options. Reference only — OrbitDeck doesn't send these.",headers:["Command","Value","Note"],rows:cubesim),
             .init(id:"dxcc",name:"DXCC entities",description:"All 340 bundled DXCC entity reference points used by workable-footprint planning.",headers:["ARRL code / prefix","Entity","Reference point"],rows:dxcc)
         ]
     }()
+}
+
+// MARK: - Notes (plain-text files in Documents/Notes)
+
+/// One note on disk. Notes are ordinary UTF-8 `.txt` files in Documents/Notes, so
+/// they appear in the Files app (UIFileSharingEnabled) and can be edited there.
+struct NoteFile: Identifiable, Hashable, Sendable {
+    let url: URL
+    let title: String
+    let modified: Date
+    let text: String
+    var id: URL { url }
+}
+
+enum NotesStore {
+    static var directory: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let dir = docs.appendingPathComponent("Notes", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// All notes, newest first.
+    static func list() -> [NoteFile] {
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey],
+                                                options: [.skipsHiddenFiles])) ?? []
+        return urls.filter { ["txt", "md", "text"].contains($0.pathExtension.lowercased()) }.map { url in
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return NoteFile(url: url, title: url.deletingPathExtension().lastPathComponent, modified: modified, text: read(url))
+        }.sorted { $0.modified > $1.modified }
+    }
+
+    static func read(_ url: URL) -> String {
+        (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    static func write(_ text: String, to url: URL) throws {
+        try Data(text.utf8).write(to: url, options: .atomic)
+    }
+
+    /// File-system-safe title (no path separators or leading dots).
+    static func sanitized(_ title: String) -> String {
+        let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.newlines).union(.controlCharacters)
+        var t = title.components(separatedBy: bad).joined(separator: "-").trimmingCharacters(in: .whitespaces)
+        while t.hasPrefix(".") { t.removeFirst() }
+        return t.isEmpty ? "Untitled" : String(t.prefix(80))
+    }
+
+    private static func uniqueURL(for title: String, excluding: URL? = nil) -> URL {
+        let base = sanitized(title)
+        var candidate = directory.appendingPathComponent(base).appendingPathExtension("txt")
+        var n = 2
+        while FileManager.default.fileExists(atPath: candidate.path), candidate.standardizedFileURL != excluding?.standardizedFileURL {
+            candidate = directory.appendingPathComponent("\(base) \(n)").appendingPathExtension("txt"); n += 1
+        }
+        return candidate
+    }
+
+    @discardableResult
+    static func create(title: String, text: String = "") throws -> URL {
+        let url = uniqueURL(for: title)
+        try write(text, to: url)
+        return url
+    }
+
+    static func rename(_ url: URL, to title: String) throws -> URL {
+        let target = uniqueURL(for: title, excluding: url)
+        guard target.standardizedFileURL != url.standardizedFileURL else { return url }
+        try FileManager.default.moveItem(at: url, to: target)
+        return target
+    }
+
+    static func delete(_ url: URL) throws {
+        try FileManager.default.removeItem(at: url)
+    }
+}
+
+// MARK: - In-app help
+
+struct HelpArticle: Identifiable, Sendable {
+    let id: String
+    let title: String
+    let area: String
+    let body: String
+}
+
+/// Short help articles per area. Wording adapted from the OrbitDeck website
+/// (docs/) and CardSat's MANUAL.md (the One True Rule, working a pass).
+enum HelpLibrary {
+    static let articles: [HelpArticle] = [
+        .init(id: "start", title: "Getting started", area: "Basics", body: """
+        On first launch OrbitDeck downloads a satellite catalog and sets a default station. To get useful results:
+        1. Set your station in Settings → Observer station (a fixed site, a grid square, or Always use current location).
+        2. Enter your callsign in Settings → Operator identity.
+        3. Star a few satellites in Satellites (for example the ISS and an active FM or linear bird). Favorites drive Home, Sky Radar and the schedules.
+        4. Open Home for live look angles and your next pass.
+        Settings → Station readiness shows a checklist of what is set up and what is missing, with a tap to fix each item.
+        """),
+        .init(id: "audio", title: "Where are the audio features? (recording, SSTV, FT4, packet, remote voice)", area: "Audio", body: """
+        The audio cards on Home are hidden by default until an audio interface is connected — a USB audio interface or an Icom radio over the network. With nothing attached they don't appear at all, so the features can look missing.
+        To show them anyway, open Settings → Audio features and set any of Pass recording, SSTV decode, FT4, Packet / APRS or Remote audio to Always. The card then appears on Home and, with no interface attached, uses the device's built-in microphone. Hidden turns a card off even with an interface.
+        Try it: Settings → Audio features → Pass recording → Always, then go to Home and start a recording. Recording, SSTV and FT4 decoding keep running with the screen locked or while you switch apps, so a pass isn't lost partway through.
+        """),
+        .init(id: "home", title: "Home screen", area: "Home", body: """
+        Home is the live dashboard for the selected satellite: azimuth, elevation, range and Doppler, the next qualifying pass and your favorites' upcoming passes. Cards for rig control, rotator, logging and the audio features appear as you configure them.
+        The satellite switcher in the toolbar changes the selected satellite everywhere. Settings → Display → Keep screen awake on Home lets you leave Home up as a live display during a pass.
+        """),
+        .init(id: "passes", title: "Passes and tracking", area: "Passes", body: """
+        Next Passes and Pass Detail list passes with polar plots and elevation profiles; Daily Schedule groups every favorite's passes by day; Sky Radar plots all favorites at once; Ground Track draws the sub-point path and true footprint.
+        Set the minimum elevation in Settings → Pass prediction to filter marginal passes. Times are UTC by default; Settings → Display can switch to local time.
+        Keep elements fresh: the ↻ button in the menu updates the catalog, and the element age shown in Orbital Analysis tells you how old the selected set is.
+        """),
+        .init(id: "pass", title: "Working a pass, step by step", area: "Passes", body: """
+        FM bird: star it, find the pass, and at AOS open Home. With CAT on, OrbitDeck sets FM on both legs and Dopplers the single channel — just talk. Without CAT, tune the RX/TX frequencies shown on the Live Doppler card in small steps.
+        Linear (SSB/CW) bird: pick a clear spot in the passband with the tuning slider (or the radio's knob with CAT), then work stations. Your downlink stays put and the uplink tracks — inverted if the transponder inverts. If your own signal isn't where you expect, trim the per-satellite calibration and save it.
+        Always listen before you transmit, use the minimum power needed, and work full duplex so you can hear your own signal.
+        """),
+        .init(id: "doppler", title: "Doppler and the One True Rule", area: "Radio", body: """
+        A satellite's motion shifts both the frequency you receive and the frequency the satellite receives from you. OrbitDeck follows AMSAT's "One True Rule" (Paul Williamson, KB5MU): tune both the transmitter and the receiver to keep a constant frequency at the satellite.
+        RX = downlink × (1 − β) + calibration;  TX = uplink ÷ (1 − β);  β = range rate ÷ c.
+        The result: you tune somebody in, let go, and nobody drifts through the passband. Calibration is one combined oscillator correction per satellite, measured from either leg.
+        """),
+        .init(id: "cat", title: "Rig control (CAT)", area: "CAT", body: """
+        Settings → Rig control → CAT / rig control. OrbitDeck reaches a radio over a Bluetooth LE serial adapter wired to the CAT/CI-V port, an Icom network (Wi-Fi, RS-BA1) connection for the IC-705/IC-9700/IC-905, or a Hamlib rigctld server on your network. It drives one full-duplex radio, one half-duplex radio, or two radios.
+        Rig control works only while OrbitDeck is in the foreground — iOS suspends Bluetooth and networking for backgrounded apps. Turn on Keep screen awake on Home to leave it running during a pass. Bluetooth Classic (SPP) adapters can't be used on iOS.
+        Use the CAT monitor and self-test in the rig-control screen when something doesn't respond.
+        """),
+        .init(id: "rotator", title: "Rotator control", area: "Rotator", body: """
+        Settings → Rotator control → Antenna rotator. Supported: GS-232, Easycomm I/II/III, SPID and SAEBRTrack over a Bluetooth LE serial adapter, or rotctld (Hamlib, TCP), PstRotator (UDP) and OZ9AAR URC over the network.
+        OrbitDeck pre-positions before AOS, follows the pass, and can flip a 180° elevation rotator through the zenith on overhead passes. Like CAT, it runs only while the app is in the foreground. The rotator screen has a monitor and a self-test (including a null move) for checking the link.
+        """),
+        .init(id: "ft4", title: "FT4 on linear satellites", area: "FT4", body: """
+        FT4 needs an audio interface (or set Settings → Audio features → FT4 → Always) and works full duplex on a linear transponder: OrbitDeck decodes the downlink while transmitting the uplink, with Doppler compensation so your signal stays put. Half-duplex single-radio FT4 isn't supported — on a satellite you must hear your own signal.
+        Optional: Use data mode for FT4 (the radio's DATA sub-mode), Auto-calibrate transponder from FT4, and PSKReporter uploads, all in Settings → Audio features and PSKReporter.
+        """),
+        .init(id: "packet", title: "Packet and APRS", area: "Packet", body: """
+        The Packet / APRS card decodes 1200 bd AFSK and 9600 bd G3RUH packet from the received audio and can transmit APRS messages and position beacons through digipeating satellites and the ISS. It appears on Home with an audio interface, or set Settings → Audio features → Packet / APRS → Always.
+        """),
+        .init(id: "sstv", title: "SSTV images", area: "SSTV", body: """
+        The SSTV card decodes slow-scan TV (for example ISS ARISS events) from the received audio; images land in the SSTV Images gallery with Photos export. It can arm automatically for passes above a chosen elevation. Show the card without an interface via Settings → Audio features → SSTV decode → Always.
+        """),
+        .init(id: "logging", title: "Logging, LoTW and awards", area: "Logging", body: """
+        The Home Log QSO card prefills the satellite, mode and your grid; the Log screen lists, edits and exports QSOs (ADIF, PDF). Log settings (gear icon on the Log screen) hold your LoTW station location and callsign certificate (.p12) — OrbitDeck signs and uploads to LoTW on the device — and your Cloudlog/Wavelog URL and API key.
+        Awards totals (satellites, VUCC grids, WAS, DXCC) are computed from the log and can be shared as a PDF. Passwords and keys are kept in the iOS Keychain.
+        """),
+        .init(id: "auto", title: "Automatic satellite switching", area: "Auto switching", body: """
+        Auto Switching selects the next satellite from your priority list as each pass begins, so Home, CAT and the rotator follow the sky without touching the phone. Set the list and minimum elevation on the Auto Switching screen; Pause after a manual selection keeps your own choice for a while.
+        """),
+        .init(id: "backup", title: "Backup, restore and reset", area: "Backup", body: """
+        Settings → Backup & restore saves your station, favorites, calibrations, CAT, rotator, auto-switch, digital-mode and logging setup (optionally the QSO log) to one JSON file in Files, and restores it after a preview. Passwords and keys are never included.
+        Settings → Reset clears settings, caches and stored data, with options to keep the QSO log and recordings, keep notes, and also remove saved passwords.
+        Notes live in Documents/Notes and show in the Files app under On My iPhone → OrbitDeck.
+        """),
+        .init(id: "elements", title: "Element age and accuracy", area: "Passes", body: """
+        GP (TLE) element sets are fitted to tracking data and propagated with SGP4. Errors grow mostly along the track as elements age: fine for pass planning after a week, but refresh before precision Doppler or antenna pointing. OrbitDeck refreshes daily when the loaded catalog is more than a day old and honors CelesTrak's request of no more than one download per dataset every two hours.
+        """)
+    ]
+
+    static func search(_ query: String) -> [HelpArticle] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return articles }
+        return articles.filter { ($0.title + " " + $0.area + " " + $0.body).lowercased().contains(q) }
+    }
 }
 
 // MARK: - Tiny BASIC foundation

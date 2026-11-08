@@ -3962,3 +3962,214 @@ extension AmsatStatusService {
         return nil
     }
 }
+
+// MARK: - Debris-group screen
+
+/// One debris object's closest approach to the screened satellite.
+struct DebrisScreenHit: Identifiable, Sendable {
+    let id: UInt
+    let name: String
+    let date: Date
+    let missDistanceKm: Double
+    let relativeVelocityKmS: Double
+}
+
+struct DebrisScreenResult: Sendable {
+    let groupCount: Int      // objects in the fetched group
+    let bandCount: Int       // objects whose perigee–apogee band can reach the satellite
+    let hits: [DebrisScreenHit]
+}
+
+extension FeatureEngine {
+    /// Screen a transient debris group against one satellite. Objects whose
+    /// perigee–apogee band can't come within `thresholdKm` are dropped, the rest are
+    /// sampled every 30 s against the satellite's precomputed track, and anything
+    /// whose coarse minimum could hide a close pass (relative speeds reach ~15 km/s,
+    /// so a 30 s sample can sit ~225 km off the true minimum) is refined with the
+    /// same `screenConjunctions` pass the pair screener uses (1 s refinement).
+    /// CardSat parity (debris-group screen, 0.9.59). Awareness only.
+    static func screenDebrisGroup(primary: SatelliteRecord, debris: [SatelliteRecord], from start: Date = .now,
+                                  hours: Double, thresholdKm: Double, maxResults: Int = 30) throws -> DebrisScreenResult {
+        let step: TimeInterval = 30
+        let coarseMargin = 250.0
+        let lo = primary.perigeeKm - thresholdKm, hi = primary.apogeeKm + thresholdKm
+        let band = debris.filter { $0.id != primary.id && $0.apogeeKm >= lo && $0.perigeeKm <= hi }
+        let satA = Satellite(elements: primary.elements)
+        let count = Int(hours * 3600 / step) + 1
+        var track: [Vector] = []
+        track.reserveCapacity(count)
+        for i in 0..<count { track.append(try state(satA, at: start.addingTimeInterval(Double(i) * step)).position) }
+
+        var hits: [DebrisScreenHit] = []
+        for object in band {
+            if Task.isCancelled { break }
+            let satB = Satellite(elements: object.elements)
+            var coarseMin = Double.greatestFiniteMagnitude
+            for i in 0..<count {
+                guard let b = try? state(satB, at: start.addingTimeInterval(Double(i) * step)) else { break }
+                coarseMin = min(coarseMin, separation(track[i], b.position))
+            }
+            guard coarseMin < thresholdKm + coarseMargin,
+                  let best = (try? screenConjunctions(primary: primary, secondary: object, from: start, hours: hours,
+                                                      step: step, thresholdKm: thresholdKm + coarseMargin, maxResults: 1))?.first,
+                  best.missDistanceKm <= thresholdKm else { continue }
+            hits.append(DebrisScreenHit(id: object.id, name: object.name, date: best.date,
+                                        missDistanceKm: best.missDistanceKm, relativeVelocityKmS: best.relativeVelocityKmS))
+        }
+        return DebrisScreenResult(groupCount: debris.count, bandCount: band.count,
+                                  hits: Array(hits.sorted { $0.missDistanceKm < $1.missDistanceKm }.prefix(maxResults)))
+    }
+}
+
+// MARK: - Comet position
+
+/// Heliocentric osculating elements for a comet (angles in degrees, J2000 ecliptic).
+struct CometElements: Sendable, Equatable {
+    var name: String
+    var perihelionAU: Double        // q
+    var eccentricity: Double        // e (elliptic, parabolic or hyperbolic)
+    var inclinationDeg: Double
+    var nodeDeg: Double             // longitude of the ascending node Ω
+    var argPerihelionDeg: Double    // ω
+    var perihelionTime: Date        // Tp
+}
+
+struct CometPosition: Sendable {
+    let heliocentricAU: Double      // r
+    let geocentricAU: Double        // Δ
+    let raDeg: Double
+    let decDeg: Double
+    let azimuthDeg: Double
+    let elevationDeg: Double
+    let elongationDeg: Double       // Sun–Earth–comet angle
+    let daysFromPerihelion: Double
+    let rise: Date?
+    let set: Date?
+    let alwaysUp: Bool
+    let neverUp: Bool
+}
+
+extension FeatureEngine {
+    /// Built-in comets, ported from CardSat's preset table (0.9.76; the developer's
+    /// own data). Values are JPL Small-Body Database osculating elements
+    /// (ssd.jpl.nasa.gov/tools/sbdb_lookup.html, public), rounded; each Tp is the
+    /// perihelion passage named in the comment. Two-body propagation from these is
+    /// approximate far from that perihelion (Jupiter perturbs periodic comets).
+    static let cometPresets: [CometElements] = [
+        .init(name: "1P/Halley", perihelionAU: 0.586, eccentricity: 0.967, inclinationDeg: 162.26, nodeDeg: 58.42,
+              argPerihelionDeg: 111.33, perihelionTime: Date(timeIntervalSince1970: 508_291_200)),      // 1986-02-09
+        .init(name: "2P/Encke", perihelionAU: 0.336, eccentricity: 0.848, inclinationDeg: 11.78, nodeDeg: 334.57,
+              argPerihelionDeg: 186.55, perihelionTime: Date(timeIntervalSince1970: 1_697_932_800)),    // 2023-10-22
+        .init(name: "12P/Pons-Brooks", perihelionAU: 0.781, eccentricity: 0.955, inclinationDeg: 74.19, nodeDeg: 255.85,
+              argPerihelionDeg: 199.03, perihelionTime: Date(timeIntervalSince1970: 1_713_657_600)),    // 2024-04-21
+        .init(name: "67P/Churyumov-Gerasimenko", perihelionAU: 1.211, eccentricity: 0.650, inclinationDeg: 7.04, nodeDeg: 50.15,
+              argPerihelionDeg: 12.79, perihelionTime: Date(timeIntervalSince1970: 1_635_811_200)),     // 2021-11-02
+        .init(name: "C/2023 A3 Tsuchinshan-ATLAS", perihelionAU: 0.391, eccentricity: 1.000, inclinationDeg: 139.11, nodeDeg: 21.56,
+              argPerihelionDeg: 308.49, perihelionTime: Date(timeIntervalSince1970: 1_727_395_200)),    // 2024-09-27
+        .init(name: "81P/Wild 2", perihelionAU: 1.598, eccentricity: 0.538, inclinationDeg: 3.24, nodeDeg: 136.10,
+              argPerihelionDeg: 41.70, perihelionTime: Date(timeIntervalSince1970: 1_703_980_800))      // 2023-12-31
+    ]
+
+    /// Heliocentric J2000-ecliptic position (AU) by two-body propagation from
+    /// perihelion. A universal-variable Kepler solve (Stumpff functions) covers
+    /// elliptic, parabolic and hyperbolic orbits alike; time of flight is monotonic
+    /// in the universal anomaly, so a bracketed bisection always converges.
+    static func cometHeliocentric(_ c: CometElements, at date: Date) -> (x: Double, y: Double, z: Double) {
+        let sqrtMu = 0.01720209895                  // Gaussian constant k = √μ (AU^1.5/day)
+        let q = max(1e-4, c.perihelionAU), e = max(0, c.eccentricity)
+        let alpha = (1 - e) / q                     // 1/a
+        var dt = date.timeIntervalSince(c.perihelionTime) / 86400
+        if alpha > 0 {                              // elliptic: fold into one period
+            let period = 2 * Double.pi / (sqrtMu * pow(alpha, 1.5))
+            dt = dt.truncatingRemainder(dividingBy: period)
+            if dt > period / 2 { dt -= period } else if dt < -period / 2 { dt += period }
+        }
+        func stumpffC(_ z: Double) -> Double {
+            if z > 1e-8 { return (1 - cos(sqrt(z))) / z }
+            if z < -1e-8 { return (cosh(sqrt(-z)) - 1) / -z }
+            return 0.5 - z / 24
+        }
+        func stumpffS(_ z: Double) -> Double {
+            if z > 1e-8 { let s = sqrt(z); return (s - sin(s)) / (s * s * s) }
+            if z < -1e-8 { let s = sqrt(-z); return (sinh(s) - s) / (s * s * s) }
+            return 1.0 / 6 - z / 120
+        }
+        // Time of flight from perihelion (radial velocity zero there) as a function of χ.
+        func tof(_ chi: Double) -> Double {
+            let z = alpha * chi * chi
+            return ((1 - alpha * q) * chi * chi * chi * stumpffS(z) + q * chi) / sqrtMu
+        }
+        let target = abs(dt)
+        var lo = 0.0, hi = max(1e-3, sqrt(q))
+        var doublings = 0
+        while tof(hi) < target && doublings < 200 { lo = hi; hi *= 2; doublings += 1 }
+        for _ in 0..<200 {
+            let mid = 0.5 * (lo + hi)
+            if tof(mid) < target { lo = mid } else { hi = mid }
+        }
+        let chi = (dt < 0 ? -1 : 1) * 0.5 * (lo + hi)
+        let z = alpha * chi * chi
+        let v0 = sqrtMu * sqrt((1 + e) / q)
+        let f = 1 - chi * chi / q * stumpffC(z)
+        let g = dt - chi * chi * chi * stumpffS(z) / sqrtMu
+        let xv = f * q, yv = g * v0                 // perifocal frame
+        let w = c.argPerihelionDeg * degreesToRadians
+        let node = c.nodeDeg * degreesToRadians
+        let i = c.inclinationDeg * degreesToRadians
+        let xh = xv * (cos(w) * cos(node) - sin(w) * sin(node) * cos(i))
+            + yv * (-sin(w) * cos(node) - cos(w) * sin(node) * cos(i))
+        let yh = xv * (cos(w) * sin(node) + sin(w) * cos(node) * cos(i))
+            + yv * (-sin(w) * sin(node) + cos(w) * cos(node) * cos(i))
+        let zh = xv * sin(w) * sin(i) + yv * cos(w) * sin(i)
+        return (xh, yh, zh)
+    }
+
+    /// Geocentric RA/Dec (J2000, one light-time iteration), distances, elongation and
+    /// the observer's alt/az; rise/set found by sampling the next 24 h.
+    static func cometPosition(_ c: CometElements, site: ObserverSite, at date: Date = .now) -> CometPosition {
+        let earth = heliocentricXYZ(earthElements, date: date)
+        var p = cometHeliocentric(c, at: date)
+        var gx = p.x - earth.0, gy = p.y - earth.1, gz = p.z - earth.2
+        let lightDays = sqrt(gx * gx + gy * gy + gz * gz) * 0.0057755183
+        p = cometHeliocentric(c, at: date.addingTimeInterval(-lightDays * 86400))
+        gx = p.x - earth.0; gy = p.y - earth.1; gz = p.z - earth.2
+        let delta = sqrt(gx * gx + gy * gy + gz * gz)
+        let epsilon = 23.43928 * degreesToRadians
+        let yq = gy * cos(epsilon) - gz * sin(epsilon)
+        let zq = gy * sin(epsilon) + gz * cos(epsilon)
+        let ra = normalizedDegrees(atan2(yq, gx) / degreesToRadians)
+        let dec = atan2(zq, hypot(gx, yq)) / degreesToRadians
+        let look = raDecToAzEl(raDegrees: ra, decDegrees: dec, site: site, date: date)
+        // Elongation: angle at Earth between the Sun (at −earth) and the comet.
+        let sunDistance = sqrt(earth.0 * earth.0 + earth.1 * earth.1 + earth.2 * earth.2)
+        let dot = -(earth.0 * gx + earth.1 * gy + earth.2 * gz)
+        let elongation = sunDistance * delta > 0 ? acos(max(-1, min(1, dot / (sunDistance * delta)))) / degreesToRadians : 0
+
+        // Rise/set over the next 24 h (10 min samples, bisected to ~10 s). A comet
+        // barely moves against the stars in a day, so its RA/Dec are held fixed.
+        let horizon = -0.57                         // standard refraction at the horizon
+        func el(_ t: Date) -> Double { raDecToAzEl(raDegrees: ra, decDegrees: dec, site: site, date: t).elevation - horizon }
+        var rise: Date?, set: Date?
+        var prevT = date, prevE = el(date)
+        var anyUp = prevE > 0, anyDown = prevE <= 0
+        for step in 1...144 {
+            let t = date.addingTimeInterval(Double(step) * 600)
+            let e = el(t)
+            anyUp = anyUp || e > 0; anyDown = anyDown || e <= 0
+            if (prevE <= 0) != (e <= 0) {
+                var a = prevT, b = t
+                for _ in 0..<12 {
+                    let m = a.addingTimeInterval(b.timeIntervalSince(a) / 2)
+                    if (el(m) <= 0) == (prevE <= 0) { a = m } else { b = m }
+                }
+                if prevE <= 0, rise == nil { rise = b } else if prevE > 0, set == nil { set = b }
+            }
+            prevT = t; prevE = e
+        }
+        return CometPosition(heliocentricAU: sqrt(p.x * p.x + p.y * p.y + p.z * p.z), geocentricAU: delta,
+                             raDeg: ra, decDeg: dec, azimuthDeg: look.azimuth, elevationDeg: look.elevation,
+                             elongationDeg: elongation,
+                             daysFromPerihelion: date.timeIntervalSince(c.perihelionTime) / 86400,
+                             rise: rise, set: set, alwaysUp: !anyDown, neverUp: !anyUp)
+    }
+}

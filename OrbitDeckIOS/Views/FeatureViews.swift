@@ -1464,6 +1464,17 @@ struct ConjunctionView: View {
                     }
                 }
 
+                Section("Debris groups") {
+                    NavigationLink {
+                        ScrollView { DebrisScreenView().padding() }
+                            .navigationTitle("Debris-group screen")
+                    } label: {
+                        Label("Screen against a debris group…", systemImage: "aqi.medium")
+                    }
+                    Text("Fetches a CelesTrak fragmentation cloud (Fengyun-1C, Cosmos 2251, Iridium 33, Cosmos 1408) for this session only — your catalog isn't replaced.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
+
                 Section("Orbital neighborhood") {
                     Button("Compute nearest catalog objects now") { computeNeighborhood() }
                         .disabled(isLoading || store.selectedSatellite == nil)

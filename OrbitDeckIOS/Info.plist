@@ -17,5 +17,11 @@
              back for ~90 minutes. -->
 		<string>audio</string>
 	</array>
+	<!-- Notes (Tools → Notes) are plain .txt files in Documents/Notes; these two keys
+         make the Documents folder browsable and editable in the Files app. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 </dict>
 </plist>

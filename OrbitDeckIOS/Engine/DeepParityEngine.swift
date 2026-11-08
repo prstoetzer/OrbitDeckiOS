@@ -1312,6 +1312,7 @@ extension BenchTools {
         .init(id:"dbchain",category:"RF & measurement",name:"dB chain sum",description:"Sum a four-stage gain/loss chain.",fields:[.init(id:"s1",label:"Stage 1",defaultValue:20,unit:"dB"),.init(id:"s2",label:"Stage 2",defaultValue:-3,unit:"dB"),.init(id:"s3",label:"Stage 3",defaultValue:-6,unit:"dB"),.init(id:"s4",label:"Stage 4",defaultValue:0,unit:"dB")]),
         .init(id:"complex",category:"Electronics & power",name:"Complex / polar",description:"Rectangular impedance to magnitude and phase.",fields:[.init(id:"real",label:"Real",defaultValue:50,unit:""),.init(id:"imag",label:"Imaginary",defaultValue:25,unit:"j")]),
         .init(id:"rctime",category:"Electronics & power",name:"RC time constant",description:"RC τ and 1–5τ charge percentages.",fields:[.init(id:"r",label:"Resistance",defaultValue:1000,unit:"Ω"),.init(id:"c",label:"Capacitance",defaultValue:1,unit:"µF")]),
+        .init(id:"rltime",category:"Electronics & power",name:"RL time constant",description:"RL τ = L/R and 1–5τ current rise (or decay) percentages.",fields:[.init(id:"l",label:"Inductance",defaultValue:10,unit:"mH"),.init(id:"r",label:"Resistance",defaultValue:100,unit:"Ω")]),
         .init(id:"pll",category:"Electronics & power",name:"PLL / frequency plan",description:"Reference-divider/N-divider output and channel step.",fields:[.init(id:"ref",label:"Reference",defaultValue:10,unit:"MHz"),.init(id:"r",label:"R divider",defaultValue:1,unit:""),.init(id:"n",label:"N divider",defaultValue:40,unit:""),.init(id:"mult",label:"Multiplier",defaultValue:1,unit:"")]),
         .init(id:"tropo",category:"Terrestrial VHF/UHF",name:"Tropo ducting index",description:"Simple 0–6 watch index from temperature/dew point/inversion/wind.",fields:[.init(id:"temp",label:"Temperature",defaultValue:20,unit:"°C"),.init(id:"dew",label:"Dew point",defaultValue:15,unit:"°C"),.init(id:"inv",label:"Inversion ΔT",defaultValue:4,unit:"°C"),.init(id:"wind",label:"Wind",defaultValue:3,unit:"m/s")]),
         .init(id:"rainfade",category:"Terrestrial VHF/UHF",name:"Microwave rain fade",description:"Approximate specific attenuation for a rain path.",fields:[.init(id:"freq",label:"Frequency",defaultValue:10,unit:"GHz"),.init(id:"rain",label:"Rain rate",defaultValue:25,unit:"mm/h"),.init(id:"distance",label:"Path",defaultValue:10,unit:"km")]),
@@ -1368,6 +1369,9 @@ extension BenchTools {
         case "rctime":
             let tau=max(v("r"),0)*max(v("c"),0)*1e-6
             var out=[row("τ",String(format:"%.6g s",tau))]; for n in 1...5 { out.append(row("\(n)τ",String(format:"%.1f%% charged",100*(1-exp(-Double(n)))))) }; return out
+        case "rltime":
+            let r=max(v("r"),1e-12),tau=max(v("l"),0)*1e-3/r
+            var out=[row("τ",String(format:"%.6g s",tau))]; for n in 1...5 { out.append(row("\(n)τ",String(format:"%.1f%% of final current",100*(1-exp(-Double(n)))),"decay: \(String(format:"%.1f",100*exp(-Double(n))))% remains")) }; return out
         case "pll":
             let ref=max(v("ref"),1e-12),r=max(v("r"),1),n=v("n"),m=v("mult")
             let pfd=ref/r,out=pfd*n*m
@@ -1948,6 +1952,8 @@ extension BenchTools {
         // Map/geo tools with their own views (UtilityFeatureViews.swift); listed in `customViewTools`.
         .init(id:"locationConvert",category:"General",name:"Location converter",description:"Convert between Maidenhead (4/6/8), decimal degrees, DMS, DDM, Plus Code, UTM, MGRS and USNG. Type any of them, or use your location.",fields:[]),
         .init(id:"gridDistance",category:"General",name:"Grid distance & bearing",description:"Short- and long-path distance and beam headings from your station to a grid, coordinates or a callsign (QRZ grid when configured, else the DXCC reference point).",fields:[]),
+        .init(id:"comet",category:"Satellite & orbit",name:"Comet position",description:"RA/Dec, your alt/az, distances, elongation and rise/set for a built-in comet or elements you enter (two-body, from JPL-style osculating elements).",fields:[]),
+        .init(id:"debrisScreen",category:"Satellite & orbit",name:"Debris-group screen",description:"Fetch a CelesTrak fragmentation cloud (Fengyun-1C, Cosmos 2251, Iridium 33, Cosmos 1408) for this session only and screen it against the selected satellite. Your catalog isn't changed.",fields:[]),
         .init(id:"ampacity",category:"Electronics & power",name:"Trace & wire ampacity",description:"IPC-2221 PCB trace width or chassis-wire ampacity.",fields:[.init(id:"mode",label:"Mode",defaultValue:0,unit:"",choices:["PCB external","PCB internal","Wire (AWG)"]),.init(id:"current",label:"Current",defaultValue:1,unit:"A"),.init(id:"rise",label:"Temp rise",defaultValue:10,unit:"°C"),.init(id:"copper",label:"Copper",defaultValue:1,unit:"oz"),.init(id:"awg",label:"Wire",defaultValue:24,unit:"AWG")]),
         .init(id:"toroid",category:"Electronics & power",name:"Toroid winding",description:"Turns required on common Amidon iron-powder/ferrite cores.",fields:[.init(id:"core",label:"Core",defaultValue:2,unit:"",choices:DeepToolMath.toroids.map{$0.0}),.init(id:"target",label:"Target L",defaultValue:10,unit:"µH")]),
         .init(id:"terrestrialBudget",category:"Terrestrial VHF/UHF",name:"Terrestrial path budget",description:"Two-way terrestrial link budget with nominal 12 kHz receiver noise floor.",fields:[.init(id:"power",label:"TX power",defaultValue:25,unit:"W"),.init(id:"txgain",label:"TX gain",defaultValue:6,unit:"dBi"),.init(id:"rxgain",label:"RX gain",defaultValue:6,unit:"dBi"),.init(id:"loss",label:"Line loss",defaultValue:2,unit:"dB"),.init(id:"freq",label:"Frequency",defaultValue:146,unit:"MHz"),.init(id:"distance",label:"Distance",defaultValue:50,unit:"km")]),
@@ -2034,7 +2040,7 @@ extension BenchTools {
     }
 
     /// Tools that render their own SwiftUI view instead of the generic field form.
-    static let customViewTools: Set<String> = ["sciCalc", "locationConvert", "gridDistance"]
+    static let customViewTools: Set<String> = ["sciCalc", "locationConvert", "gridDistance", "comet", "debrisScreen"]
 
     static func unitChoices(familyIndex:Int)->[String]{ DeepToolMath.unitFamilies[max(0,min(DeepToolMath.unitFamilies.count-1,familyIndex))].1.map{$0.0} }
 }

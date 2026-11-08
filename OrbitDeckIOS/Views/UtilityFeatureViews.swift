@@ -1,5 +1,9 @@
 import SwiftUI
 import Charts
+import UIKit
+import CoreLocation
+import UserNotifications
+import UniformTypeIdentifiers
 
 // MARK: - 3D-look globe
 
@@ -408,6 +412,11 @@ struct GraphCalcView: View {
     @State private var autoY=true
     @State private var showTable=false
     @State private var traceX: Double?
+    @State private var intA = "0"
+    @State private var intB = "90"
+    @State private var importedPoints: [(x: Double, y: Double)] = []
+    @State private var importing = false
+    @State private var importStatus = ""
     private let engine=GraphCalculatorEngine()
     private var lo: Double { Double(xmin) ?? -180 }
     private var hi: Double { max(lo + 0.001, Double(xmax) ?? 180) }
@@ -454,6 +463,7 @@ struct GraphCalcView: View {
                             Text(String(format: "x = %.4g", tx))
                             if let y1 { Text(String(format: "· y₁ = %.5g", y1)).foregroundStyle(ODTheme.good) }
                             if let y2 { Text(String(format: "· y₂ = %.5g", y2)).foregroundStyle(ODTheme.accent) }
+                            if let d = derivative(f1, at: tx) { Text(String(format: "· dy₁/dx = %.5g", d)) }
                             Spacer()
                             Button("Clear trace") { traceX = nil }.font(.caption2)
                         }
@@ -461,7 +471,7 @@ struct GraphCalcView: View {
                     }
                     analysis
                 }
-                Text("Degrees mode. Drag on the plot to trace. Evaluator supports x, pi/e and the same functions as the scientific calculator (trig/inverse/hyperbolic, ln/log/log2/exp, sqrt/cbrt, RF/orbit helpers, metric prefixes). Undefined points break the trace.")
+                Text("Degrees mode. Drag on the plot to trace (shows dy₁/dx). Zeros and y₁ = y₂ intersections are refined by bisection; ∫ from a to b uses Simpson's rule. Import a two-column x,y CSV to plot data points. Evaluator supports x, pi/e and the same functions as the scientific calculator (trig/inverse/hyperbolic, ln/log/log2/exp, sqrt/cbrt, RF/orbit helpers, metric prefixes). Undefined points break the trace.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
             .padding()
@@ -475,6 +485,9 @@ struct GraphCalcView: View {
         Chart {
             ForEach(a) { p in if let y = p.y { LineMark(x: .value("x", p.x), y: .value("y", y)).foregroundStyle(ODTheme.good) } }
             ForEach(b) { p in if let y = p.y { LineMark(x: .value("x", p.x), y: .value("y2", y)).foregroundStyle(ODTheme.accent) } }
+            ForEach(Array(importedPoints.enumerated()), id: \.offset) { _, p in
+                PointMark(x: .value("x", p.x), y: .value("data", p.y)).foregroundStyle(ODTheme.warning).symbolSize(18)
+            }
             ForEach(Array(roots.enumerated()), id: \.offset) { _, rx in
                 RuleMark(x: .value("root", rx)).foregroundStyle(ODTheme.warning.opacity(0.5)).lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
             }
@@ -547,12 +560,122 @@ struct GraphCalcView: View {
         let a = engine.sample(f1, xmin: lo, xmax: hi)
         let roots = zeros(of: a)
         let area = integral(of: a)
-        HStack {
-            Text(roots.isEmpty ? "No zeros of y₁ in view" : "Zeros of y₁: " + roots.prefix(6).map { String(format: "%.3g", $0) }.joined(separator: ", ") + (roots.count > 6 ? "…" : ""))
-            Spacer()
-            Text(String(format: "∫y₁ dx ≈ %.4g", area))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(roots.isEmpty ? "No zeros of y₁ in view" : "Zeros of y₁: " + roots.prefix(6).map { String(format: "%.6g", $0) }.joined(separator: ", ") + (roots.count > 6 ? "…" : ""))
+                Spacer()
+                Text(String(format: "∫y₁ dx (view) ≈ %.4g", area))
+            }
+            if hasF2 {
+                let xs = intersections()
+                Text(xs.isEmpty ? "No intersections of y₁ and y₂ in view"
+                     : "y₁ = y₂ at " + xs.prefix(6).map { String(format: "(%.6g, %.6g)", $0, yAt(f1, $0) ?? .nan) }.joined(separator: ", ") + (xs.count > 6 ? "…" : ""))
+            }
+            HStack {
+                Text("∫ from")
+                TextField("a", text: $intA).textFieldStyle(.odField).keyboardType(.numbersAndPunctuation).frame(maxWidth: 90)
+                Text("to")
+                TextField("b", text: $intB).textFieldStyle(.odField).keyboardType(.numbersAndPunctuation).frame(maxWidth: 90)
+                if let s = simpson(f1, Double(intA) ?? .nan, Double(intB) ?? .nan) {
+                    Text(String(format: "= %.8g", s)).foregroundStyle(ODTheme.good)
+                } else {
+                    Text("= —")
+                }
+            }
+            HStack {
+                Button { importing = true } label: { Label("Import CSV points", systemImage: "square.and.arrow.down") }
+                if !importedPoints.isEmpty { Button("Clear points") { importedPoints = []; importStatus = "" } }
+                Spacer()
+            }
+            .buttonStyle(.bordered)
+            if !importStatus.isEmpty { Text(importStatus) }
         }
         .font(.caption.monospaced()).foregroundStyle(ODTheme.muted)
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.commaSeparatedText, .plainText, .text]) { result in
+            switch result {
+            case .success(let url): importCSV(url)
+            case .failure(let error): importStatus = error.localizedDescription
+            }
+        }
+    }
+
+    /// Central-difference dy/dx, step scaled to x (degrees mode applies inside the evaluator).
+    private func derivative(_ expr: String, at x: Double) -> Double? {
+        let h = max(1e-6, abs(x) * 1e-6)
+        guard let yp = yAt(expr, x + h), let ym = yAt(expr, x - h) else { return nil }
+        let d = (yp - ym) / (2 * h)
+        return d.isFinite ? d : nil
+    }
+
+    /// Composite Simpson's rule (1,000 intervals) over [a, b]; nil if y₁ is undefined anywhere.
+    private func simpson(_ expr: String, _ a: Double, _ b: Double) -> Double? {
+        guard a.isFinite, b.isFinite, a != b else { return a == b ? 0 : nil }
+        let n = 1000, h = (b - a) / Double(n)
+        var sum = 0.0
+        for i in 0...n {
+            guard let y = yAt(expr, a + Double(i) * h) else { return nil }
+            sum += y * (i == 0 || i == n ? 1 : (i % 2 == 1 ? 4 : 2))
+        }
+        return sum * h / 3
+    }
+
+    /// Bisection-refined root of g in [x0, x1] (g changes sign across it).
+    private func refineRoot(_ g: (Double) -> Double?, _ x0: Double, _ x1: Double) -> Double? {
+        var a = x0, b = x1
+        guard var ga = g(a), let gb = g(b), (ga <= 0) != (gb <= 0) else { return nil }
+        for _ in 0..<60 {
+            let m = 0.5 * (a + b)
+            guard let gm = g(m) else { return nil }
+            if (gm <= 0) == (ga <= 0) { a = m; ga = gm } else { b = m }
+        }
+        let root = 0.5 * (a + b)
+        // Reject sign changes across a pole (tan, 1/x): the value must actually be small.
+        guard let gr = g(root), abs(gr) < 1e-6 * max(1, abs(ga), abs(gb)) else { return nil }
+        return root
+    }
+
+    /// x where y₁ − y₂ changes sign across the view, each refined by bisection.
+    private func intersections() -> [Double] {
+        let g: (Double) -> Double? = { x in
+            guard let a = yAt(f1, x), let b = yAt(f2, x) else { return nil }
+            return a - b
+        }
+        var out: [Double] = []
+        let n = 600, step = (hi - lo) / Double(n)
+        var prev = g(lo)
+        for i in 1...n {
+            let x = lo + Double(i) * step
+            let cur = g(x)
+            if let p = prev, let c = cur, (p <= 0) != (c <= 0), let r = refineRoot(g, x - step, x) {
+                out.append(r)
+                if out.count >= 24 { break }
+            }
+            prev = cur
+        }
+        return out
+    }
+
+    /// Two numeric columns (x, y) per line; comma, semicolon or tab separated.
+    /// A header row or any non-numeric row is skipped.
+    private func importCSV(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { importStatus = "Couldn't read that file as text."; return }
+        var points: [(x: Double, y: Double)] = []
+        var skipped = 0
+        for line in text.split(whereSeparator: \.isNewline) {
+            let cells = line.split(whereSeparator: { $0 == "," || $0 == ";" || $0 == "\t" }).map { $0.trimmingCharacters(in: .whitespaces) }
+            if cells.count >= 2, let x = Double(cells[0]), let y = Double(cells[1]), x.isFinite, y.isFinite {
+                points.append((x, y))
+            } else { skipped += 1 }
+        }
+        guard !points.isEmpty else { importStatus = "No x,y number pairs found."; return }
+        importedPoints = Array(points.prefix(5000))
+        importStatus = "Imported \(importedPoints.count) point(s)\(skipped > 0 ? ", skipped \(skipped) line(s)" : "")."
+        if let minX = importedPoints.map(\.x).min(), let maxX = importedPoints.map(\.x).max(), maxX > minX {
+            let pad = (maxX - minX) * 0.05
+            xmin = String(format: "%.6g", minX - pad); xmax = String(format: "%.6g", maxX + pad)
+        }
     }
 
     private func zoom(_ factor: Double) {
@@ -567,8 +690,9 @@ struct GraphCalcView: View {
     private func zeros(of pts: [GraphPoint]) -> [Double] {
         var out: [Double] = []; var prev: GraphPoint?
         for p in pts {
-            if let pr = prev, let y0 = pr.y, let y1 = p.y, y0.isFinite, y1.isFinite, (y0 <= 0) != (y1 <= 0), y0 != y1 {
-                out.append(pr.x + (y0 / (y0 - y1)) * (p.x - pr.x))
+            if let pr = prev, let y0 = pr.y, let y1 = p.y, y0.isFinite, y1.isFinite, (y0 <= 0) != (y1 <= 0), y0 != y1,
+               let root = refineRoot({ yAt(f1, $0) }, pr.x, p.x) {
+                out.append(root)
                 if out.count >= 24 { break }
             }
             prev = p
@@ -920,5 +1044,845 @@ struct GridDistanceView: View {
                 dxccFallback("\(error.localizedDescription) ")
             }
         }
+    }
+}
+
+
+// MARK: - Comet position tool
+
+/// Comet position (Tools → Satellite & orbit). CardSat parity (0.9.76): built-in
+/// presets or typed elements, two-body from perihelion.
+struct CometPositionView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @State private var presetIndex = 0          // −1 = custom elements
+    @State private var custom = CometElements(name: "Custom comet", perihelionAU: 1.0, eccentricity: 0.9, inclinationDeg: 10,
+                                              nodeDeg: 0, argPerihelionDeg: 0, perihelionTime: .now)
+    private var elements: CometElements {
+        presetIndex >= 0 && presetIndex < FeatureEngine.cometPresets.count ? FeatureEngine.cometPresets[presetIndex] : custom
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Comet", selection: $presetIndex) {
+                ForEach(Array(FeatureEngine.cometPresets.enumerated()), id: \.offset) { index, comet in
+                    Text(comet.name).tag(index)
+                }
+                Text("Custom elements…").tag(-1)
+            }
+            .pickerStyle(.menu)
+            if presetIndex < 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    elementField("Perihelion q (AU)", $custom.perihelionAU)
+                    elementField("Eccentricity e", $custom.eccentricity)
+                    elementField("Inclination i (°)", $custom.inclinationDeg)
+                    elementField("Node Ω (°)", $custom.nodeDeg)
+                    elementField("Arg. perihelion ω (°)", $custom.argPerihelionDeg)
+                    DatePicker("Perihelion Tp", selection: $custom.perihelionTime, displayedComponents: [.date, .hourAndMinute])
+                        .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
+                    Text("J2000 ecliptic elements, as published by JPL's Small-Body Database or the Minor Planet Center. Tp is in UTC.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
+                .padding().odPanel()
+            }
+            TimelineView(.periodic(from: .now, by: 30)) { context in
+                let c = elements
+                let p = FeatureEngine.cometPosition(c, site: store.preferences.observer, at: context.date)
+                VStack(alignment: .leading, spacing: 12) {
+                    SectionCard(c.name) {
+                        MetricRow("Right ascension", raText(p.raDeg))
+                        MetricRow("Declination", String(format: "%+.2f°", p.decDeg))
+                        MetricRow("Azimuth", "\(ODFormat.angle(p.azimuthDeg))  \(ODFormat.compass(p.azimuthDeg))")
+                        MetricRow("Elevation", ODFormat.angle(p.elevationDeg), valueColor: p.elevationDeg > 0 ? ODTheme.good : ODTheme.muted)
+                        MetricRow("From the Sun (r)", String(format: "%.3f AU", p.heliocentricAU))
+                        MetricRow("From Earth (Δ)", String(format: "%.3f AU", p.geocentricAU))
+                        MetricRow("Elongation", String(format: "%.1f°", p.elongationDeg),
+                                  valueColor: p.elongationDeg < 20 ? ODTheme.warning : .primary)
+                        MetricRow("Perihelion", ODFormat.utcDayString(c.perihelionTime))
+                        MetricRow(p.daysFromPerihelion >= 0 ? "Since perihelion" : "Until perihelion",
+                                  String(format: "%.1f days", abs(p.daysFromPerihelion)))
+                        if p.alwaysUp {
+                            MetricRow("Rise / set", "Up all day")
+                        } else if p.neverUp {
+                            MetricRow("Rise / set", "Below the horizon all day")
+                        } else {
+                            MetricRow("Next rise", p.rise.map { ODFormat.utcShort.string(from: $0) } ?? "—")
+                            MetricRow("Next set", p.set.map { ODFormat.utcShort.string(from: $0) } ?? "—")
+                        }
+                    }
+                    if abs(p.daysFromPerihelion) > 730 {
+                        Label(String(format: "These elements describe the %@ perihelion, %.0f years ago. Planetary perturbations (mostly Jupiter) accumulate, so the position can be off by degrees — enter current elements from JPL or the MPC for anything precise.",
+                                     ODFormat.utcDayString(c.perihelionTime), abs(p.daysFromPerihelion) / 365.25),
+                              systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(ODTheme.warning)
+                    }
+                    if p.elongationDeg < 20 {
+                        Text("Within 20° of the Sun — lost in twilight even when above the horizon.")
+                            .font(.caption).foregroundStyle(ODTheme.warning)
+                    }
+                }
+            }
+            Text("Two-body propagation of osculating elements (universal-variable Kepler solve for elliptic, parabolic and hyperbolic orbits), one light-time iteration, J2000 RA/Dec, no parallax. Built-in elements: JPL Small-Body Database, rounded, as shipped in CardSat. Rise/set use −0.57° refraction. Brightness isn't predicted — comet magnitudes are notoriously unpredictable.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    private func elementField(_ label: String, _ value: Binding<Double>) -> some View {
+        HStack {
+            Text(label).frame(width: 170, alignment: .leading)
+            TextField(label, value: value, format: .number.precision(.fractionLength(0...6)))
+                .textFieldStyle(.odField)
+                .keyboardType(.numbersAndPunctuation)
+        }
+    }
+
+    private func raText(_ deg: Double) -> String {
+        let hours = deg / 15
+        let h = Int(hours), m = (hours - Double(h)) * 60
+        return String(format: "%02dh %04.1fm  (%.2f°)", h, m, deg)
+    }
+}
+
+extension ODFormat {
+    /// Date-only stamp in the operator's display zone.
+    static func utcDayString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = displayTimeZone
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
+    }
+}
+
+// MARK: - Debris-group screen
+
+/// Debris groups fetched this session (never merged into the main catalog). Kept
+/// in memory so re-screening honors CelesTrak's two-hour-per-dataset request.
+@MainActor private enum DebrisGroupCache {
+    static var groups: [String: (date: Date, records: [SatelliteRecord])] = [:]
+}
+
+/// Screens a transient CelesTrak fragmentation cloud against the selected
+/// satellite (CardSat parity, 0.9.59). The resident catalog is untouched.
+struct DebrisScreenView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @State private var groupID = GPService.celestrakGroups.first { $0.name.hasPrefix("Debris:") }?.id ?? "cosmos-2251-debris"
+    @State private var hours = 6.0
+    @State private var thresholdKm = 25.0
+    @State private var result: DebrisScreenResult?
+    @State private var running = false
+    @State private var status = ""
+    @State private var job: Task<Void, Never>?
+    @State private var shareURL: URL?
+
+    private var groups: [CelesTrakGroup] { GPService.celestrakGroups.filter { $0.name.hasPrefix("Debris:") } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let sat = store.selectedSatellite {
+                Text("Screening \(sat.name) (\(ODFormat.units(String(format: "%.0f × %.0f km", sat.perigeeKm, sat.apogeeKm))))")
+                    .font(.subheadline.bold())
+            } else {
+                Text("Select a satellite first.").foregroundStyle(ODTheme.warning)
+            }
+            Picker("Debris group", selection: $groupID) {
+                ForEach(groups) { Text($0.name.replacingOccurrences(of: "Debris: ", with: "")).tag($0.id) }
+            }
+            .pickerStyle(.menu)
+            Picker("Window", selection: $hours) {
+                Text("6 h").tag(6.0); Text("12 h").tag(12.0); Text("24 h").tag(24.0)
+            }
+            .pickerStyle(.segmented)
+            Picker("Report within", selection: $thresholdKm) {
+                Text(ODFormat.units("10 km")).tag(10.0); Text(ODFormat.units("25 km")).tag(25.0)
+                Text(ODFormat.units("50 km")).tag(50.0); Text(ODFormat.units("100 km")).tag(100.0)
+            }
+            .pickerStyle(.segmented)
+            HStack {
+                Button(running ? "Screening…" : "Fetch & screen") { start() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(running || store.selectedSatellite == nil)
+                if running {
+                    ProgressView()
+                    Button("Cancel") { job?.cancel() }
+                }
+                Spacer()
+                if let shareURL { ShareLink(item: shareURL) { Label("CSV", systemImage: "square.and.arrow.up") } }
+            }
+            if !status.isEmpty { Text(status).font(.caption).foregroundStyle(ODTheme.muted) }
+            if let result {
+                SectionCard("Closest approaches (\(result.hits.count))") {
+                    if result.hits.isEmpty {
+                        Text("No object in this group comes within \(ODFormat.units(String(format: "%.0f km", thresholdKm))) in the next \(Int(hours)) h.")
+                            .font(.caption).foregroundStyle(ODTheme.muted)
+                    }
+                    ForEach(result.hits) { hit in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(hit.name).font(.subheadline)
+                                Text(verbatim: "NORAD \(hit.id) · \(ODFormat.utcShort.string(from: hit.date))")
+                                    .font(.caption.monospaced()).foregroundStyle(ODTheme.muted)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing) {
+                                Text(ODFormat.units(String(format: "%.1f km", hit.missDistanceKm)))
+                                    .font(.body.monospaced()).foregroundStyle(ODTheme.warning)
+                                Text(ODFormat.units(String(format: "Δv %.2f km/s", hit.relativeVelocityKmS)))
+                                    .font(.caption.monospaced()).foregroundStyle(ODTheme.muted)
+                            }
+                        }
+                    }
+                }
+            }
+            Text("The group is downloaded from CelesTrak for this session only — your satellite catalog isn't changed. Objects whose perigee–apogee band can't reach the satellite are skipped; the rest are sampled every 30 s and refined to 1 s. Public GP elements are km-class accurate: this is awareness, not collision avoidance.")
+                .font(.caption).foregroundStyle(ODTheme.warning)
+        }
+        .onDisappear { job?.cancel() }
+    }
+
+    private func start() {
+        guard let primary = store.selectedSatellite else { return }
+        let id = groupID, h = hours, threshold = thresholdKm
+        running = true; result = nil; shareURL = nil
+        job = Task {
+            defer { running = false }
+            let records: [SatelliteRecord]
+            if let cached = DebrisGroupCache.groups[id] {
+                records = cached.records
+            } else if !store.celestrakAllowed("debris-\(id)") {
+                status = "CelesTrak asks clients to fetch each dataset at most once every two hours; try again in \(store.celestrakCooldownMinutes("debris-\(id)")) min."
+                return
+            } else {
+                status = "Downloading the debris group…"
+                do {
+                    guard let url = URL(string: GPService.celestrakBase + id) else { return }
+                    var request = URLRequest(url: url)
+                    request.timeoutInterval = 45
+                    request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    store.recordCelestrakFetch("debris-\(id)")
+                    if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                        throw GPServiceError.badResponse(http.statusCode)
+                    }
+                    records = try GPService.parse(data: data)
+                    DebrisGroupCache.groups[id] = (Date(), records)
+                } catch {
+                    status = error.localizedDescription
+                    return
+                }
+            }
+            status = "Screening \(records.count) objects…"
+            let start = Date()
+            do {
+                let screened = try await Task.detached(priority: .userInitiated) {
+                    try FeatureEngine.screenDebrisGroup(primary: primary, debris: records, from: start, hours: h, thresholdKm: threshold)
+                }.value
+                if Task.isCancelled { status = "Canceled."; return }
+                result = screened
+                status = "\(screened.groupCount) objects in the group, \(screened.bandCount) in an overlapping altitude band, screened from \(ODFormat.utcShort.string(from: start))."
+                var csv = "norad,name,tca_utc,miss_km,relative_velocity_km_s\n"
+                for hit in screened.hits {
+                    csv += "\(hit.id),\"\(hit.name)\",\(ISO8601DateFormatter().string(from: hit.date)),\(String(format: "%.3f", hit.missDistanceKm)),\(String(format: "%.4f", hit.relativeVelocityKmS))\n"
+                }
+                shareURL = try? OrbitExportService.temporaryTextFile(name: "OrbitDeck-debris-\(id).csv", text: csv)
+            } catch {
+                status = error.localizedDescription
+            }
+        }
+    }
+}
+
+// MARK: - Notes
+
+/// Multi-note plain-text editor (CardSat parity: Log → Notes). Files live in
+/// Documents/Notes, so they're also visible and editable in the Files app.
+struct NotesView: View {
+    @State private var notes: [NoteFile] = []
+    @State private var query = ""
+    @State private var openNote: URL?
+    @State private var renaming: NoteFile?
+    @State private var renameText = ""
+    @State private var deleting: NoteFile?
+    @State private var errorText: String?
+
+    private var filtered: [NoteFile] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return notes }
+        return notes.filter { ($0.title + "\n" + $0.text).lowercased().contains(q) }
+    }
+
+    var body: some View {
+        List {
+            if notes.isEmpty {
+                Text("No notes yet. Tap + to start one — for skeds, frequencies, grids to work or a pass plan. Notes are plain-text files you can also open in the Files app (On My iPhone → OrbitDeck → Notes).")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+            ForEach(filtered) { note in
+                Button { openNote = note.url } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(note.title).font(.headline).foregroundStyle(.primary)
+                        Text(note.modified.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption).foregroundStyle(ODTheme.muted)
+                        if !note.text.isEmpty {
+                            Text(note.text.prefix(160)).font(.caption).foregroundStyle(ODTheme.muted).lineLimit(2)
+                        }
+                    }
+                }
+                .swipeActions {
+                    Button(role: .destructive) { deleting = note } label: { Label("Delete", systemImage: "trash") }
+                    Button { renameText = note.title; renaming = note } label: { Label("Rename", systemImage: "pencil") }
+                }
+                .contextMenu {
+                    Button { renameText = note.title; renaming = note } label: { Label("Rename", systemImage: "pencil") }
+                    ShareLink(item: note.url) { Label("Share", systemImage: "square.and.arrow.up") }
+                    Button(role: .destructive) { deleting = note } label: { Label("Delete", systemImage: "trash") }
+                }
+            }
+            if let errorText { Text(errorText).font(.caption).foregroundStyle(ODTheme.warning) }
+        }
+        .searchable(text: $query, prompt: "Search notes")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { newNote() } label: { Image(systemName: "square.and.pencil") }
+                    .accessibilityLabel("New note")
+            }
+        }
+        .navigationDestination(item: $openNote) { url in NoteEditorView(url: url) }
+        .onAppear { reload() }
+        .onChange(of: openNote) { _, url in if url == nil { reload() } }
+        .alert("Rename note", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Title", text: $renameText)
+            Button("Rename") {
+                if let note = renaming {
+                    do { _ = try NotesStore.rename(note.url, to: renameText) } catch { errorText = error.localizedDescription }
+                }
+                renaming = nil; reload()
+            }
+            Button("Cancel", role: .cancel) { renaming = nil }
+        }
+        .confirmationDialog("Delete this note?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let note = deleting {
+                    do { try NotesStore.delete(note.url) } catch { errorText = error.localizedDescription }
+                }
+                deleting = nil; reload()
+            }
+        } message: {
+            Text(deleting?.title ?? "")
+        }
+    }
+
+    private func reload() { notes = NotesStore.list() }
+
+    private func newNote() {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "yyyy-MM-dd HHmm'z'"
+        do { openNote = try NotesStore.create(title: "Note \(f.string(from: Date()))") } catch { errorText = error.localizedDescription }
+    }
+}
+
+/// Editor for one note; saves shortly after each edit and when leaving.
+struct NoteEditorView: View {
+    let url: URL
+    @State private var text = ""
+    @State private var loaded = false
+    @State private var saveTask: Task<Void, Never>?
+    @State private var status = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TextEditor(text: $text)
+                .font(.system(.body, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(8)
+            if !status.isEmpty {
+                Text(status).font(.caption2).foregroundStyle(ODTheme.muted).padding(.bottom, 4)
+            }
+        }
+        .navigationTitle(url.deletingPathExtension().lastPathComponent)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                ShareLink(item: url) { Image(systemName: "square.and.arrow.up") }
+            }
+        }
+        .onAppear {
+            if !loaded { text = NotesStore.read(url); loaded = true }
+        }
+        .onChange(of: text) { _, _ in
+            guard loaded else { return }
+            saveTask?.cancel()
+            saveTask = Task {
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if !Task.isCancelled { save() }
+            }
+        }
+        .onDisappear { saveTask?.cancel(); if loaded { save() } }
+    }
+
+    private func save() {
+        do { try NotesStore.write(text, to: url); status = "Saved \(Date().formatted(date: .omitted, time: .shortened))" }
+        catch { status = error.localizedDescription }
+    }
+}
+
+// MARK: - Help
+
+/// Searchable in-app help (HelpLibrary articles) with a link to the readiness checklist.
+struct HelpView: View {
+    @State private var query = ""
+
+    var body: some View {
+        List {
+            if query.isEmpty {
+                Section {
+                    NavigationLink { StationReadinessView() } label: {
+                        Label("Station readiness checklist", systemImage: "checklist")
+                    }
+                }
+            }
+            let hits = HelpLibrary.search(query)
+            let areas = hits.map(\.area).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            ForEach(areas, id: \.self) { area in
+                Section(area) {
+                    ForEach(hits.filter { $0.area == area }) { article in
+                        NavigationLink {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text(article.title).font(.title3.bold())
+                                    Text(article.body).textSelection(.enabled)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                            }
+                            .navigationTitle(article.area)
+                        } label: {
+                            Text(article.title)
+                        }
+                    }
+                }
+            }
+            if !query.isEmpty && hits.isEmpty {
+                Text("No help articles match “\(query)”.").foregroundStyle(ODTheme.muted)
+            }
+            Section {
+                Link(destination: URL(string: "https://orbitdeckios.n8hm.radio/documentation.html")!) {
+                    Label("Full documentation (website)", systemImage: "safari")
+                }
+            }
+        }
+        .searchable(text: $query, prompt: "Search help")
+    }
+}
+
+// MARK: - Station readiness
+
+enum ReadinessState: Sendable {
+    case ok, warn, missing, optional
+
+    var symbol: String {
+        switch self {
+        case .ok: "checkmark.circle.fill"
+        case .warn: "exclamationmark.triangle.fill"
+        case .missing: "xmark.circle.fill"
+        case .optional: "circle.dashed"
+        }
+    }
+    var color: Color {
+        switch self {
+        case .ok: ODTheme.good
+        case .warn: ODTheme.warning
+        case .missing: .red
+        case .optional: ODTheme.muted
+        }
+    }
+    var label: String {
+        switch self {
+        case .ok: "OK"
+        case .warn: "CHECK"
+        case .missing: "MISSING"
+        case .optional: "OPTIONAL"
+        }
+    }
+}
+
+/// Where a readiness row's "fix" goes.
+enum ReadinessFix: Sendable {
+    case settings, satellites, refreshGP, logSettings, rig, rotator, requestNotifications, systemSettings
+}
+
+struct ReadinessItem: Identifiable, Sendable {
+    let id: String
+    let title: String
+    let detail: String
+    let state: ReadinessState
+    let fix: ReadinessFix?
+}
+
+/// The checklist itself (CardSat parity: About → r). Shared by the readiness
+/// screen and the readiness PDF so both report the same thing.
+enum StationReadiness {
+    @MainActor
+    static func evaluate(store: OrbitStore, qso: QSOStore, rig: RigController, rotator: RotatorController,
+                         audio: AudioHub) async -> [ReadinessItem] {
+        var items: [ReadinessItem] = []
+        let prefs = store.preferences
+        let site = prefs.observer
+
+        // Location
+        let auth = CLLocationManager().authorizationStatus
+        if store.locationMode == .currentLocation {
+            switch auth {
+            case .authorizedAlways, .authorizedWhenInUse:
+                items.append(.init(id: "loc", title: "Location", detail: String(format: "Following this device · %@ (%.3f°, %.3f°)", store.operatorGrid6, site.latitude, site.longitude), state: .ok, fix: nil))
+            case .denied, .restricted:
+                items.append(.init(id: "loc", title: "Location", detail: "Always use current location is on, but Location access is denied. Allow it in the Settings app, or switch to a fixed site.", state: .missing, fix: .systemSettings))
+            default:
+                items.append(.init(id: "loc", title: "Location", detail: "Waiting for Location permission and a first fix.", state: .warn, fix: .settings))
+            }
+        } else {
+            let isDefault = site.latitude == ObserverSite().latitude && site.longitude == ObserverSite().longitude
+            items.append(.init(id: "loc", title: "Location", detail: isDefault
+                               ? "Your station is still the built-in default. Set it in Settings → Observer station (coordinates, grid, or current location)."
+                               : "Fixed site \(site.name) · \(store.operatorGrid6)", state: isDefault ? .missing : .ok, fix: isDefault ? .settings : nil))
+        }
+
+        // Elements and favorites
+        if let age = store.catalogAgeDays {
+            let state: ReadinessState = age <= 2 ? .ok : (age <= 7 ? .warn : .missing)
+            items.append(.init(id: "gp", title: "GP element data", detail: String(format: "%d objects · newest set %.1f days old", store.satellites.count, age), state: state, fix: state == .ok ? nil : .refreshGP))
+        } else {
+            items.append(.init(id: "gp", title: "GP element data", detail: "No catalog loaded yet. Update elements now (needs a connection).", state: .missing, fix: .refreshGP))
+        }
+        items.append(.init(id: "fav", title: "Favorites", detail: prefs.favorites.isEmpty ? "No favorite satellites — star a few in Satellites; Home and the schedules follow them." : "\(prefs.favorites.count) favorite satellite(s)",
+                           state: prefs.favorites.isEmpty ? .warn : .ok, fix: prefs.favorites.isEmpty ? .satellites : nil))
+
+        // Identity and services
+        let call = (prefs.callsign ?? "").trimmingCharacters(in: .whitespaces)
+        items.append(.init(id: "call", title: "Callsign", detail: call.isEmpty ? "Not set (Settings → Operator identity)." : call.uppercased(), state: call.isEmpty ? .missing : .ok, fix: call.isEmpty ? .settings : nil))
+        let qrz = !(prefs.qrzUsername ?? "").isEmpty && !OrbitSecretStore.get(.qrzPassword).isEmpty
+        items.append(.init(id: "qrz", title: "QRZ lookup", detail: qrz ? "Username and password saved" : "Not configured — needed for callsign lookups and name fill.", state: qrz ? .ok : .optional, fix: qrz ? nil : .settings))
+        let lotw = (qso.config.hasLoTWCredential || LoTW.hasCredential()) && !qso.config.station.call.isEmpty
+        items.append(.init(id: "lotw", title: "LoTW upload", detail: lotw ? "Certificate imported · station \(qso.config.station.call)" : "No callsign certificate or station location yet (Log → Log settings).", state: lotw ? .ok : .optional, fix: lotw ? nil : .logSettings))
+        let cloudlog = !qso.config.cloudlog.url.isEmpty && !OrbitSecretStore.get(.cloudlogKey).isEmpty
+        items.append(.init(id: "cloudlog", title: "Cloudlog / Wavelog", detail: cloudlog ? qso.config.cloudlog.url : "Not configured (Log → Log settings).", state: cloudlog ? .ok : .optional, fix: cloudlog ? nil : .logSettings))
+
+        // Notifications
+        let notify = await UNUserNotificationCenter.current().notificationSettings()
+        switch notify.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            items.append(.init(id: "notify", title: "Notifications", detail: "Allowed — pass alarms and activation reminders can alert you.", state: .ok, fix: nil))
+        case .denied:
+            items.append(.init(id: "notify", title: "Notifications", detail: "Denied — pass alarms can't alert you. Allow them in the Settings app.", state: .warn, fix: .systemSettings))
+        default:
+            items.append(.init(id: "notify", title: "Notifications", detail: "Not asked yet — needed only for pass alarms and reminders.", state: .optional, fix: .requestNotifications))
+        }
+
+        // Hardware
+        if rig.config.isConfigured {
+            items.append(.init(id: "cat", title: "Rig control (CAT)", detail: rig.connected ? "Configured and connected" : "Configured, not connected — connect from Home before the pass.", state: rig.connected ? .ok : .warn, fix: rig.connected ? nil : .rig))
+        } else {
+            items.append(.init(id: "cat", title: "Rig control (CAT)", detail: "Not configured (optional Doppler tuning of your radio).", state: .optional, fix: .rig))
+        }
+        if rotator.config.isConfigured {
+            items.append(.init(id: "rot", title: "Rotator", detail: rotator.connected ? "Configured and connected" : "Configured, not connected — connect from Home before the pass.", state: rotator.connected ? .ok : .warn, fix: rotator.connected ? nil : .rotator))
+        } else {
+            items.append(.init(id: "rot", title: "Rotator", detail: "Not configured (optional az/el antenna steering).", state: .optional, fix: .rotator))
+        }
+        items.append(.init(id: "audio", title: "Audio interface", detail: audio.audioAvailable
+                           ? (audio.usbConnected ? "USB audio interface connected" : "Icom network audio ready")
+                           : "None connected, so the recording, SSTV, FT4, packet and remote-voice cards are hidden on Home. To use them with the built-in mic, set them to Always in Settings → Audio features.",
+                           state: audio.audioAvailable ? .ok : .optional, fix: audio.audioAvailable ? nil : .settings))
+        return items
+    }
+
+    /// The checklist as a PDF report.
+    static func reportPDF(_ items: [ReadinessItem], station: String) -> Data {
+        let ready = items.filter { $0.state == .missing }.isEmpty
+        return StationReportService.textPDF(
+            title: "Station readiness",
+            subtitle: "\(station) · \(ODFormat.utc.string(from: Date())) · \(ready ? "No blocking items" : "Items need attention")",
+            sections: items.map { ReportSection(heading: "[\($0.state.label)]  \($0.title)", lines: [$0.detail]) },
+            footer: "OrbitDeck iOS · readiness report")
+    }
+}
+
+/// Checklist screen: shown once on first run and from Settings / Help.
+struct StationReadinessView: View {
+    var firstRun = false
+    @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var qso: QSOStore
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var rotator: RotatorController
+    @EnvironmentObject private var audio: AudioHub
+    @EnvironmentObject private var router: NotificationRouter
+    @Environment(\.dismiss) private var dismiss
+    @State private var items: [ReadinessItem] = []
+    @State private var showLogSettings = false
+    @State private var showRig = false
+    @State private var showRotator = false
+    @State private var shareURL: URL?
+
+    var body: some View {
+        List {
+            if firstRun {
+                Section {
+                    Text("Welcome to OrbitDeck. Here's what's set up and what isn't — tap an item to fix it. You can come back to this any time from Settings → Station readiness or Help.")
+                        .font(.callout)
+                }
+            }
+            Section {
+                ForEach(items) { item in
+                    Button { perform(item.fix) } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: item.state.symbol).foregroundStyle(item.state.color).frame(width: 22)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title).foregroundStyle(.primary)
+                                Text(item.detail).font(.caption).foregroundStyle(ODTheme.muted)
+                            }
+                            Spacer()
+                            if item.fix != nil { Image(systemName: "chevron.right").font(.caption).foregroundStyle(ODTheme.muted) }
+                        }
+                    }
+                    .disabled(item.fix == nil)
+                }
+            } footer: {
+                Text("Green is ready, amber needs a look, red blocks useful results; gray items are optional.")
+            }
+            Section {
+                Button { Task { await refresh() } } label: { Label("Check again", systemImage: "arrow.clockwise") }
+                Button {
+                    shareURL = try? OrbitExportService.temporaryFile(name: "OrbitDeck-readiness.pdf",
+                                                                     data: StationReadiness.reportPDF(items, station: store.preferences.observer.name))
+                } label: { Label("Readiness report (PDF)", systemImage: "doc.richtext") }
+            }
+        }
+        .navigationTitle("Station readiness")
+        .task { await refresh() }
+        .onChange(of: store.isRefreshingGP) { _, busy in if !busy { Task { await refresh() } } }
+        .sheet(isPresented: $showLogSettings, onDismiss: { Task { await refresh() } }) { NavigationStack { LogSettingsView() } }
+        .sheet(isPresented: $showRig, onDismiss: { Task { await refresh() } }) {
+            NavigationStack {
+                RigControlSettingsView().toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showRig = false } } }
+            }
+        }
+        .sheet(isPresented: $showRotator, onDismiss: { Task { await refresh() } }) {
+            NavigationStack {
+                RotatorSettingsView().toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showRotator = false } } }
+            }
+        }
+        .sheet(item: Binding(get: { shareURL.map { ShareURLItem(url: $0) } }, set: { if $0 == nil { shareURL = nil } })) { item in
+            ActivityView(url: item.url)
+        }
+    }
+
+    private func refresh() async {
+        items = await StationReadiness.evaluate(store: store, qso: qso, rig: rig, rotator: rotator, audio: audio)
+    }
+
+    private func perform(_ fix: ReadinessFix?) {
+        switch fix {
+        case .settings?: router.openDestination = .settings; dismiss()
+        case .satellites?: router.openDestination = .satellites; dismiss()
+        case .refreshGP?: Task { await store.refreshGP(); await refresh() }
+        case .logSettings?: showLogSettings = true
+        case .rig?: showRig = true
+        case .rotator?: showRotator = true
+        case .requestNotifications?:
+            Task {
+                _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+                await refresh()
+            }
+        case .systemSettings?:
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+        case nil: break
+        }
+    }
+}
+
+// MARK: - Station & outreach reports
+
+/// Exports card: favorites' keps (TLE + PDF), readiness report, Support AMSAT
+/// sheet and an operator contact card. All go out through the share sheet
+/// (which also offers AirPrint).
+struct StationReportsCard: View {
+    @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var qso: QSOStore
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var rotator: RotatorController
+    @EnvironmentObject private var audio: AudioHub
+    @AppStorage("orbitdeck.contactCard.name") private var operatorName = ""
+    @State private var shareURL: URL?
+    @State private var status = ""
+
+    private var favorites: [SatelliteRecord] {
+        store.satellites.filter { store.preferences.favorites.contains($0.id) }.sorted { $0.name < $1.name }
+    }
+
+    var body: some View {
+        SectionCard("Station & outreach reports") {
+            Text("Favorite satellites' element sets, a station-readiness report, a one-page Support AMSAT sheet and a contact card with a QR code to your QRZ page. Use the share sheet to print.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+            ViewThatFits {
+                HStack {
+                    Button("Keps TLE") { prepareTLE() }
+                    Button("Keps PDF") { share("OrbitDeck-keps.pdf", StationReportService.kepsPDF(favorites)) }
+                    Button("Readiness PDF") { Task { await prepareReadiness() } }
+                }
+                VStack(alignment: .leading) {
+                    Button("Favorites' keps (TLE text)") { prepareTLE() }
+                    Button("Favorites' keps (PDF)") { share("OrbitDeck-keps.pdf", StationReportService.kepsPDF(favorites)) }
+                    Button("Station readiness (PDF)") { Task { await prepareReadiness() } }
+                }
+            }
+            .disabled(store.satellites.isEmpty)
+            Button("Support AMSAT sheet (PDF)") { share("Support-AMSAT.pdf", StationReportService.supportAMSATPDF()) }
+            HStack {
+                TextField("Your name (for the contact card)", text: $operatorName).textFieldStyle(.odField)
+                Button("Contact card") {
+                    share("OrbitDeck-contact-card.pdf",
+                          StationReportService.contactCardPDF(callsign: store.preferences.callsign ?? "", name: operatorName, grid: store.operatorGrid6))
+                }
+            }
+            if (store.preferences.callsign ?? "").isEmpty {
+                Text("Set your callsign in Settings → Operator identity to put it on the contact card.").font(.caption2).foregroundStyle(ODTheme.warning)
+            }
+            if !status.isEmpty { Text(status).font(.caption).foregroundStyle(ODTheme.muted) }
+        }
+        .sheet(item: Binding(get: { shareURL.map { ShareURLItem(url: $0) } }, set: { if $0 == nil { shareURL = nil } })) { item in
+            ActivityView(url: item.url)
+        }
+    }
+
+    private func prepareTLE() {
+        guard !favorites.isEmpty else { status = "No favorite satellites to export."; return }
+        do { shareURL = try OrbitExportService.temporaryTextFile(name: "OrbitDeck-favorites.tle", text: TLEFormatter.text(for: favorites)) }
+        catch { status = error.localizedDescription }
+    }
+
+    private func prepareReadiness() async {
+        let items = await StationReadiness.evaluate(store: store, qso: qso, rig: rig, rotator: rotator, audio: audio)
+        share("OrbitDeck-readiness.pdf", StationReadiness.reportPDF(items, station: store.preferences.observer.name))
+    }
+
+    private func share(_ name: String, _ data: Data) {
+        if name.hasPrefix("OrbitDeck-keps"), favorites.isEmpty { status = "No favorite satellites to export."; return }
+        do { shareURL = try OrbitExportService.temporaryFile(name: name, data: data) } catch { status = error.localizedDescription }
+    }
+}
+
+// MARK: - Factory reset
+
+/// Clears settings, caches and stored data. The QSO log (with recordings and SSTV
+/// images) and notes can be kept; Keychain passwords are removed only on request.
+enum FactoryResetService {
+    struct Options {
+        var keepLogAndMedia = true
+        var keepNotes = true
+        var removeSecrets = false
+    }
+
+    static func run(_ options: Options) {
+        let fm = FileManager.default
+        if let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
+        UserDefaults.standard.synchronize()
+
+        func contents(_ url: URL) -> [URL] {
+            (try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: [])) ?? []
+        }
+        // Application Support: QSOLog/recordings/SSTV files live at its root (QSOStore),
+        // caches under OrbitDeck/, the LoTW certificate as lotw.p12.
+        var keep: Set<String> = []
+        if options.keepLogAndMedia {
+            keep.formUnion(["QSOLog.json", "Recordings.json", "Recordings", "SSTVImages.json", "SSTV", "FT4Traffic.json"])
+        }
+        if !options.removeSecrets { keep.insert("lotw.p12") }
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        for item in contents(support) where !keep.contains(item.lastPathComponent) {
+            if item.lastPathComponent == "OrbitDeck", options.keepNotes {
+                // Tiny BASIC programs are user documents, kept with the notes.
+                for sub in contents(item) where sub.lastPathComponent != "Basic" { try? fm.removeItem(at: sub) }
+            } else {
+                try? fm.removeItem(at: item)
+            }
+        }
+        for dir in [fm.urls(for: .cachesDirectory, in: .userDomainMask)[0], fm.temporaryDirectory] {
+            for item in contents(dir) { try? fm.removeItem(at: item) }
+        }
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        for item in contents(docs) where !(options.keepNotes && item.lastPathComponent == "Notes") {
+            try? fm.removeItem(at: item)
+        }
+        if options.removeSecrets { OrbitSecretStore.clearAll() }
+    }
+}
+
+/// Settings → Reset.
+struct FactoryResetSection: View {
+    @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var rotator: RotatorController
+    @State private var options = FactoryResetService.Options()
+    @State private var confirmStep = 0
+    @State private var done = false
+
+    var body: some View {
+        Section {
+            Toggle("Keep QSO log, recordings & SSTV images", isOn: $options.keepLogAndMedia)
+            Toggle("Keep notes & BASIC programs", isOn: $options.keepNotes)
+            Toggle("Also remove saved passwords, keys & LoTW certificate", isOn: $options.removeSecrets)
+            Button(role: .destructive) { confirmStep = 1 } label: {
+                Label("Reset OrbitDeck…", systemImage: "arrow.counterclockwise.circle")
+            }
+            Text("Erases every setting (station, sites, favorites, calibrations, CAT, rotator, auto switching, digital modes, logging setup), the downloaded catalogs and caches, and — unless kept above — the QSO log, recordings and notes. Saved passwords and API keys stay in the iOS Keychain unless you choose to remove them. Back up first if you might want anything back.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+        } header: {
+            Text("Reset")
+        }
+        .confirmationDialog("Reset OrbitDeck?", isPresented: Binding(get: { confirmStep == 1 }, set: { if !$0 && confirmStep == 1 { confirmStep = 0 } }),
+                            titleVisibility: .visible) {
+            Button("Continue", role: .destructive) { confirmStep = 2 }
+            Button("Cancel", role: .cancel) { confirmStep = 0 }
+        } message: {
+            Text(summary)
+        }
+        .alert("This can't be undone", isPresented: Binding(get: { confirmStep == 2 }, set: { if !$0 && confirmStep == 2 { confirmStep = 0 } })) {
+            Button("Erase now", role: .destructive) { reset() }
+            Button("Cancel", role: .cancel) { confirmStep = 0 }
+        } message: {
+            Text("All OrbitDeck settings and data listed will be erased from this device.")
+        }
+        .fullScreenCover(isPresented: $done) {
+            VStack(spacing: 16) {
+                Image(systemName: "checkmark.circle").font(.system(size: 54)).foregroundStyle(ODTheme.good)
+                Text("Reset complete").font(.title2.bold())
+                Text("Close OrbitDeck from the app switcher (swipe it away), then open it again to start fresh.")
+                    .multilineTextAlignment(.center).foregroundStyle(ODTheme.muted)
+            }
+            .padding(32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ODTheme.background.ignoresSafeArea())
+            .interactiveDismissDisabled()
+        }
+    }
+
+    private var summary: String {
+        var parts = ["All settings and caches will be erased."]
+        parts.append(options.keepLogAndMedia ? "Your QSO log, recordings and SSTV images are kept." : "Your QSO log, recordings and SSTV images will be DELETED.")
+        parts.append(options.keepNotes ? "Notes and BASIC programs are kept." : "Notes and BASIC programs will be DELETED.")
+        parts.append(options.removeSecrets ? "Saved passwords, API keys and the LoTW certificate will be removed from the Keychain." : "Saved passwords and API keys in the Keychain are left alone.")
+        return parts.joined(separator: " ")
+    }
+
+    private func reset() {
+        confirmStep = 0
+        rig.disconnect()
+        rotator.disconnect()
+        FactoryResetService.run(options)
+        // Put the live store back to defaults so nothing in memory (e.g. location
+        // following) writes the old settings back before the relaunch.
+        store.preferences = StorePreferences()
+        done = true
     }
 }

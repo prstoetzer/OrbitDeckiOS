@@ -68,6 +68,15 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
+                NavigationLink { StationReadinessView() } label: {
+                    Label("Station readiness", systemImage: "checklist")
+                }
+                NavigationLink { HelpView().navigationTitle("Help") } label: {
+                    Label("Help", systemImage: "questionmark.circle")
+                }
+            }
+
+            Section {
                 Picker("Location source", selection: Binding(
                     get: { store.locationMode },
                     set: { store.setLocationMode($0) }
@@ -296,6 +305,8 @@ struct SettingsView: View {
             }
 
             BackupRestoreSection()
+
+            FactoryResetSection()
 
             Section("Pass prediction") {
                 VStack(alignment: .leading, spacing: 8) {
