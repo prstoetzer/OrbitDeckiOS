@@ -34,6 +34,14 @@ struct GlobeView: View {
     @State private var playbackSpeed = 60.0
     @State private var dragBaseLat: Double?
     @State private var dragBaseLon: Double?
+    /// Second station (grid or lat,lon) whose horizon circle is drawn so the
+    /// mutual-visibility overlap with the QTH circle is visible.
+    @AppStorage("globe.dxGrid") private var dxGrid = ""
+
+    private var dxLocation: LatLon? {
+        let t = dxGrid.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? nil : (GeoFormats.gridCenter(t) ?? FeatureEngine.parseLocation(t))
+    }
 
     /// Human-readable scrub offset, e.g. "Showing now", "+45 min from now",
     /// "−2 h 30 min from now".
@@ -117,6 +125,18 @@ struct GlobeView: View {
                     }
                 }
 
+                HStack(spacing: 8) {
+                    Text("DX grid").font(.subheadline).foregroundStyle(ODTheme.muted)
+                    TextField("e.g. JO01 or 51.5,-0.1", text: $dxGrid)
+                        .textFieldStyle(.odField)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                    if !dxGrid.isEmpty {
+                        Image(systemName: dxLocation == nil ? "exclamationmark.triangle" : "checkmark.circle")
+                            .foregroundStyle(dxLocation == nil ? ODTheme.warning : ODTheme.good)
+                    }
+                }
+
                 TimelineView(isPlaying ? .periodic(from: .now, by: 0.5) : .periodic(from: .now, by: 2)) { context in
                     let off = effectiveOffset(context.date)
                     VStack(spacing: 8) {
@@ -174,6 +194,22 @@ struct GlobeView: View {
                 if minElevation > 0 {
                     drawFootprint(context:&context,lat:look.subLatitude,lon:look.subLongitude,alt:look.altitudeKm,center:center,c:c,r:r,color:satColor,elevation:minElevation)
                 }
+                // DX footprint: the horizon circle around each station is the set of
+                // sub-points from which the satellite (at its current altitude) is up
+                // there, so the lens where the QTH and DX circles overlap is where the
+                // sub-point must be for a mutual QSO.
+                if let dx = dxLocation {
+                    let ang = FootprintGeometry.centralAngle(altitudeKm: max(1, look.altitudeKm))
+                    let obs = store.preferences.observer
+                    for (ll, color) in [((obs.latitude, obs.longitude), ODTheme.warning), ((dx.latitude, dx.longitude), Color.cyan)] {
+                        let ring = FootprintGeometry.ring(latitude: ll.0, longitude: ll.1, angleDeg: ang, samples: 90).map { ($0.latitude, $0.longitude) }
+                        drawGeoLine(context:&context,points:ring,center:center,c:c,r:r,color:color.opacity(0.85),width:1.2,dash:[3,3])
+                    }
+                    if let p = project(lat: dx.latitude, lon: dx.longitude, center: center, c: c, r: r) {
+                        context.draw(Text("◆").foregroundStyle(Color.cyan).font(.callout), at: p)
+                        context.draw(Text("DX").foregroundStyle(Color.cyan).font(.caption2.bold()), at: CGPoint(x: p.x, y: p.y - 13))
+                    }
+                }
                 for fs in favorites where fs.id != sat.id {
                     if let fl = try? OrbitPredictor.look(fs, observer: store.preferences.observer, at: date) {
                         drawSatelliteGlyph(context: &context, satellite: fs, date: date, look: fl,
@@ -211,6 +247,11 @@ struct GlobeView: View {
                     globeStat("Range rate", ODFormat.units(String(format: "%+.2f km/s", look.rangeRateKmS)))
                     globeStat("Footprint", ODFormat.units(String(format: "%.0f km", look.footprintRadiusKm * 2)))
                     globeStat("Beta angle", String(format: "%+.1f°", look.betaAngleDeg))
+                    if let dx = dxLocation,
+                       let dxLook = try? OrbitPredictor.look(sat, observer: ObserverSite(name: "DX", latitude: dx.latitude, longitude: dx.longitude, altitudeMeters: 0), at: date) {
+                        globeStat("DX elevation", String(format: "%+.1f°", dxLook.elevation))
+                        globeStat("Mutual", look.elevation > 0 && dxLook.elevation > 0 ? "Yes" : "No")
+                    }
                 }
             }
             .padding(10)
@@ -650,3 +691,234 @@ func rectPath(_ rect: CGRect) -> Path { Path { $0.addRect(rect) } }
 
 extension Color{init(hex:String){let s=hex.trimmingCharacters(in:CharacterSet.alphanumerics.inverted);var n:UInt64=0;Scanner(string:s).scanHexInt64(&n);let r=Double((n>>16)&255)/255,g=Double((n>>8)&255)/255,b=Double(n&255)/255;self.init(red:r,green:g,blue:b)}}
 
+
+// MARK: - Location converter / grid distance tools
+
+/// One formatted coordinate with a copy button, shared by the geo tools.
+private struct CopyableRow: View {
+    let label: String
+    let value: String
+    @State private var copied = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).foregroundStyle(ODTheme.muted).frame(width: 110, alignment: .leading)
+            Text(value).font(.body.monospaced()).textSelection(.enabled)
+                .lineLimit(1).minimumScaleFactor(0.6)
+            Spacer(minLength: 6)
+            Button {
+                UIPasteboard.general.string = value
+                copied = true
+                Task { try? await Task.sleep(nanoseconds: 1_200_000_000); copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Copy \(label)")
+        }
+    }
+}
+
+/// Every supported representation of one position.
+private func geoFormatRows(_ ll: LatLon) -> [(String, String)] {
+    let lat = ll.latitude, lon = ll.longitude
+    var rows: [(String, String)] = [
+        ("Grid (4)", GeoFormats.maidenhead(latitude: lat, longitude: lon, length: 4)),
+        ("Grid (6)", GeoFormats.maidenhead(latitude: lat, longitude: lon, length: 6)),
+        ("Grid (8)", GeoFormats.maidenhead(latitude: lat, longitude: lon, length: 8)),
+        ("Decimal", GeoFormats.decimal(latitude: lat, longitude: lon)),
+        ("DMS", GeoFormats.dms(latitude: lat, longitude: lon)),
+        ("DDM", GeoFormats.ddm(latitude: lat, longitude: lon)),
+        ("Plus Code", GeoFormats.plusCode(latitude: lat, longitude: lon))
+    ]
+    if let utm = GeoFormats.utm(latitude: lat, longitude: lon) { rows.append(("UTM", utm.text)) }
+    if let mgrs = GeoFormats.mgrs(latitude: lat, longitude: lon) { rows.append(("MGRS", mgrs)) }
+    if let usng = GeoFormats.mgrs(latitude: lat, longitude: lon, spaced: true) { rows.append(("USNG", usng)) }
+    return rows
+}
+
+/// Location converter tool: type any supported format (or take a GPS fix) and
+/// read it back in all of them.
+struct LocationConverterView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @StateObject private var location = LocationProvider()
+    @AppStorage("geoTools.converterInput") private var input = ""
+    @State private var waitingForFix = false
+
+    private var station: LatLon {
+        LatLon(latitude: store.preferences.observer.latitude, longitude: store.preferences.observer.longitude)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField("FN20xa · 39.93, -74.89 · 18S UJ 23487 06483 · 87G7VM8C+2R", text: $input)
+                .textFieldStyle(.odField)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            HStack(spacing: 10) {
+                Button {
+                    waitingForFix = true
+                    location.setPrecise(true)
+                    location.requestLocation()
+                } label: { Label("Use my location", systemImage: "location.fill") }
+                    .buttonStyle(.bordered)
+                Button {
+                    input = GeoFormats.decimal(latitude: station.latitude, longitude: station.longitude)
+                } label: { Label("Station", systemImage: "house") }
+                    .buttonStyle(.bordered)
+                if waitingForFix { ProgressView().controlSize(.small) }
+            }
+            if let err = location.errorMessage {
+                Text(err).font(.caption).foregroundStyle(ODTheme.warning)
+            }
+            Divider()
+            if let parsed = GeoFormats.parseAny(input, reference: station) {
+                Text("Read as \(parsed.format)").font(.caption).foregroundStyle(ODTheme.muted)
+                ForEach(geoFormatRows(parsed.location), id: \.0) { row in
+                    CopyableRow(label: row.0, value: row.1)
+                }
+                Text("WGS84. UTM and MGRS/USNG cover 80°S–84°N (no polar UPS). A UTM entry needs its latitude band letter (18S, not 18N/S hemisphere). Short Plus Codes are resolved near your station.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            } else if !input.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("Unrecognized. Enter a Maidenhead grid, degrees (decimal, DMS or DDM), a Plus Code, UTM (zone + band, easting, northing) or MGRS/USNG.")
+                    .font(.caption).foregroundStyle(ODTheme.warning)
+            }
+        }
+        .onChange(of: location.location) { _, fix in
+            guard waitingForFix, let fix, fix.horizontalAccuracy >= 0 else { return }
+            waitingForFix = false
+            input = GeoFormats.decimal(latitude: fix.coordinate.latitude, longitude: fix.coordinate.longitude)
+        }
+    }
+}
+
+/// Grid distance & bearing tool: short/long path from the station (or a GPS
+/// fix) to a grid, coordinates or callsign.
+struct GridDistanceView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var rot: RotatorController
+    @StateObject private var location = LocationProvider()
+    @AppStorage("geoTools.distanceTarget") private var target = ""
+    @State private var gpsOrigin: LatLon?
+    @State private var waitingForFix = false
+    @State private var callResult: (call: String, label: String, location: LatLon)?
+    @State private var lookupMessage = ""
+    @State private var looking = false
+    private static let qrz = QRZService()
+
+    private var origin: LatLon {
+        gpsOrigin ?? LatLon(latitude: store.preferences.observer.latitude, longitude: store.preferences.observer.longitude)
+    }
+
+    private var trimmedTarget: String { target.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// A callsign-looking entry (letters and digits, at least one of each, optional /suffix).
+    private var looksLikeCall: Bool {
+        let t = trimmedTarget.uppercased()
+        guard (3...14).contains(t.count), t.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "/" }) else { return false }
+        return t.contains(where: \.isNumber) && t.contains(where: \.isLetter)
+    }
+
+    private var resolved: (label: String, location: LatLon)? {
+        if let parsed = GeoFormats.parseAny(trimmedTarget, reference: origin) { return (parsed.format, parsed.location) }
+        if let r = callResult, r.call == trimmedTarget.uppercased() { return (r.label, r.location) }
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("From").foregroundStyle(ODTheme.muted)
+                Text(gpsOrigin == nil ? store.preferences.observer.name : "GPS fix")
+                Text(GeoFormats.maidenhead(latitude: origin.latitude, longitude: origin.longitude, length: 6))
+                    .font(.body.monospaced())
+                Spacer()
+                if waitingForFix { ProgressView().controlSize(.small) }
+                if gpsOrigin == nil {
+                    Button { waitingForFix = true; location.requestLocation() } label: { Image(systemName: "location.fill") }
+                        .buttonStyle(.bordered).accessibilityLabel("Use my location")
+                } else {
+                    Button { gpsOrigin = nil } label: { Image(systemName: "house") }
+                        .buttonStyle(.bordered).accessibilityLabel("Use station location")
+                }
+            }
+            HStack {
+                TextField("Grid, lat/lon or callsign", text: $target)
+                    .textFieldStyle(.odField)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .onSubmit { if resolved == nil && looksLikeCall { lookUpCall() } }
+                if looksLikeCall && GeoFormats.parseAny(trimmedTarget, reference: origin) == nil {
+                    Button("Look up") { lookUpCall() }.buttonStyle(.bordered).disabled(looking)
+                }
+            }
+            if !lookupMessage.isEmpty { Text(lookupMessage).font(.caption).foregroundStyle(ODTheme.muted) }
+            if let err = location.errorMessage { Text(err).font(.caption).foregroundStyle(ODTheme.warning) }
+            Divider()
+            if let r = resolved {
+                let path = GreatCirclePath.path(from: origin, to: r.location)
+                MetricRow("Target", "\(GeoFormats.maidenhead(latitude: r.location.latitude, longitude: r.location.longitude, length: 6)) · \(r.label)")
+                MetricRow("Target position", String(format: "%.4f°, %.4f°", r.location.latitude, r.location.longitude))
+                MetricRow("Short path", ODFormat.km(path.shortKm, decimals: 0), valueColor: ODTheme.good)
+                MetricRow("Short-path bearing", String(format: "%.1f° %@", path.bearing, ODFormat.compass(path.bearing)), valueColor: ODTheme.good)
+                MetricRow("Long path", ODFormat.km(path.longKm, decimals: 0))
+                MetricRow("Long-path bearing", String(format: "%.1f° %@", path.longBearing, ODFormat.compass(path.longBearing)))
+                MetricRow("Their heading to you", String(format: "%.1f° %@", path.reverseBearing, ODFormat.compass(path.reverseBearing)))
+                HStack {
+                    Button { point(bearing: path.bearing) } label: { Label("Point rotator (SP)", systemImage: "scope") }
+                        .buttonStyle(.borderedProminent)
+                    Button { point(bearing: path.longBearing) } label: { Label("LP", systemImage: "arrow.uturn.backward") }
+                        .buttonStyle(.bordered)
+                }
+                .disabled(!rot.connected)
+                Text("Great circle on a spherical Earth (mean radius 6,371 km); bearings are true north. The rotator buttons send the azimuth at 0° elevation.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            } else if !trimmedTarget.isEmpty && !looksLikeCall {
+                Text("Unrecognized target.").font(.caption).foregroundStyle(ODTheme.warning)
+            }
+        }
+        .onChange(of: location.location) { _, fix in
+            guard waitingForFix, let fix, fix.horizontalAccuracy >= 0 else { return }
+            waitingForFix = false
+            gpsOrigin = LatLon(latitude: fix.coordinate.latitude, longitude: fix.coordinate.longitude)
+        }
+    }
+
+    private func point(bearing: Double) {
+        // ROTATOR-HOOK: rot.pointManually(azimuth: bearing, elevation: 0)
+    }
+
+    /// QRZ grid when credentials are configured; otherwise (or on failure) the
+    /// callsign's DXCC entity reference point.
+    private func lookUpCall() {
+        let call = trimmedTarget.uppercased()
+        let username = store.preferences.qrzUsername ?? ""
+        let password = OrbitSecretStore.get(.qrzPassword)
+        func dxccFallback(_ note: String) {
+            if let match = DXCCLookup.entity(for: call), let ref = DXCCNumericData.byCode[match.code] {
+                callResult = (call, "DXCC \(match.name)", LatLon(latitude: ref.latitude, longitude: ref.longitude))
+                lookupMessage = note + "Using the \(match.name) DXCC reference point."
+            } else {
+                callResult = nil
+                lookupMessage = note + "No DXCC entity found for \(call)."
+            }
+        }
+        guard !username.isEmpty, !password.isEmpty else { dxccFallback(""); return }
+        looking = true
+        lookupMessage = "Looking up \(call) on QRZ…"
+        Task { @MainActor in
+            defer { looking = false }
+            do {
+                let record = try await Self.qrz.lookup(username: username, password: password, callsign: DXCCLookup.baseCall(call))
+                if let ll = GeoFormats.gridCenter(record.grid) {
+                    callResult = (call, "QRZ grid \(record.grid)", ll)
+                    lookupMessage = record.name.isEmpty ? "" : record.name
+                } else {
+                    dxccFallback("QRZ has no grid for \(call). ")
+                }
+            } catch {
+                dxccFallback("\(error.localizedDescription) ")
+            }
+        }
+    }
+}

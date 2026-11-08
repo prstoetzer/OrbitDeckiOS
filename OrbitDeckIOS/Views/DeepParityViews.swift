@@ -75,7 +75,9 @@ struct DeepToolsView: View {
 
                 Text(spec.description).foregroundStyle(ODTheme.muted)
                 if spec.id == "sciCalc" { SciCalcView() }
-                if spec.id != "sciCalc" {
+                if spec.id == "locationConvert" { LocationConverterView() }
+                if spec.id == "gridDistance" { GridDistanceView() }
+                if !BenchTools.customViewTools.contains(spec.id) {
                     ForEach(spec.fields) { field in
                         HStack {
                             Text(field.label).frame(width: 150, alignment: .leading)

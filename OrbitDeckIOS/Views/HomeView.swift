@@ -973,7 +973,16 @@ struct GridFinderView: View {
             MetricRow("Grid (8)", g.grid8)
             MetricRow("Latitude", String(format: "%+.6f°", lat))
             MetricRow("Longitude", String(format: "%+.6f°", lon))
+            MetricRow("DMS", GeoFormats.dms(latitude: lat, longitude: lon))
             MetricRow("Altitude", fix.verticalAccuracy >= 0 ? ODFormat.units(String(format: "%.0f m", fix.altitude)) : "—")
+            // Core Location reports −1 when speed/course are unknown (e.g. standing
+            // still or no GPS); hide the rows rather than show a stale value.
+            if fix.speed >= 0, fix.speedAccuracy >= 0 {
+                MetricRow("Ground speed", ODFormat.units(String(format: "%.1f km/h", fix.speed * 3.6)))
+            }
+            if fix.course >= 0, fix.courseAccuracy >= 0 {
+                MetricRow("Course", String(format: "%.0f° %@", fix.course, cardinal(fix.course)))
+            }
             if let entity = location.entity, entity.hasAnything {
                 MetricRow("DXCC", entity.dxccLabel ?? "—", valueColor: ODTheme.good)
                 if let primary = entity.primarySubdivision {
@@ -1025,7 +1034,6 @@ struct GridFinderView: View {
                       ODFormat.units(String(format: "± %.1f m", fix.horizontalAccuracy)),
                       valueColor: accuracyColor(fix.horizontalAccuracy))
             MetricRow("Vertical accuracy", fix.verticalAccuracy >= 0 ? ODFormat.units(String(format: "± %.1f m", fix.verticalAccuracy)) : "—")
-            MetricRow("Speed", fix.speed >= 0 ? ODFormat.units(String(format: "%.1f m/s", fix.speed)) : "—")
             MetricRow("Heading", location.heading.map { String(format: "%.0f° %@", $0, cardinal($0)) } ?? "—")
             let vuccGrade = fix.horizontalAccuracy <= FeatureEngine.vuccBoundaryToleranceMeters
             MetricRow("VUCC-grade fix", vuccGrade ? ODFormat.units("Yes (≤ 6.1 m)") : "No",

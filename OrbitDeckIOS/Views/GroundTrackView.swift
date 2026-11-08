@@ -15,6 +15,7 @@ struct GroundTrackView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var orbitsAhead = 3
+    @AppStorage("groundTrack.allFavoriteFootprints") private var showFavoriteFootprints = false
 
     private let orbitOptions = [1, 3, 5, 8]
 
@@ -31,6 +32,10 @@ struct GroundTrackView: View {
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
+            Toggle("All favorites' footprints", isOn: $showFavoriteFootprints)
+                .font(.subheadline)
+                .padding(.horizontal)
+                .padding(.bottom, 6)
             if isLoading && points.isEmpty {
                 Spacer()
                 ProgressView("Computing ground track…")
@@ -45,7 +50,15 @@ struct GroundTrackView: View {
                     let heading = travelBearing(at: context.date)
                     let satColor = store.selectedSatellite.map { store.satellitePalette.color($0.id) } ?? ODTheme.accent
                     let minElevation = store.preferences.minElevation
+                    let others = showFavoriteFootprints ? favoriteFootprints(at: context.date) : []
                     Map(position: $cameraPosition) {
+                        // Thin outlines for the other favorites, each in its palette color.
+                        ForEach(others, id: \.id) { fp in
+                            MapPolygon(coordinates: fp.ring)
+                                .foregroundStyle(.clear)
+                                .stroke(fp.color.opacity(0.8), lineWidth: 1)
+                        }
+
                         Marker(
                             store.preferences.observer.name,
                             coordinate: CLLocationCoordinate2D(
@@ -175,6 +188,20 @@ struct GroundTrackView: View {
         let angle = FootprintGeometry.centralAngle(altitudeKm: altitudeKm, elevation: elevation)
         return FootprintGeometry.ring(latitude: center.latitude, longitude: center.longitude, angleDeg: angle)
             .map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+    }
+
+    /// Horizon footprints of every favorite except the selected one, at `date`.
+    private func favoriteFootprints(at date: Date) -> [(id: UInt, color: Color, ring: [CLLocationCoordinate2D])] {
+        let palette = store.satellitePalette
+        return store.satellites
+            .filter { store.preferences.favorites.contains($0.id) && $0.id != store.selectedSatellite?.id }
+            .prefix(40)
+            .compactMap { sat in
+                guard let sub = try? OrbitPredictor.subpoint(sat, at: date) else { return nil }
+                let ring = footprintBoundary(center: CLLocationCoordinate2D(latitude: sub.latitude, longitude: sub.longitude),
+                                             altitudeKm: sub.altitudeKm)
+                return (sat.id, palette.color(sat.id), ring)
+            }
     }
 
     private var trackSegments: [[CLLocationCoordinate2D]] {
