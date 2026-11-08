@@ -970,6 +970,7 @@ final class AutoSwitchController: ObservableObject {
                                                  candidates: candidates, threshold: floor,
                                                  preemption: settings.preemption,
                                                  preemptElevation: settings.preemptElevation) {
+            RigController.automaticSelectionNorad = decision.norad   // CAT follows automatic picks
             store.select(decision.norad)
             lastAutoSelection = decision.norad
             lastSeenSelection = decision.norad

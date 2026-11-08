@@ -35,6 +35,7 @@ struct RigControlSettingsView: View {
                 if rig.config.twoRadios { slotSection(index: 1, title: "Radio 2 — uplink") }
 
                 tuningSection
+                diagnosticsSection
             }
         }
         .navigationTitle("Rig Control (CAT)")
@@ -106,9 +107,19 @@ struct RigControlSettingsView: View {
             .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.odField)
         portField(index, label: "Port")
         if rig.config.twoRadios == false, slot.role == .both {
-            Toggle("Use split VFO for full duplex", isOn: bindTuning(\.rigctldUseSplit))
+            Picker("Full duplex", selection: bindTuning(\.rigctldVFOMode)) {
+                Text("VFO mode (VFOA/VFOB)").tag(true)
+                Text("Split (TX VFO)").tag(false)
+            }
+            if !rig.config.tuning.rigctldVFOMode {
+                Toggle("Use split VFO for full duplex", isOn: bindTuning(\.rigctldUseSplit))
+            }
+            Text(rig.config.tuning.rigctldVFOMode
+                 ? "VFO mode selects VFOA for the downlink and VFOB for the uplink and tunes each with plain frequency/mode commands — what gpredict and CardSat use, and the most portable with Icom satellite rigs. A rigctld started with --vfo is detected at connect. If the active VFO flickers on an Icom in satellite mode, start rigctld with -x 1."
+                 : "The split method tunes the uplink with set_split_freq (S 1 VFOB, I/X). Use it if your Hamlib backend doesn't handle VFOA/VFOB.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
         }
-        Text("Drives any radio through a Hamlib rigctld server on your network (default port 4532). Run rigctld on a computer connected to the radio; full duplex uses the radio's split/TX VFO.")
+        Text("Drives any radio through a Hamlib rigctld server on your network (default port 4532). Run rigctld on a computer connected to the radio.")
             .font(.caption).foregroundStyle(ODTheme.muted)
     }
 
@@ -126,6 +137,10 @@ struct RigControlSettingsView: View {
                 Text(splitHelp(spec))
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
+        }
+        if rig.config.twoRadios, let spec, spec.fullDuplex {
+            Text("As one leg of a two-radio station the \(spec.name) is driven as a single-VFO radio on whatever band is selected on its front panel: OrbitDeck sends no MAIN/SUB selection, satellite mode or band exchange. Put the \(index == 0 ? "downlink" : "uplink") band on the active VFO before you connect.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
         }
 
         if let spec {
@@ -291,11 +306,12 @@ struct RigControlSettingsView: View {
                 set: { rig.config.slots[i].baudOverride = $0 })
     }
 
-    /// Radios offered for a slot. Two-radio uplink (slot 1) excludes RX-only sets;
-    /// single-radio mode offers full-duplex sat rigs and single-band radios.
+    /// Radios offered for a slot. Two-radio uplink (slot 1) excludes RX-only sets. A
+    /// full-duplex sat rig can be either leg of a two-radio station too — it's then driven
+    /// as a single-VFO radio on the band its front panel has selected.
     private func radioChoices(_ index: Int) -> [RadioSpec] {
         if rig.config.twoRadios {
-            return index == 1 ? RadioCatalog.mono.filter { !$0.rxOnly } : RadioCatalog.mono
+            return index == 1 ? RadioCatalog.all.filter { !$0.rxOnly } : RadioCatalog.all
         }
         return RadioCatalog.all
     }
@@ -305,9 +321,21 @@ struct RigControlSettingsView: View {
     private var tuningSection: some View {
         Section("Tuning") {
             Toggle("Track Doppler", isOn: bindTuning(\.trackDoppler))
-            Toggle("Follow radio tuning (One True Rule)", isOn: bindTuning(\.followRadio))
+            Toggle("Follow radio tuning (One True Rule)", isOn: Binding(
+                get: { rig.config.tuning.followRadio },
+                set: { on in
+                    rig.config.tuning.followRadio = on
+                    // Follow-uplink is a tune mode that implies following; turning follow off leaves it.
+                    if !on, rig.config.tuning.tuneMode == .fullUplink { rig.config.tuning.tuneMode = .full }
+                }))
             if rig.config.tuning.followRadio {
-                Picker("Follow", selection: bindTuning(\.followLeg)) {
+                // The followed leg is the live tune mode (also on the Home rig card).
+                Picker("Follow", selection: Binding(
+                    get: { rig.config.tuning.effectiveFollowLeg },
+                    set: { leg in
+                        rig.config.tuning.followLeg = leg
+                        rig.config.tuning.tuneMode = leg == .uplink ? .fullUplink : .full
+                    })) {
                     Text("Downlink").tag(RigRole.downlink)
                     Text("Uplink").tag(RigRole.uplink)
                 }
@@ -319,6 +347,15 @@ struct RigControlSettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Stepper("Update rate: \(rig.config.tuning.updateMs) ms", value: bindTuning(\.updateMs), in: 100...2000, step: 50)
+            if rig.config.effectiveUpdateMs > rig.config.tuning.updateMs, let baud = rig.config.slowestSerialBaud {
+                Text("Effective rate: \(rig.config.effectiveUpdateMs) ms — slowed for the \(baud)-baud serial link so each update's commands fit on the wire. Takes effect at the next connect.")
+                    .font(.caption).foregroundStyle(ODTheme.warning)
+            }
+            Toggle("Follow selection while connected", isOn: bindTuning(\.followSelection))
+            Text(rig.config.tuning.followSelection
+                 ? "Selecting another satellite retunes the radio right away, even mid-pass."
+                 : "During a pass the radio stays on the satellite it's tuned to when you select another one; the Home rig card asks before switching. Automatic switching always moves the radio.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
             Stepper("Command delay: \(rig.config.tuning.commandDelayMs) ms", value: bindTuning(\.commandDelayMs), in: 0...500, step: 10)
             Toggle("MAIN = uplink, SUB = downlink", isOn: bindTuning(\.mainIsUplink))
             Toggle("Command radio satellite mode", isOn: bindTuning(\.satMode))
@@ -358,6 +395,36 @@ struct RigControlSettingsView: View {
             Text("Transverter LO offsets, deadbands and lead mirror CardSat. Per-satellite oscillator calibration comes from the Calibrations screen.")
                 .font(.caption).foregroundStyle(ODTheme.muted)
         }
+    }
+
+    // MARK: Diagnostics
+
+    private var diagnosticsSection: some View {
+        Section("Diagnostics") {
+            // Its own view, so live monitor traffic doesn't re-render this whole form.
+            CATMonitorControls()
+            Text("Records every frame sent to and received from each radio (hex plus a short decode, last \(CATMonitor.capacity) lines) while on. Off costs nothing; it's never saved.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+            ForEach(selfTestSlots, id: \.self) { i in
+                NavigationLink {
+                    CATSelfTestView(slotIndex: i)
+                } label: {
+                    Text(rig.config.twoRadios ? "Self-test Radio \(i + 1)" : "Self-test radio")
+                }
+                .disabled(rig.connected || rig.connecting)
+            }
+            Text(rig.connected || rig.connecting
+                 ? "Disconnect CAT to run a self-test."
+                 : "Connects to the radio on its own, reads the frequency and mode, sets the same mode back and checks the radio's acknowledgment, with hints for anything that fails.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    private var selfTestSlots: [Int] {
+        var out: [Int] = []
+        if rig.config.slots[0].enabled, rig.config.slots[0].spec != nil { out.append(0) }
+        if rig.config.twoRadios, rig.config.slots.count > 1, rig.config.slots[1].enabled, rig.config.slots[1].spec != nil { out.append(1) }
+        return out
     }
 
     /// Per-satellite uplink tone for the selected satellite: Default (built-in table, else
@@ -472,6 +539,225 @@ struct BLEPickerView: View {
     }
 }
 
+// MARK: - CAT monitor + self-test
+
+/// Monitor toggle + link for the CAT settings screen.
+private struct CATMonitorControls: View {
+    @ObservedObject private var monitor = CATMonitor.shared
+
+    var body: some View {
+        Toggle("CAT monitor", isOn: $monitor.enabled)
+        NavigationLink {
+            CATMonitorView()
+        } label: {
+            HStack {
+                Text("View CAT monitor")
+                Spacer()
+                Text(verbatim: "\(monitor.lines.count)").foregroundStyle(ODTheme.muted).monospacedDigit()
+            }
+        }
+    }
+}
+
+/// Live view of the CAT monitor ring buffer, newest at the bottom, with copy/share.
+struct CATMonitorView: View {
+    @ObservedObject private var monitor = CATMonitor.shared
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if monitor.lines.isEmpty {
+                        Text(monitor.enabled ? "Waiting for CAT traffic…" : "Turn on the CAT monitor, then connect or run a self-test.")
+                            .font(.caption).foregroundStyle(ODTheme.muted)
+                    }
+                    ForEach(Array(monitor.lines.enumerated()), id: \.offset) { i, line in
+                        Text(verbatim: line)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(line.contains(" TX ") ? ODTheme.warning : ODTheme.good)
+                            .textSelection(.enabled)
+                            .id(i)
+                    }
+                }
+                .padding()
+            }
+            .onChange(of: monitor.lines.count) { _, n in
+                if n > 0 { proxy.scrollTo(n - 1, anchor: .bottom) }
+            }
+        }
+        .navigationTitle("CAT monitor")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Toggle(isOn: $monitor.enabled) { Image(systemName: monitor.enabled ? "record.circle.fill" : "record.circle") }
+                    .toggleStyle(.button)
+                    .accessibilityLabel(monitor.enabled ? "Stop recording" : "Record")
+                Menu {
+                    Button { UIPasteboard.general.string = monitor.text } label: { Label("Copy", systemImage: "doc.on.doc") }
+                    ShareLink(item: monitor.text) { Label("Share", systemImage: "square.and.arrow.up") }
+                    Button(role: .destructive) { monitor.clear() } label: { Label("Clear", systemImage: "trash") }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("More")
+            }
+        }
+    }
+}
+
+/// Guided self-test of one configured radio (see `RigController.runSelfTest`).
+struct CATSelfTestView: View {
+    @EnvironmentObject private var rig: RigController
+    let slotIndex: Int
+
+    var body: some View {
+        List {
+            Section {
+                Button {
+                    Task { await rig.runSelfTest(slot: slotIndex) }
+                } label: {
+                    HStack {
+                        Label(rig.selfTestRunning ? "Testing…" : "Run self-test", systemImage: "stethoscope")
+                        if rig.selfTestRunning { Spacer(); ProgressView() }
+                    }
+                }
+                .disabled(rig.selfTestRunning || rig.connected || rig.connecting)
+                Text("Uses the radio settings above. It reads the frequency and mode and sets the same mode back, so the radio is left as it was. Turn on the CAT monitor to see every frame.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            } header: {
+                Text(rig.config.slots[slotIndex].spec?.name ?? "Radio")
+            }
+            if rig.selfTestSlot == slotIndex, !rig.selfTestSteps.isEmpty {
+                Section("Results") {
+                    ForEach(rig.selfTestSteps) { step in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: step.passed == true ? "checkmark.circle.fill"
+                                  : (step.passed == false ? "xmark.octagon.fill" : "info.circle"))
+                                .foregroundStyle(step.passed == true ? ODTheme.good : (step.passed == false ? ODTheme.warning : ODTheme.muted))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(step.name).font(.subheadline.weight(.semibold))
+                                Text(step.detail).font(.caption).foregroundStyle(ODTheme.muted)
+                                if let hint = step.hint {
+                                    Text(hint).font(.caption).foregroundStyle(ODTheme.accent)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("CAT self-test")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - No-CAT manual calculator
+
+/// HOLD/TUNE calculator for the Home Doppler card when no CAT radio is connected: hold
+/// one leg at a fixed dial (an HT or an FT-817 left on one uplink frequency) and read the
+/// other leg's dial live, corrected through the transponder (on a linear bird the held
+/// leg's Doppler error moves where you land in the passband, so the other leg follows it).
+struct ManualDopplerCalculator: View {
+    @EnvironmentObject private var rig: RigController
+    let transponder: TransponderRecord
+    let rangeRateKmS: Double
+    /// Downlink calibration folded into the receive dial (as on the Doppler card).
+    let downlinkCalibrationHz: Double
+    /// The current corrected dials, captured when HOLD is engaged.
+    let currentRx: Int64
+    let currentTx: Int64
+
+    @State private var holdLeg: RigRole?
+    @State private var heldDialHz: Int64 = 0
+    @State private var entry = ""
+    @FocusState private var entryFocused: Bool
+
+    var body: some View {
+        content.onChange(of: transponder.id) { _, _ in holdLeg = nil }
+    }
+
+    @ViewBuilder private var content: some View {
+        if !rig.connected, transponder.uplinkCenter > 0 {
+            Divider().padding(.vertical, 2)
+            HStack {
+                Text("Manual HOLD/TUNE").font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
+                Spacer()
+                Picker("Hold", selection: Binding(get: { holdLeg }, set: { leg in
+                    holdLeg = leg
+                    if let leg { heldDialHz = leg == .uplink ? currentTx : currentRx; entry = mhz(heldDialHz) }
+                })) {
+                    Text("Off").tag(RigRole?.none)
+                    Text("Hold TX").tag(RigRole?.some(.uplink))
+                    Text("Hold RX").tag(RigRole?.some(.downlink))
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 240)
+            }
+            if let leg = holdLeg {
+                HStack {
+                    Text(leg == .uplink ? "TX dial (held)" : "RX dial (held)").font(.caption)
+                    Spacer()
+                    TextField("MHz", text: $entry)
+                        .keyboardType(.decimalPad)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 130)
+                        .textFieldStyle(.odField)
+                        .focused($entryFocused)
+                        .onSubmit(commitEntry)
+                        .onChange(of: entryFocused) { _, focused in if !focused { commitEntry() } }
+                    Button("Now") { heldDialHz = leg == .uplink ? currentTx : currentRx; entry = mhz(heldDialHz) }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                let result = solve(leg: leg)
+                MetricRow(leg == .uplink ? "RX (tune)" : "TX (tune)", ODFormat.frequency(result.other),
+                          valueColor: leg == .uplink ? ODTheme.good : ODTheme.warning)
+                if transponder.isLinear {
+                    MetricRow("Lands in passband", String(format: "%+.2f kHz", Double(result.offset) / 1000))
+                } else {
+                    MetricRow("Held-leg Doppler error", String(format: "%+lld Hz", result.offset))
+                }
+                Text(leg == .uplink
+                     ? "Leave the transmitter on the held dial and tune the receiver to the RX value as the pass goes on."
+                     : "Leave the receiver on the held dial and tune the transmitter to the TX value as the pass goes on.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+        }
+    }
+
+    private func mhz(_ hz: Int64) -> String { String(format: "%.4f", Double(hz) / 1_000_000) }
+
+    private func commitEntry() {
+        let text = entry.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)
+        if let v = Double(text), v > 0 { heldDialHz = Int64((v * 1_000_000).rounded()) }
+        entry = mhz(heldDialHz)
+    }
+
+    /// The other leg's dial for a held leg, and where the held leg lands relative to the
+    /// transponder (linear: passband offset; FM: the held leg's Doppler error at the satellite).
+    private func solve(leg: RigRole) -> (other: Int64, offset: Int64) {
+        let beta = (rangeRateKmS * 1000.0) / 299_792_458.0
+        if leg == .uplink {
+            // What the satellite hears from the fixed transmitter.
+            let atSat = Double(heldDialHz) * (1.0 - beta)
+            let offset = atSat - Double(transponder.uplinkCenter)
+            let dlAtSat = transponder.isLinear
+                ? Double(transponder.downlinkCenter) + (transponder.invert ? -offset : offset)
+                : Double(transponder.downlinkCenter)
+            let rx = dlAtSat * (1.0 - beta) + downlinkCalibrationHz
+            return (Int64(rx.rounded()), Int64(offset.rounded()))
+        } else {
+            // What the satellite sent to arrive on the fixed receiver dial.
+            let atSat = (Double(heldDialHz) - downlinkCalibrationHz) / (1.0 - beta)
+            let offset = atSat - Double(transponder.downlinkCenter)
+            let ulAtSat = transponder.isLinear
+                ? Double(transponder.uplinkCenter) + (transponder.invert ? -offset : offset)
+                : Double(transponder.uplinkCenter)
+            let tx = ulAtSat / (1.0 - beta)
+            return (Int64(tx.rounded()), Int64(offset.rounded()))
+        }
+    }
+}
+
 // MARK: - Home control card
 
 /// Shared one-line status header used by the rig and rotator Home cards: a
@@ -517,6 +803,13 @@ struct HomeRigControlCard: View {
     /// move followed by the One True Rule (which updates the offset in the rig)
     /// also moves the Home slider and the live Doppler readouts.
     @Binding var passbandOffsetHz: Double
+    /// Selects a transponder on the Home card (CAT follows it) — used by "Beacon".
+    var selectTransponder: ((String) -> Void)? = nil
+
+    @EnvironmentObject private var ft4: FT4Engine
+    @EnvironmentObject private var packet: PacketEngine
+    @EnvironmentObject private var rotator: RotatorController
+    @State private var confirmStopAll = false
 
     var body: some View {
         if rig.config.isConfigured {
@@ -562,9 +855,39 @@ struct HomeRigControlCard: View {
                 }
                 if rig.connected {
                     Divider().opacity(0.4)
+                    switchBanner
+                    if rig.tuningOtherSatellite, let sat = rig.trackedSatellite {
+                        Label("Radio tuned to \(sat.name)", systemImage: "lock.fill")
+                            .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
+                    }
+                    if rig.atPassbandEdge {
+                        Label("At passband edge", systemImage: "arrow.left.and.right.square")
+                            .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.warning)
+                    }
                     MetricRow("Downlink", ODFormat.frequency(rig.downlinkDialHz), valueColor: ODTheme.good)
                     if rig.uplinkDialHz > 0 {
                         MetricRow("Uplink", ODFormat.frequency(rig.uplinkDialHz), valueColor: ODTheme.warning)
+                    }
+                    HStack(spacing: 8) {
+                        tuneModeMenu
+                        Spacer()
+                        if let beacon = rig.beaconTransponder(for: satellite), selectTransponder != nil, !rig.tuningOtherSatellite {
+                            Button {
+                                selectTransponder?(beacon.id)
+                            } label: {
+                                Label("Beacon", systemImage: "dot.radiowaves.right")
+                            }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .disabled(selectedTransponderID == beacon.id)
+                            .accessibilityHint("Tunes the satellite's beacon or telemetry downlink")
+                        }
+                    }
+                    if rig.tiltTuning || rig.trackedSatellite.flatMap({ rig.transponder(for: $0) })?.isLinear == true {
+                        Toggle("Tilt to tune passband", isOn: $rig.tiltTuning)
+                    }
+                    if rig.tiltTuning {
+                        Text("Roll the phone left or right to move through the passband — the further you tilt, the faster it moves. Hold it level to stop.")
+                            .font(.caption2).foregroundStyle(ODTheme.muted)
                     }
                     Toggle("Track Doppler", isOn: Binding(
                         get: { rig.config.tuning.trackDoppler },
@@ -579,23 +902,94 @@ struct HomeRigControlCard: View {
                     }
                     .pickerStyle(.segmented)
                 }
+                if stopAllAvailable {
+                    Button(role: .destructive) {
+                        confirmStopAll = true
+                    } label: {
+                        Label("Stop all", systemImage: "stop.circle.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.red)
+                    .confirmationDialog("Stop everything?", isPresented: $confirmStopAll, titleVisibility: .visible) {
+                        Button("Stop all", role: .destructive) { stopAll() }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Releases PTT, stops FT4 and packet, disconnects the radio, and parks and disconnects the rotator.")
+                    }
+                }
                 Text("CAT works only while OrbitDeck is in the foreground. Keep the Home screen awake during a pass (Settings ▸ Display).")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
             .onAppear {
                 rig.transponderID = selectedTransponderID
-                rig.config.tuning.passbandOffsetHz = passbandOffsetHz
+                if !rig.tuningOtherSatellite { rig.config.tuning.passbandOffsetHz = passbandOffsetHz }
             }
             .onChange(of: selectedTransponderID) { _, v in rig.transponderID = v }
-            // Home slider → rig (operator scrubs the passband).
+            // Home slider → rig (operator scrubs the passband). Not while CAT is locked on
+            // another satellite: Home's slider then belongs to the selection, not the radio.
             .onChange(of: passbandOffsetHz) { _, v in
-                if abs(rig.config.tuning.passbandOffsetHz - v) > 0.5 { rig.config.tuning.passbandOffsetHz = v }
+                if !rig.tuningOtherSatellite, abs(rig.config.tuning.passbandOffsetHz - v) > 0.5 { rig.config.tuning.passbandOffsetHz = v }
             }
-            // rig → Home slider + Doppler card (One True Rule moved the offset).
+            // rig → Home slider + Doppler card (One True Rule / tilt moved the offset).
             .onChange(of: rig.config.tuning.passbandOffsetHz) { _, v in
-                if abs(passbandOffsetHz - v) > 0.5 { passbandOffsetHz = v }
+                if !rig.tuningOtherSatellite, abs(passbandOffsetHz - v) > 0.5 { passbandOffsetHz = v }
             }
         }
+    }
+
+    /// "Switch radio to <new>?" while CAT stays on the engaged satellite.
+    @ViewBuilder private var switchBanner: some View {
+        if let n = rig.pendingSwitchNorad {
+            let name = store.satellites.first { $0.id == n }?.name ?? "#\(n)"
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Switch radio to \(name)?").font(.subheadline.weight(.semibold))
+                Text("The radio is still tracking \(rig.trackedSatellite?.name ?? "the engaged satellite") during its pass.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+                HStack {
+                    Button("Switch") { rig.acceptPendingSwitch() }.buttonStyle(.borderedProminent)
+                    Button("Keep") { rig.keepEngagedSatellite() }.buttonStyle(.bordered)
+                }
+                .controlSize(.small)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ODTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    /// Live tune-mode selector, shown compactly as its current mode.
+    private var tuneModeMenu: some View {
+        Menu {
+            Picker("Tune mode", selection: Binding(
+                get: { rig.config.tuning.tuneMode },
+                set: { rig.config.tuning.tuneMode = $0; rig.persist() }
+            )) {
+                ForEach(CATTuneMode.allCases) { Text($0.label).tag($0) }
+            }
+        } label: {
+            Label("Tune: \(rig.config.tuning.tuneMode.shortLabel)", systemImage: "slider.horizontal.3")
+                .font(.caption.weight(.semibold))
+        }
+        .buttonStyle(.bordered).controlSize(.small)
+        .tint(rig.config.tuning.tuneMode == .full ? ODTheme.accent : ODTheme.warning)
+        .accessibilityLabel("Tune mode: \(rig.config.tuning.tuneMode.label)")
+    }
+
+    private var stopAllAvailable: Bool {
+        rig.connected || rig.connecting || rotator.connected || ft4.isRunning || packet.isRunning
+    }
+
+    /// Release PTT, stop the digital engines, disconnect CAT, park + disconnect the rotator.
+    private func stopAll() {
+        ODLog.shared.log("Stop all", category: "cat")
+        // The engines unkey on stop; release PTT explicitly too, before CAT goes away.
+        let wasConnected = rig.connected
+        ft4.stop()
+        packet.stop()
+        Task {
+            if wasConnected { await rig.setPTT(false) }
+            if rig.connected || rig.connecting { rig.disconnect() }
+        }
+        if rotator.connected { rotator.disconnect() }
     }
 
     private var statusTitle: String {

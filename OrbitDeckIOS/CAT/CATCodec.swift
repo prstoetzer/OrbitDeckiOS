@@ -167,6 +167,25 @@ enum CATCodec {
     }
 
     static func civReadFreq(addr: UInt8) -> [UInt8] { civFrame(addr: addr, payload: [0x03]) }
+    /// Read the operating mode (`04`): reply `04 <mode> [<filter>]`.
+    static func civReadMode(addr: UInt8) -> [UInt8] { civFrame(addr: addr, payload: [0x04]) }
+    static func civModeFromByte(_ b: UInt8) -> RigMode? {
+        switch b { case 0x00: .lsb; case 0x01: .usb; case 0x02: .am; case 0x03: .cw; case 0x05: .fm; default: nil }
+    }
+
+    /// The rig's acknowledgment of a set command: true = OK (`FB`), false = NG (`FA`),
+    /// nil = no reply addressed to us (our own bus echo is skipped).
+    static func civAck(_ buf: [UInt8], addr: UInt8) -> Bool? {
+        var i = 0
+        while i + 5 < buf.count {
+            if buf[i] == 0xFE, buf[i+1] == 0xFE, buf[i+2] == host, buf[i+3] == addr, buf[i+5] == 0xFD {
+                if buf[i+4] == 0xFB { return true }
+                if buf[i+4] == 0xFA { return false }
+            }
+            i += 1
+        }
+        return nil
+    }
 
     /// Parse a CI-V read-frequency reply (FE FE E0 <addr> 03 <5/6 BCD> FD).
     static func civParseFreq(_ buf: [UInt8], addr: UInt8) -> UInt64? {
@@ -426,6 +445,14 @@ enum CATCodec {
     /// layout regardless. `SA` needs a settle delay before the following `MD` (see caller).
     static func kwSatControl(uplink: Bool) -> [UInt8] { Array((uplink ? "SA1011000;" : "SA1010000;").utf8) }
 
+    /// Kenwood mode read (`MD;` → `MD<m>;`).
+    static let kwReadMode: [UInt8] = Array("MD;".utf8)
+    static func kwParseMode(_ buf: [UInt8]) -> RigMode? {
+        guard let s = String(bytes: buf, encoding: .ascii), let r = s.range(of: "MD"),
+              let d = s[r.upperBound...].first else { return nil }
+        switch d { case "1": return .lsb; case "2": return .usb; case "3": return .cw; case "4": return .fm; case "5": return .am; default: return nil }
+    }
+
     /// Parse "FA<digits>;" (or "FB…" for VFO B) → Hz. Base stations answer 11 digits.
     static func kwParseFreq(_ buf: [UInt8], digits: Int = 11, vfoB: Bool = false) -> UInt64? {
         guard let s = String(bytes: buf, encoding: .ascii), let r = s.range(of: vfoB ? "FB" : "FA") else { return nil }
@@ -507,6 +534,53 @@ enum CATCodec {
     /// Read the split (TX) VFO frequency — for follow-uplink on a full-duplex split link.
     static func rigctldReadSplitFreq() -> [UInt8] { Array("i\n".utf8) }
 
+    // VFO mode (CardSat rig.cpp, gpredict): steer the two legs by VFO — downlink = VFOA,
+    // uplink = VFOB — with plain set_freq/set_mode, rather than set_split_freq (which makes
+    // Hamlib retune the wrong VFO on Icom sat rigs). A server started with `--vfo` answers
+    // `\chk_vfo` with 1 and then wants the VFO inline on every command; otherwise the VFO
+    // is pre-selected with `V`.
+
+    /// `\chk_vfo` probe; see `rigctldParseChkVFO`.
+    static let rigctldChkVFO: [UInt8] = Array("\\chk_vfo\n".utf8)
+    /// Whether a `\chk_vfo` reply says the server runs in `--vfo` mode ("CHKVFO 1" or "1").
+    static func rigctldParseChkVFO(_ bytes: [UInt8]) -> Bool {
+        guard let s = String(bytes: bytes, encoding: .ascii) else { return false }
+        for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t == "CHKVFO 1" || t == "1" { return true }
+        }
+        return false
+    }
+    /// The VFO token for a leg in VFO mode.
+    static func rigctldVFO(uplink: Bool) -> String { uplink ? "VFOB" : "VFOA" }
+    /// `V VFOA` / `V VFOB` — select the VFO the following bare commands act on.
+    static func rigctldSelectVFO(_ vfo: String) -> [UInt8] { Array("V \(vfo)\n".utf8) }
+    /// One rigctld command line, with the VFO inline when the server is in `--vfo` mode.
+    static func rigctldLine(_ cmd: String, vfo: String?, _ args: String = "") -> [UInt8] {
+        var s = cmd
+        if let vfo { s += " \(vfo)" }
+        if !args.isEmpty { s += " \(args)" }
+        return Array((s + "\n").utf8)
+    }
+    static func rigctldModeArgs(_ mode: RigMode, data: Bool = false) -> String {
+        "\(data ? hamlibDataMode(mode) : hamlibMode(mode)) 0"
+    }
+    /// Parse a mode read (`m`): the reply is the mode token, then the passband.
+    static func rigctldParseMode(_ bytes: [UInt8]) -> String? {
+        guard let s = String(bytes: bytes, encoding: .ascii) else { return nil }
+        for line in s.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty || t.hasPrefix("RPRT") || UInt64(t) != nil { continue }
+            return t
+        }
+        return nil
+    }
+    /// The `RPRT <n>` status in a rigctld reply, if any (0 = OK, negative = Hamlib error).
+    static func rigctldStatus(_ bytes: [UInt8]) -> Int? {
+        guard let s = String(bytes: bytes, encoding: .ascii), let r = s.range(of: "RPRT ") else { return nil }
+        return Int(s[r.upperBound...].prefix { $0 == "-" || $0.isNumber })
+    }
+
     /// First numeric line of a rigctld reply (skips `RPRT` status lines).
     static func rigctldParseFreq(_ bytes: [UInt8]) -> UInt64? {
         guard let s = String(bytes: bytes, encoding: .ascii) else { return nil }
@@ -523,6 +597,85 @@ enum CATCodec {
         switch m {
         case .lsb: "LSB"; case .usb: "USB"; case .cw: "CW"
         case .fm: "FM"; case .fmn: "FMN"; case .am: "AM"; case .data: "PKTUSB"
+        }
+    }
+
+    // MARK: CAT monitor decode
+
+    /// Hex dump of a frame ("FE FE A2 E0 05 …").
+    static func hex(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    /// A short human decode of one frame (or a reply burst) for the CAT monitor:
+    /// CI-V command/sub-command, Yaesu opcode, or the ASCII text of Kenwood/rigctld lines.
+    static func describe(_ bytes: [UInt8], family: RigFamily) -> String {
+        switch family {
+        case .civ:
+            // A reply burst can hold several frames (bus echo + answer): describe each.
+            var parts: [String] = []
+            var i = 0
+            while i + 4 < bytes.count {
+                guard bytes[i] == 0xFE, bytes[i+1] == 0xFE else { i += 1; continue }
+                guard let end = bytes[(i+2)...].firstIndex(of: 0xFD) else { break }
+                let body = Array(bytes[(i+2)..<end])
+                if body.count >= 3 { parts.append(civName(to: body[0], from: body[1], payload: Array(body[2...]))) }
+                i = end + 1
+            }
+            return parts.joined(separator: " · ")
+        case .yaesuBinary, .yaesuFT100, .yaesuVR5000, .yaesuFT736:
+            guard bytes.count == 5 else { return bytes.count == 1 ? String(format: "status %02X", bytes[0]) : "reply" }
+            let op = bytes[4]
+            return String(format: "opcode %02X", op) + (yaesuOpName(op).map { " (\($0))" } ?? "")
+        case .kenwoodBase, .kenwoodHandheld, .rigctld:
+            return String(decoding: bytes, as: UTF8.self)
+                .replacingOccurrences(of: "\r", with: "⏎").replacingOccurrences(of: "\n", with: "⏎")
+        }
+    }
+
+    private static func civName(to: UInt8, from: UInt8, payload: [UInt8]) -> String {
+        guard let cmd = payload.first else { return "" }
+        let dir = String(format: "%02X→%02X", from, to)
+        let sub = payload.count > 1 ? String(format: " %02X", payload[1]) : ""
+        let name: String
+        switch cmd {
+        case 0x00, 0x05: name = "set freq"
+        case 0x01, 0x06: name = "set mode"
+        case 0x03: name = payload.count > 1 ? "freq" : "read freq"
+        case 0x04: name = payload.count > 1 ? "mode" : "read mode"
+        case 0x07: name = "VFO/band select"
+        case 0x0F: name = "split"
+        case 0x16: name = "function"
+        case 0x1A: name = "extended"
+        case 0x1B: name = "tone"
+        case 0x1C: name = "PTT/TX"
+        case 0x25: name = "unselected VFO freq"
+        case 0x26: name = "unselected VFO mode"
+        case 0xFB: return "\(dir) OK (FB)"
+        case 0xFA: return "\(dir) NG (FA)"
+        default: name = "cmd"
+        }
+        return "\(dir) \(String(format: "%02X", cmd))\(sub) \(name)"
+    }
+
+    private static func yaesuOpName(_ op: UInt8) -> String? {
+        switch op {
+        case 0x00: "CAT on"
+        case 0x01, 0x11, 0x21, 0x1E, 0x2E: "set freq"
+        case 0x07, 0x17, 0x27: "set mode"
+        case 0x03, 0x13, 0x23: "read freq"
+        case 0x08: "PTT on"
+        case 0x88: "PTT off"
+        case 0x02: "split on"
+        case 0x82: "split off"
+        case 0x81: "VFO A/B"
+        case 0x4E: "SAT on"
+        case 0x8E: "SAT / full duplex off"
+        case 0x0E: "full duplex on"
+        case 0x0B: "CTCSS tone"
+        case 0x0A: "CTCSS mode / set freq (FT-100)"
+        case 0xBB: "read EEPROM"
+        default: nil
         }
     }
 
