@@ -628,3 +628,663 @@ extension BLEScanner: CBCentralManagerDelegate {
         }
     }
 }
+
+// ===========================================================================
+//  Hamlib-compatible network servers (rigctld / rotctld)
+//
+//  OrbitDeck can act as a Hamlib "NET rigctl" / "NET rotctl" server so Gpredict,
+//  SatPC32, WSJT-X or a logger on the LAN drives (or reads) the radio and rotator
+//  through OrbitDeck's own links, like CardSat's built-in servers. The line protocol
+//  is implemented from Hamlib's public rigctld(1)/rotctld(1) documentation.
+//
+//  `HamlibLineServer` is the transport: an NWListener plus one NWConnection per client,
+//  all on one private serial queue (never the main thread). Lines are handed one at a
+//  time per client to a @MainActor handler; replies go back on the queue. Buffers are
+//  bounded (line length, queued lines, client count) and only LAN peers are accepted.
+// ===========================================================================
+
+import Network
+import UIKit
+
+/// One parsed Hamlib command line.
+struct HamlibCommand: Sendable {
+    /// Long command name ("get_freq"); short commands are mapped through a table, and an
+    /// unknown short command keeps its character as the name.
+    let name: String
+    let args: [String]
+    /// Extended-response separator ("\n" for `+`, else the `;`, `|` or `,` used); nil = normal.
+    let separator: String?
+}
+
+/// What a command produced; `HamlibProtocol.reply` turns it into wire text.
+enum HamlibResult: Sendable {
+    case values([(label: String, value: String)])
+    case ok
+    case error(Int)
+    case raw(String)
+    case quit
+}
+
+enum HamlibProtocol {
+    // Hamlib error codes (negated in "RPRT -n").
+    static let eInval = 1, eNotImplemented = 4, eIO = 6, eNotAvailable = 11
+
+    /// Parse a line: optional extended-response prefix (`+`, `;`, `|`, `,`), then either a
+    /// `\long_name args…` or a one-character short command followed by its arguments.
+    static func parse(_ lineIn: String, shortNames: [Character: String]) -> HamlibCommand? {
+        var line = Substring(lineIn.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let first = line.first else { return nil }
+        var sep: String?
+        if "+;|,".contains(first) {
+            sep = first == "+" ? "\n" : String(first)
+            line = line.dropFirst().drop(while: { $0 == " " })
+        }
+        guard let head = line.first else { return nil }
+        if head == "\\" {
+            let parts = line.dropFirst().split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+            guard let name = parts.first else { return nil }
+            return HamlibCommand(name: name, args: Array(parts.dropFirst()), separator: sep)
+        }
+        let args = line.dropFirst().split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        return HamlibCommand(name: shortNames[head] ?? String(head), args: args, separator: sep)
+    }
+
+    /// Wire text for a result, and whether to close the connection afterwards. Normal mode:
+    /// a get prints its values one per line, a set prints `RPRT 0`, a failure `RPRT -n`.
+    /// Extended mode: `name: args`, `Label: value` lines, then `RPRT n`, all joined by the
+    /// separator.
+    static func reply(_ cmd: HamlibCommand, _ result: HamlibResult) -> HamlibLineServer.Reply {
+        switch result {
+        case .quit: return .init(text: "", close: true)
+        case .raw(let s): return .init(text: s, close: false)
+        default: break
+        }
+        guard let sep = cmd.separator else {
+            switch result {
+            case .values(let v): return .init(text: v.map { $0.value + "\n" }.joined(), close: false)
+            case .error(let n): return .init(text: "RPRT -\(n)\n", close: false)
+            default: return .init(text: "RPRT 0\n", close: false)
+            }
+        }
+        var out = cmd.name + ":" + cmd.args.map { " " + $0 }.joined() + sep
+        var code = 0
+        switch result {
+        case .values(let v): for item in v { out += "\(item.label): \(item.value)" + sep }
+        case .error(let n): code = -n
+        default: break
+        }
+        out += "RPRT \(code)\n"
+        return .init(text: out, close: false)
+    }
+
+    /// The device's IPv4 addresses a LAN client can reach (Wi-Fi, Personal Hotspot,
+    /// wired Ethernet adapters) — never cellular or VPN tunnels.
+    static func lanAddresses() -> [(interface: String, address: String)] {
+        var result: [(String, String)] = []
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let start = list else { return [] }
+        defer { freeifaddrs(list) }
+        var p: UnsafeMutablePointer<ifaddrs>? = start
+        while let ifa = p {
+            defer { p = ifa.pointee.ifa_next }
+            let flags = Int32(ifa.pointee.ifa_flags)
+            guard flags & IFF_UP != 0, flags & IFF_LOOPBACK == 0,
+                  let sa = ifa.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: ifa.pointee.ifa_name)
+            guard name.hasPrefix("en") || name.hasPrefix("bridge") else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let addr = String(decoding: host.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            let label = name == "en0" ? "Wi-Fi" : (name.hasPrefix("bridge") ? "Personal Hotspot" : name)
+            result.append((label, addr))
+        }
+        return result
+    }
+
+    /// Whether a peer is on the local network (private, link-local or loopback address).
+    static func isLocalPeer(_ endpoint: NWEndpoint) -> Bool {
+        guard case .hostPort(let host, _) = endpoint else { return false }
+        switch host {
+        case .ipv4(let a): return isLocalV4([UInt8](a.rawValue))
+        case .ipv6(let a):
+            let b = [UInt8](a.rawValue)
+            guard b.count == 16 else { return false }
+            if a.isLoopback || a.isLinkLocal { return true }
+            if b[0] & 0xFE == 0xFC { return true }                                   // fc00::/7 ULA
+            if b[0..<10].allSatisfy({ $0 == 0 }), b[10] == 0xFF, b[11] == 0xFF {      // ::ffff:a.b.c.d
+                return isLocalV4(Array(b[12..<16]))
+            }
+            return false
+        default: return false
+        }
+    }
+
+    private static func isLocalV4(_ b: [UInt8]) -> Bool {
+        guard b.count == 4 else { return false }
+        return b[0] == 10 || b[0] == 127
+            || (b[0] == 172 && (16...31).contains(b[1]))
+            || (b[0] == 192 && b[1] == 168)
+            || (b[0] == 169 && b[1] == 254)
+    }
+}
+
+/// TCP line server shared by the rigctld and rotctld servers. All state lives on `queue`.
+final class HamlibLineServer: @unchecked Sendable {
+    struct Reply: Sendable {
+        var text: String
+        var close: Bool
+    }
+    enum Event: Sendable {
+        case state(listening: Bool, error: String?, clients: Int)
+        case clientAdded(id: Int, address: String)
+        case clientGone(id: Int)
+    }
+    typealias Handler = @MainActor @Sendable (_ client: Int, _ line: String) async -> Reply
+
+    static let maxClients = 8
+    static let maxLineBytes = 1024
+    static let maxQueuedLines = 64
+
+    private final class Client {
+        let conn: NWConnection
+        var buffer: [UInt8] = []
+        var overflow = false
+        var pending: [String] = []
+        var busy = false
+        var eof = false
+        init(conn: NWConnection) { self.conn = conn }
+    }
+
+    private let name: String
+    private let queue: DispatchQueue
+    private let handler: Handler
+    private let onEvent: @Sendable (Event) -> Void
+    private var listener: NWListener?
+    private var port: UInt16 = 0
+    private var wanted = false
+    private var listening = false
+    private var lastError: String?
+    private var clients: [Int: Client] = [:]
+    private var nextID = 1
+
+    init(name: String, handler: @escaping Handler, onEvent: @escaping @Sendable (Event) -> Void) {
+        self.name = name
+        self.queue = DispatchQueue(label: "org.orbitdeck.server.\(name)")
+        self.handler = handler
+        self.onEvent = onEvent
+    }
+
+    /// (Re)start listening on `port`, dropping any existing clients.
+    func start(port: UInt16) {
+        queue.async {
+            self.closeAll()
+            self.wanted = true
+            self.port = port
+            self.openListener()
+        }
+    }
+
+    func stop() {
+        queue.async {
+            self.wanted = false
+            self.closeAll()
+        }
+    }
+
+    /// After returning to the foreground: reopen the listener if iOS tore it down.
+    func ensureRunning() {
+        queue.async {
+            guard self.wanted else { return }
+            if let l = self.listener {
+                switch l.state {
+                case .failed, .cancelled: break
+                default: return
+                }
+            }
+            self.openListener()
+        }
+    }
+
+    // MARK: Listener (queue only)
+
+    private func openListener() {
+        listener?.stateUpdateHandler = nil
+        listener?.newConnectionHandler = nil
+        listener?.cancel(); listener = nil
+        listening = false
+        guard let p = NWEndpoint.Port(rawValue: port), port > 0 else {
+            lastError = "Invalid port"; publish(); return
+        }
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true
+        let params = NWParameters(tls: nil, tcp: tcp)
+        params.allowLocalEndpointReuse = true
+        params.prohibitedInterfaceTypes = [.cellular]
+        let l: NWListener
+        do { l = try NWListener(using: params, on: p) } catch {
+            lastError = error.localizedDescription; publish(); scheduleRetry(); return
+        }
+        listener = l
+        l.stateUpdateHandler = { [weak self, weak l] state in
+            guard let self, let l, l === self.listener else { return }
+            switch state {
+            case .ready:
+                self.listening = true; self.lastError = nil; self.publish()
+                ODLog.shared.log("\(self.name) server listening on TCP \(self.port)", category: "net")
+            case .waiting(let e):
+                self.listening = false; self.lastError = e.localizedDescription; self.publish()
+            case .failed(let e):
+                self.listening = false; self.lastError = e.localizedDescription
+                ODLog.shared.log("\(self.name) server listener failed: \(e.localizedDescription)", category: "net")
+                l.cancel(); self.listener = nil
+                self.publish(); self.scheduleRetry()
+            default: break
+            }
+        }
+        l.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
+        l.start(queue: queue)
+    }
+
+    private func scheduleRetry() {
+        queue.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.wanted, self.listener == nil else { return }
+            self.openListener()
+        }
+    }
+
+    private func closeAll() {
+        listener?.stateUpdateHandler = nil
+        listener?.newConnectionHandler = nil
+        listener?.cancel(); listener = nil
+        listening = false
+        for id in Array(clients.keys) { close(id, notify: true) }
+        publish()
+    }
+
+    private func publish() {
+        onEvent(.state(listening: listening, error: lastError, clients: clients.count))
+    }
+
+    // MARK: Clients (queue only)
+
+    private func accept(_ conn: NWConnection) {
+        guard HamlibProtocol.isLocalPeer(conn.endpoint) else {
+            ODLog.shared.log("\(name) server: refused non-LAN peer \(conn.endpoint)", category: "net")
+            conn.cancel(); return
+        }
+        guard clients.count < Self.maxClients else {
+            ODLog.shared.log("\(name) server: refused \(conn.endpoint) (client limit)", category: "net")
+            conn.cancel(); return
+        }
+        let id = nextID; nextID += 1
+        clients[id] = Client(conn: conn)
+        conn.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled: self?.close(id, notify: true)
+            default: break
+            }
+        }
+        conn.start(queue: queue)
+        receive(id)
+        var address = "\(conn.endpoint)"
+        if case .hostPort(let h, _) = conn.endpoint { address = "\(h)" }
+        if let pct = address.firstIndex(of: "%") { address = String(address[..<pct]) }   // drop IPv6 scope
+        ODLog.shared.log("\(name) server: client \(address) connected", category: "net")
+        onEvent(.clientAdded(id: id, address: address))
+        publish()
+    }
+
+    private func receive(_ id: Int) {
+        guard let c = clients[id] else { return }
+        c.conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, isComplete, error in
+            guard let self, let c = self.clients[id] else { return }
+            if let data, !data.isEmpty { self.ingest(id, c, data) }
+            guard self.clients[id] != nil else { return }       // ingest may have closed it
+            if isComplete || error != nil {
+                c.eof = true
+                if !c.busy, c.pending.isEmpty { self.close(id, notify: true) }
+            } else {
+                self.receive(id)
+            }
+        }
+    }
+
+    private func ingest(_ id: Int, _ c: Client, _ data: Data) {
+        for b in data {
+            if b == 0x0A {
+                if !c.overflow {
+                    let line = String(decoding: c.buffer, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !line.isEmpty { c.pending.append(line) }
+                }
+                c.buffer.removeAll(keepingCapacity: true)
+                c.overflow = false
+            } else if c.buffer.count < Self.maxLineBytes {
+                c.buffer.append(b)
+            } else {
+                c.overflow = true                               // over-long line: discard it
+            }
+        }
+        if c.pending.count > Self.maxQueuedLines {
+            ODLog.shared.log("\(name) server: client flooding commands — disconnected", category: "net")
+            close(id, notify: true); return
+        }
+        pump(id)
+    }
+
+    /// Dispatch the next queued line to the handler (one in flight per client, in order).
+    private func pump(_ id: Int) {
+        guard let c = clients[id], !c.busy else { return }
+        guard !c.pending.isEmpty else {
+            if c.eof { close(id, notify: true) }
+            return
+        }
+        c.busy = true
+        let line = c.pending.removeFirst()
+        let handler = self.handler
+        let queue = self.queue
+        Task { [weak self] in
+            let reply = await handler(id, line)
+            queue.async { [weak self] in self?.finish(id, reply) }
+        }
+    }
+
+    private func finish(_ id: Int, _ reply: Reply) {
+        guard let c = clients[id] else { return }
+        c.busy = false
+        if reply.close {
+            c.conn.send(content: reply.text.isEmpty ? nil : Data(reply.text.utf8), isComplete: true,
+                        completion: .contentProcessed { [weak self] _ in self?.close(id, notify: true) })
+            return
+        }
+        if !reply.text.isEmpty {
+            c.conn.send(content: Data(reply.text.utf8), completion: .contentProcessed { _ in })
+        }
+        pump(id)
+    }
+
+    private func close(_ id: Int, notify: Bool) {
+        guard let c = clients.removeValue(forKey: id) else { return }
+        c.conn.stateUpdateHandler = nil
+        c.conn.cancel()
+        if notify { onEvent(.clientGone(id: id)) }
+        publish()
+    }
+}
+
+/// Built-in Hamlib rigctld server: lets a LAN client drive or read the radio through
+/// OrbitDeck's CAT link. VFOA = downlink leg, VFOB = uplink leg ("Main"/"Sub" follow the
+/// radio's MAIN = uplink setting). Frequencies are the radio's dial.
+///
+/// Doppler arbitration: reads never disturb OrbitDeck. The first set-frequency from a
+/// client pauses OrbitDeck's own Doppler loop (the FT4 hold mechanism) for as long as
+/// that client stays connected — Gpredict or WSJT-X then owns the dial. When the last
+/// controlling client disconnects (or sends `q`, or the operator taps Resume) Doppler
+/// resumes and re-commands both legs. Mode, split and PTT commands don't take control.
+@MainActor
+final class RigctldServer: ObservableObject {
+    static let shared = RigctldServer()
+    static let defaultPort = 4532
+    private static let enabledKey = "orbitdeck.rigctldServer.enabled"
+    private static let portKey = "orbitdeck.rigctldServer.port"
+
+    @Published private(set) var enabled: Bool
+    @Published private(set) var port: Int
+    @Published private(set) var listening = false
+    @Published private(set) var errorText: String?
+    @Published private(set) var clientCount = 0
+    @Published private(set) var lastCommand = ""
+    @Published private(set) var externalControl = false
+
+    private weak var rig: RigController?
+    private var core: HamlibLineServer!
+    private var clientVFO: [Int: RigRole] = [:]
+    private var clientAddress: [Int: String] = [:]
+    private var controllers = Set<Int>()
+    private var ownsHold = false
+    private var legMode: [RigRole: RigMode] = [:]
+    private var lastCommandAt = Date.distantPast
+    private var observers: [NSObjectProtocol] = []
+
+    private static let shortNames: [Character: String] = [
+        "f": "get_freq", "F": "set_freq", "m": "get_mode", "M": "set_mode",
+        "v": "get_vfo", "V": "set_vfo", "s": "get_split_vfo", "S": "set_split_vfo",
+        "i": "get_split_freq", "I": "set_split_freq", "x": "get_split_mode", "X": "set_split_mode",
+        "t": "get_ptt", "T": "set_ptt", "_": "get_info", "q": "quit", "Q": "quit",
+    ]
+
+    private init() {
+        let d = UserDefaults.standard
+        enabled = d.bool(forKey: Self.enabledKey)
+        let p = d.integer(forKey: Self.portKey)
+        port = (1024...65535).contains(p) ? p : Self.defaultPort
+        core = HamlibLineServer(name: "rigctld", handler: { [weak self] id, line in
+            guard let self else { return .init(text: "RPRT -\(HamlibProtocol.eIO)\n", close: false) }
+            return await self.handle(id, line)
+        }, onEvent: { [weak self] event in
+            Task { @MainActor in self?.apply(event) }
+        })
+    }
+
+    /// Called once at launch; starts the server if it was left enabled.
+    func attach(_ rig: RigController) {
+        self.rig = rig
+        if observers.isEmpty {
+            let nc = NotificationCenter.default
+            observers.append(nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in if self?.enabled == true { self?.core.ensureRunning() } }
+            })
+            observers.append(nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.core.stop() }
+            })
+        }
+        if enabled { core.start(port: UInt16(port)) }
+    }
+
+    func setEnabled(_ on: Bool) {
+        guard on != enabled else { return }
+        enabled = on
+        UserDefaults.standard.set(on, forKey: Self.enabledKey)
+        if on { core.start(port: UInt16(port)) } else { core.stop(); releaseAll() }
+    }
+
+    func setPort(_ p: Int) {
+        let p = min(65535, max(1024, p))
+        guard p != port else { return }
+        port = p
+        UserDefaults.standard.set(p, forKey: Self.portKey)
+        if enabled { releaseAll(); core.start(port: UInt16(p)) }
+    }
+
+    /// Operator override: hand the dial back to OrbitDeck's Doppler loop now.
+    func resumeDoppler() { releaseAll() }
+
+    // MARK: Events
+
+    private func apply(_ event: HamlibLineServer.Event) {
+        switch event {
+        case .state(let l, let e, let n):
+            listening = l; errorText = e; clientCount = n
+        case .clientAdded(let id, let address):
+            clientAddress[id] = address
+        case .clientGone(let id):
+            endClient(id)
+            clientAddress.removeValue(forKey: id)
+        }
+    }
+
+    private func beginControl(_ id: Int) {
+        guard let rig else { return }
+        if controllers.insert(id).inserted {
+            ODLog.shared.log("rigctld server: \(clientAddress[id] ?? "client") is controlling the radio", category: "cat")
+        }
+        if rig.serverBeginExternalHold() { ownsHold = true }
+        externalControl = true
+    }
+
+    private func endClient(_ id: Int) {
+        clientVFO.removeValue(forKey: id)
+        guard controllers.remove(id) != nil else { return }
+        if controllers.isEmpty { releaseAll() }
+    }
+
+    private func releaseAll() {
+        controllers.removeAll()
+        if ownsHold { rig?.serverEndExternalHold(); ownsHold = false }
+        externalControl = false
+    }
+
+    // MARK: Commands
+
+    private func handle(_ id: Int, _ line: String) async -> HamlibLineServer.Reply {
+        guard let cmd = HamlibProtocol.parse(line, shortNames: Self.shortNames) else { return .init(text: "", close: false) }
+        // Throttled so a client polling get_freq many times a second doesn't churn the UI.
+        let now = Date()
+        if cmd.name.hasPrefix("set_") || now.timeIntervalSince(lastCommandAt) > 1 {
+            lastCommandAt = now
+            lastCommand = "\(clientAddress[id] ?? "?"): \(line.prefix(60))"
+        }
+        return HamlibProtocol.reply(cmd, await execute(id, cmd))
+    }
+
+    private func execute(_ id: Int, _ cmd: HamlibCommand) async -> HamlibResult {
+        let vfo = clientVFO[id] ?? .downlink
+        switch cmd.name {
+        case "dump_state": return .raw(Self.dumpState)
+        case "chk_vfo": return .raw("CHKVFO 0\n")
+        case "get_powerstat": return .values([("Power Status", "1")])
+        case "set_powerstat": return .ok
+        case "get_info": return .values([("Info", "OrbitDeck")])
+        case "quit":
+            endClient(id)
+            return .quit
+        case "get_vfo": return .values([("VFO", vfo == .uplink ? "VFOB" : "VFOA")])
+        case "set_vfo":
+            guard let a = cmd.args.first, let leg = leg(named: a, current: vfo) else { return .error(HamlibProtocol.eInval) }
+            clientVFO[id] = leg
+            return .ok
+        case "get_freq": return await getFreq(vfo, label: "Frequency")
+        case "set_freq": return await setFreq(id, vfo, cmd.args)
+        case "get_split_freq": return await getFreq(.uplink, label: "TX Frequency")
+        case "set_split_freq": return await setFreq(id, .uplink, cmd.args)
+        case "get_mode": return getMode(vfo, labels: ("Mode", "Passband"))
+        case "set_mode": return await setMode(vfo, cmd.args)
+        case "get_split_mode": return getMode(.uplink, labels: ("TX Mode", "TX Passband"))
+        case "set_split_mode": return await setMode(.uplink, cmd.args)
+        case "get_split_vfo":
+            let split = rig?.serverHasLeg(.uplink) ?? false
+            return .values([("Split", split ? "1" : "0"), ("TX VFO", split ? "VFOB" : "VFOA")])
+        case "set_split_vfo":
+            return .ok       // the satellite layout is fixed: RX on VFOA, TX on VFOB
+        case "get_ptt": return .values([("PTT", rig?.serverPTT == true ? "1" : "0")])
+        case "set_ptt":
+            guard let a = cmd.args.first, let n = Int(a) else { return .error(HamlibProtocol.eInval) }
+            guard let rig, rig.connected else { return .error(HamlibProtocol.eIO) }
+            return await rig.serverSetPTT(n != 0) ? .ok : .error(HamlibProtocol.eNotAvailable)
+        default:
+            return .error(HamlibProtocol.eNotImplemented)
+        }
+    }
+
+    private func leg(named name: String, current: RigRole) -> RigRole? {
+        switch name.lowercased() {
+        case "vfoa", "rx", "vfo": return .downlink
+        case "vfob", "tx": return .uplink
+        case "currvfo": return current
+        case "main": return (rig?.serverMainIsUplink ?? false) ? .uplink : .downlink
+        case "sub": return (rig?.serverMainIsUplink ?? false) ? .downlink : .uplink
+        default: return nil
+        }
+    }
+
+    private func getFreq(_ leg: RigRole, label: String) async -> HamlibResult {
+        guard let rig, rig.connected else { return .error(HamlibProtocol.eIO) }
+        guard rig.serverHasLeg(leg) else { return .error(HamlibProtocol.eNotAvailable) }
+        guard let hz = await rig.serverRigFrequency(leg: leg) else { return .error(HamlibProtocol.eIO) }
+        return .values([(label, String(hz))])
+    }
+
+    private func setFreq(_ id: Int, _ leg: RigRole, _ args: [String]) async -> HamlibResult {
+        guard let a = args.first, let v = Double(a), v >= 1, v < 1e11 else { return .error(HamlibProtocol.eInval) }
+        guard let rig, rig.connected else { return .error(HamlibProtocol.eIO) }
+        guard rig.serverHasLeg(leg) else { return .error(HamlibProtocol.eNotAvailable) }
+        beginControl(id)
+        let mode = legMode[leg] ?? rig.serverDerivedMode(leg: leg)
+        return await rig.serverSetFrequency(leg: leg, hz: Int64(v.rounded()), mode: mode) ? .ok : .error(HamlibProtocol.eIO)
+    }
+
+    private func getMode(_ leg: RigRole, labels: (String, String)) -> HamlibResult {
+        guard let rig, rig.connected else { return .error(HamlibProtocol.eIO) }
+        guard rig.serverHasLeg(leg) else { return .error(HamlibProtocol.eNotAvailable) }
+        let m = legMode[leg] ?? rig.serverDerivedMode(leg: leg) ?? .usb
+        let (name, passband) = Self.hamlibMode(m)
+        return .values([(labels.0, name), (labels.1, String(passband))])
+    }
+
+    private func setMode(_ leg: RigRole, _ args: [String]) async -> HamlibResult {
+        guard let a = args.first else { return .error(HamlibProtocol.eInval) }
+        if a == "?" { return .raw("AM CW USB LSB FM FMN PKTUSB PKTLSB PKTFM\n") }
+        guard let mode = Self.rigMode(a) else { return .error(HamlibProtocol.eInval) }
+        guard let rig, rig.connected else { return .error(HamlibProtocol.eIO) }
+        guard rig.serverHasLeg(leg) else { return .error(HamlibProtocol.eNotAvailable) }
+        legMode[leg] = mode
+        return await rig.serverSetMode(leg: leg, mode: mode) ? .ok : .error(HamlibProtocol.eIO)
+    }
+
+    private static func hamlibMode(_ m: RigMode) -> (String, Int) {
+        switch m {
+        case .lsb: ("LSB", 2400)
+        case .usb: ("USB", 2400)
+        case .cw: ("CW", 500)
+        case .fm: ("FM", 15000)
+        case .fmn: ("FM", 10000)
+        case .am: ("AM", 6000)
+        case .data: ("PKTUSB", 2400)
+        }
+    }
+
+    private static func rigMode(_ s: String) -> RigMode? {
+        switch s.uppercased() {
+        case "USB", "PKTUSB": .usb
+        case "LSB", "PKTLSB": .lsb
+        case "CW", "CWR": .cw
+        case "FM", "PKTFM": .fm
+        case "FMN": .fmn
+        case "AM", "AMS": .am
+        default: nil
+        }
+    }
+
+    /// Minimal protocol-0 `\dump_state` so Hamlib NET rigctl (model 2) clients connect:
+    /// version, model, ITU region, one RX and one TX range (100 kHz–1.3 GHz, AM/CW/USB/
+    /// LSB/RTTY/FM/WFM modes, VFOA|VFOB), a 1 Hz tuning step, normal filters per mode,
+    /// no RIT/XIT/IF shift, no announces/preamp/attenuator, no funcs/levels/parms.
+    private static let dumpState = """
+    0
+    2
+    2
+    100000.000000 1300000000.000000 0x1ff -1 -1 0x3 0x0
+    0 0 0 0 0 0 0
+    100000.000000 1300000000.000000 0x1ff 1000 100000 0x3 0x0
+    0 0 0 0 0 0 0
+    0x1ff 1
+    0 0
+    0xc 2400
+    0x2 500
+    0x1 6000
+    0x20 15000
+    0 0
+    0
+    0
+    0
+    0
+    0
+    0
+    0x0
+    0x0
+    0x0
+    0x0
+    0x0
+    0x0
+
+    """
+}

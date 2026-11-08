@@ -35,6 +35,8 @@ struct RigControlSettingsView: View {
                 if rig.config.twoRadios { slotSection(index: 1, title: "Radio 2 — uplink") }
 
                 tuningSection
+
+                RigctldServerSection()
             }
         }
         .navigationTitle("Rig Control (CAT)")
@@ -613,5 +615,95 @@ struct HomeRigControlCard: View {
         if rig.connected { return ODTheme.good }
         if rig.connecting { return ODTheme.accent }
         return rig.errorText.isEmpty ? ODTheme.muted : ODTheme.warning
+    }
+}
+
+// MARK: - Hamlib server settings
+
+/// Settings section for the built-in rigctld server (bottom of the CAT screen).
+struct RigctldServerSection: View {
+    @ObservedObject private var server = RigctldServer.shared
+
+    var body: some View {
+        Section("rigctld server") {
+            Toggle("Run rigctld server", isOn: Binding(get: { server.enabled }, set: { server.setEnabled($0) }))
+            HamlibPortField(port: server.port, placeholder: "\(RigctldServer.defaultPort)") { server.setPort($0) }
+            if server.enabled {
+                HamlibServerStatusRows(port: server.port, listening: server.listening, errorText: server.errorText,
+                                       clientCount: server.clientCount, lastCommand: server.lastCommand)
+                if server.externalControl {
+                    Text("A client is tuning the radio — OrbitDeck's Doppler tuning is paused until it disconnects.")
+                        .font(.caption).foregroundStyle(ODTheme.warning)
+                    Button("Resume OrbitDeck Doppler") { server.resumeDoppler() }
+                }
+            }
+            Text("Lets Gpredict, SatPC32, WSJT-X or a logger on your local network read or drive the radio through OrbitDeck's CAT link — in the client choose Hamlib NET rigctl (model 2) and enter an address below. VFOA is the downlink, VFOB the uplink; frequencies are the radio's dial. Reading never disturbs OrbitDeck. When a client sets a frequency, OrbitDeck pauses its own Doppler tuning for as long as that client stays connected, so let the client do Doppler (or only read).")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+            HamlibServerLimitsNote()
+        }
+    }
+}
+
+/// Port entry for a Hamlib server; applies on Return or the Apply button.
+struct HamlibPortField: View {
+    let port: Int
+    let placeholder: String
+    let apply: (Int) -> Void
+    @State private var text = ""
+
+    var body: some View {
+        HStack {
+            Text("TCP port")
+            Spacer()
+            if let p = Int(text), p != port, (1024...65535).contains(p) {
+                Button("Apply") { apply(p) }.buttonStyle(.borderless)
+            }
+            TextField(placeholder, text: $text)
+                .multilineTextAlignment(.trailing)
+                .keyboardType(.numbersAndPunctuation)
+                .frame(width: 90).textFieldStyle(.odField)
+                .onSubmit { if let p = Int(text) { apply(p) }; text = String(port) }
+        }
+        .onAppear { text = String(port) }
+        .onChange(of: port) { _, p in text = String(p) }
+    }
+}
+
+/// Live status for a Hamlib server: listening state, the phone's LAN addresses to enter
+/// in the client, connected clients and the most recent command.
+struct HamlibServerStatusRows: View {
+    let port: Int
+    let listening: Bool
+    let errorText: String?
+    let clientCount: Int
+    let lastCommand: String
+
+    var body: some View {
+        let addresses = HamlibProtocol.lanAddresses()
+        LabeledContent("Status", value: listening ? "Listening" : (errorText ?? "Starting…"))
+        if addresses.isEmpty {
+            Text("No local network address — join a Wi-Fi network (or turn on Personal Hotspot).")
+                .font(.caption).foregroundStyle(ODTheme.warning)
+        } else {
+            ForEach(addresses, id: \.address) { a in
+                LabeledContent(a.interface) {
+                    Text(verbatim: "\(a.address):\(port)").textSelection(.enabled).monospacedDigit()
+                }
+            }
+        }
+        LabeledContent("Connected clients", value: "\(clientCount)")
+        if !lastCommand.isEmpty {
+            LabeledContent("Last command") {
+                Text(verbatim: lastCommand).font(.caption.monospaced()).lineLimit(1).truncationMode(.tail)
+            }
+        }
+    }
+}
+
+/// The iOS/security caveats shared by both servers.
+struct HamlibServerLimitsNote: View {
+    var body: some View {
+        Text("iOS keeps the server running only while OrbitDeck is in the foreground, or while a background audio session (pass recording, decoding, remote voice) is active. Local network only; there is no authentication, so use it on a network you trust.")
+            .font(.caption).foregroundStyle(ODTheme.muted)
     }
 }

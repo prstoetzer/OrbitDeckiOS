@@ -38,6 +38,8 @@ struct OrbitDeckIOSApp: App {
                     notifications.activate()
                     rig.attach(store)
                     rotator.attach(store)
+                    RigctldServer.shared.attach(rig)
+                    RotctldServer.shared.attach(rotator)
                     audio.attach(rig)
                     qsoLog.attach()
                     recorder.attach(qsoLog)

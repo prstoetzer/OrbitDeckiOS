@@ -455,3 +455,96 @@ final class RotatorController: ObservableObject {
         return bearing
     }
 }
+
+// MARK: - rotctld server bridge
+
+/// Entry points for the built-in Hamlib rotctld server (`RotctldServer`, in
+/// RotatorNetwork.swift). Like CardSat, positions from an external client are sent to
+/// the rotator verbatim — no alignment offsets or magnetic correction, since the client
+/// owns its own calibration — and a set-position pauses OrbitDeck's own tracking so the
+/// two don't fight. `serverResumeTracking()` hands control back.
+extension RotatorController {
+    /// True while connected with OrbitDeck's pointing loop stopped by an external client.
+    var serverTrackingPaused: Bool { connected && timer == nil && !reconnecting }
+
+    /// The configured azimuth range and maximum elevation, for `\dump_state`.
+    var serverLimits: (minAz: Double, maxAz: Double, maxEl: Double) {
+        let el = config.flipEnabled ? 180.0 : 90.0
+        switch config.azRange {
+        case .az360: return (0, 360, el)
+        case .az180: return (-180, 180, el)
+        case .az450: return (0, 450, el)
+        }
+    }
+
+    /// Last commanded position (mechanical, as sent).
+    var serverPosition: (az: Double, el: Double) { (commandedAz, commandedEl) }
+
+    /// Pause tracking and point at `az`/`el`. False when no rotator is connected.
+    func serverPoint(az: Double, el: Double) async -> Bool {
+        guard connected, transport != nil else { return false }
+        await serverPauseTracking()
+        var a = az
+        switch config.azRange {
+        case .az360: a = wrap360(a)
+        case .az180: a = wrap360(a); if a > 180 { a -= 360 }
+        case .az450: if a < 0 || a > 450 { a = wrap360(a) }
+        }
+        let e = min(serverLimits.maxEl, max(0, el))
+        return await serverSend(az: a, el: e)
+    }
+
+    /// Pause tracking and send the protocol's stop command (if it has one).
+    func serverStop() async -> Bool {
+        guard connected, let t = transport else { return false }
+        await serverPauseTracking()
+        let bytes = RotatorCodec.stop(config.proto)
+        guard !bytes.isEmpty else { return true }
+        do { try await t.send(bytes); return true } catch { return false }
+    }
+
+    /// Pause tracking and move to the configured park position.
+    func serverPark() async -> Bool {
+        guard connected, transport != nil else { return false }
+        await serverPauseTracking()
+        return await serverSend(az: Double(config.parkAz), el: Double(config.parkEl))
+    }
+
+    /// Restart OrbitDeck's own pointing loop after external control.
+    func serverResumeTracking() {
+        guard connected, timer == nil, !reconnecting else { return }
+        lastAz = nil; lastEl = nil; lastSendAt = nil
+        startLoop()
+        statusText = "Tracking resumed"
+        ODLog.shared.log("rotctld server: external control ended — OrbitDeck tracking resumed", category: "rotator")
+    }
+
+    private func serverPauseTracking() async {
+        guard timer != nil else { return }
+        timer?.cancel(); timer = nil
+        // Let an in-flight tick finish so its send can't land after ours.
+        var waited = 0.0
+        while isTicking, waited < 3 { await Self.gcdDelay(0.02); waited += 0.02 }
+        flipActive = false
+        statusText = "External control (rotctld server)"
+        ODLog.shared.log("rotctld server: external client is pointing — OrbitDeck tracking paused", category: "rotator")
+    }
+
+    private func serverSend(az: Double, el: Double) async -> Bool {
+        commandedAz = az; commandedEl = el
+        txSeq += 1
+        var ok = true; var errText = ""
+        if config.proto == .spid, canReadReplies {
+            errText = await spidCommand(az: az, el: el) ?? ""
+            ok = errText.isEmpty
+        } else {
+            for datagram in RotatorCodec.pointDatagrams(config.proto, az: az, el: el, azimuthOnly: config.azimuthOnly) {
+                do { try await transport?.send(datagram) }
+                catch { ok = false; errText = error.localizedDescription }
+            }
+        }
+        lastTx = ok ? "TX #\(txSeq): ok (rotctld server)" : "TX #\(txSeq): \(errText)"
+        lastAz = az; lastEl = el; lastSendAt = Date()
+        return ok
+    }
+}
