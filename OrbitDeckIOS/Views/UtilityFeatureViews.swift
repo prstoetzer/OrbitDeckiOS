@@ -885,7 +885,7 @@ struct GridDistanceView: View {
     }
 
     private func point(bearing: Double) {
-        // ROTATOR-HOOK: rot.pointManually(azimuth: bearing, elevation: 0)
+        rot.pointManually(azimuth: bearing, elevation: 0)
     }
 
     /// QRZ grid when credentials are configured; otherwise (or on failure) the
