@@ -409,6 +409,34 @@ struct RigSlot: Codable, Sendable, Equatable {
     var spec: RadioSpec? { transport == .rigctld ? RadioCatalog.rigctld : RadioCatalog.spec(id: radioID) }
 }
 
+/// Live Doppler tune mode (the Home rig card's selector). Changes take effect on the next
+/// tick without reconnecting: it only gates which legs the loop writes.
+enum CATTuneMode: String, Codable, Sendable, CaseIterable, Identifiable {
+    case full           // both legs; One True Rule follows the downlink (when Follow radio tuning is on)
+    case fullUplink     // both legs; One True Rule follows the uplink dial
+    case downlinkOnly   // Doppler on the downlink only — the uplink is left to the operator
+    case uplinkOnly     // Doppler on the uplink only — the downlink is left to the operator
+    case hold           // no Doppler writes at all (radio left where it is)
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .full: "Full (follow downlink)"
+        case .fullUplink: "Full (follow uplink)"
+        case .downlinkOnly: "Downlink only"
+        case .uplinkOnly: "Uplink only"
+        case .hold: "Hold"
+        }
+    }
+    var shortLabel: String {
+        switch self {
+        case .full: "Full"; case .fullUplink: "Full ↑"; case .downlinkOnly: "DL only"
+        case .uplinkOnly: "UL only"; case .hold: "Hold"
+        }
+    }
+    var drivesDownlink: Bool { self == .full || self == .fullUplink || self == .downlinkOnly }
+    var drivesUplink: Bool { self == .full || self == .fullUplink || self == .uplinkOnly }
+}
+
 /// Persisted CAT configuration. Slot 0 is the primary/downlink radio; slot 1 is
 /// the uplink radio in a two-radio station.
 struct CATConfig: Codable, Sendable, Equatable {
@@ -424,6 +452,32 @@ struct CATConfig: Codable, Sendable, Equatable {
         if s.transport == .rigctld { return !s.host.isEmpty }
         return !s.radioID.isEmpty
     }
+
+    /// The slowest configured serial rate (BLE UART adapter links only — Icom Wi-Fi,
+    /// Icom built-in Bluetooth and rigctld aren't baud-limited), or nil if none.
+    var slowestSerialBaud: Int? {
+        var active = [slots[0]]
+        if twoRadios, slots.count > 1, slots[1].enabled { active.append(slots[1]) }
+        let bauds = active.compactMap { slot -> Int? in
+            guard slot.transport == .ble, let spec = slot.spec else { return nil }
+            return slot.baudOverride > 0 ? slot.baudOverride : spec.defaultBaud
+        }
+        return bauds.min()
+    }
+
+    /// Soft floor on the Doppler update period for slow serial links, so each tick's
+    /// frames (and any read-back) fit before the next one: ≤4800 baud → 1000 ms,
+    /// ≤9600 → 500 ms. 0 = no floor.
+    var serialRateFloorMs: Int {
+        guard let baud = slowestSerialBaud, baud > 0 else { return 0 }
+        if baud <= 2400 { return 1500 }
+        if baud <= 4800 { return 1000 }
+        if baud <= 9600 { return 500 }
+        return 0
+    }
+
+    /// The update period the loop actually runs at.
+    var effectiveUpdateMs: Int { max(100, tuning.updateMs, serialRateFloorMs) }
 }
 
 /// All Doppler/tuning options, ported from CardSat settings.h.
@@ -466,6 +520,26 @@ struct CATTuning: Codable, Sendable, Equatable {
     /// Per-satellite uplink CTCSS override, keyed by NORAD ID (as a string). 0 = Off;
     /// no entry = the built-in table, then `uplinkToneHz`. See `SatelliteTones`.
     var satelliteToneHz: [String: Double] = [:]
+    /// Live tune mode (Home rig card). Migrated from follow-uplink for older configs.
+    var tuneMode: CATTuneMode = .full
+    /// Retune CAT straight away when the selected satellite changes during an engaged
+    /// pass. Off = keep tuning the engaged satellite and ask on the rig card first.
+    /// Automatic switching always moves CAT.
+    var followSelection = false
+    /// rigctld full duplex in VFO mode (`V VFOA`/`V VFOB` + `F`/`M`, like CardSat and
+    /// gpredict). Off = the older split method (`S 1 VFOB` + `I`/`X`).
+    var rigctldVFOMode = true
+
+    /// Whether the One True Rule read-back runs in the current tune mode.
+    var followActive: Bool {
+        switch tuneMode {
+        case .full: return followRadio
+        case .fullUplink: return true
+        default: return false
+        }
+    }
+    /// The leg the One True Rule follows in the current tune mode.
+    var effectiveFollowLeg: RigRole { tuneMode == .fullUplink ? .uplink : .downlink }
 }
 
 // MARK: - Per-satellite uplink tone
@@ -567,7 +641,7 @@ extension CATTuning {
         case fmDeadbandHz, linearDeadbandHz, narrowFM, leadMs, calDownlinkHz, calUplinkHz
         case xvtrDownlinkHz, xvtrUplinkHz, uplinkToneHz, passbandOffsetHz, followRadio, followLeg
         case followSettleMs, followUplinkResumeMs, rigctldUseSplit, splitUplinkDeadbandHz
-        case satelliteToneHz, linearCW
+        case satelliteToneHz, linearCW, tuneMode, followSelection, rigctldVFOMode
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
@@ -596,6 +670,11 @@ extension CATTuning {
         t.splitUplinkDeadbandHz = c.value(Int.self, .splitUplinkDeadbandHz, t.splitUplinkDeadbandHz)
         t.satelliteToneHz = c.value([String: Double].self, .satelliteToneHz, t.satelliteToneHz)
         t.linearCW = c.value(Bool.self, .linearCW, t.linearCW)
+        // A config saved before the tune mode existed keeps its follow-uplink choice.
+        let legacyMode: CATTuneMode = (t.followRadio && t.followLeg == .uplink) ? .fullUplink : .full
+        t.tuneMode = c.value(CATTuneMode.self, .tuneMode, legacyMode)
+        t.followSelection = c.value(Bool.self, .followSelection, t.followSelection)
+        t.rigctldVFOMode = c.value(Bool.self, .rigctldVFOMode, t.rigctldVFOMode)
         self = t
     }
     func encode(to encoder: Encoder) throws {
@@ -624,6 +703,9 @@ extension CATTuning {
         try c.encode(splitUplinkDeadbandHz, forKey: .splitUplinkDeadbandHz)
         try c.encode(satelliteToneHz, forKey: .satelliteToneHz)
         try c.encode(linearCW, forKey: .linearCW)
+        try c.encode(tuneMode, forKey: .tuneMode)
+        try c.encode(followSelection, forKey: .followSelection)
+        try c.encode(rigctldVFOMode, forKey: .rigctldVFOMode)
     }
 }
 

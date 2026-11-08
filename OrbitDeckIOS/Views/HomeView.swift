@@ -213,7 +213,8 @@ struct HomeView: View {
                     transponderCard(satellite)
                     HomeRigControlCard(satellite: satellite,
                                        selectedTransponderID: selectedTransponder(satellite)?.id,
-                                       passbandOffsetHz: $passbandOffsetHz)
+                                       passbandOffsetHz: $passbandOffsetHz,
+                                       selectTransponder: { selectedTransponderID = $0 })
                     HomeRotatorCard(satellite: satellite)
                     HomeQuickLogCard(satellite: satellite)
                     HomeRemoteAudioCard(satellite: satellite)
@@ -692,6 +693,9 @@ struct HomeView: View {
             if transponder.isLinear, transponder.bandwidth > 0 {
                 passbandSlider(bandwidth: transponder.bandwidth)
             }
+            // No CAT radio: hold one leg at a fixed dial and read the other's live.
+            ManualDopplerCalculator(transponder: transponder, rangeRateKmS: rangeRateKmS,
+                                    downlinkCalibrationHz: cal, currentRx: corrected.rx, currentTx: corrected.tx)
             if cal != 0 { calibratedNote }
             calibrationDisclosure(satellite: satellite)
         }
