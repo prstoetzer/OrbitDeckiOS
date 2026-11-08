@@ -350,6 +350,11 @@ struct AmsatStatusSummaryRecord: Identifiable, Sendable {
     let reports: Int
     let heard: Int
     let lastReport: String
+    /// Newest "Heard" report in the window (nil when nobody reported it heard).
+    var lastHeard: Date? = nil
+    /// Distinct 4-character grids among the window's reporters (from the reports
+    /// feed, which the API caps at 500 rows); nil until that fetch completes.
+    var gridCount: Int? = nil
 }
 
 struct NewLaunchHit: Identifiable, Sendable {
@@ -1927,6 +1932,59 @@ actor SpaceTrackHistoryService {
 }
 
 
+/// The previous distinct sample of each space-weather index, persisted under its own
+/// key so the Space Wx screen can show trend deltas ("142 sfu +5", "Kp 3 ↑1") across
+/// launches. A metric's previous value only rolls forward when the index actually
+/// changes, so the delta reads "change since the last different reading".
+struct SpaceWeatherTrend: Codable, Sendable {
+    struct Metric: Codable, Sendable {
+        var current: Double
+        var previous: Double?
+        var changedAt: Date?
+    }
+    var metrics: [String: Metric] = [:]
+    var lastFetchedAt: Date?
+
+    static let defaultsKey = "OrbitDeckIOS.spaceWeather.trend"
+
+    static func load() -> SpaceWeatherTrend {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+              let trend = try? JSONDecoder().decode(SpaceWeatherTrend.self, from: data) else { return SpaceWeatherTrend() }
+        return trend
+    }
+
+    func save() {
+        if let data = try? JSONEncoder().encode(self) { UserDefaults.standard.set(data, forKey: Self.defaultsKey) }
+    }
+
+    /// Fold a snapshot in (once per fetch). Returns true when anything changed.
+    @discardableResult
+    mutating func record(_ snapshot: SpaceWeatherSnapshot) -> Bool {
+        guard lastFetchedAt != snapshot.fetchedAt else { return false }
+        lastFetchedAt = snapshot.fetchedAt
+        let values: [(String, Double?)] = [("flux", snapshot.flux), ("kp", snapshot.kp), ("a", snapshot.aIndex),
+                                           ("ssn", snapshot.sunspotNumber), ("flux90", snapshot.flux90Day)]
+        for (name, value) in values {
+            guard let value else { continue }
+            if var m = metrics[name] {
+                if abs(m.current - value) > 0.001 {
+                    m.previous = m.current; m.current = value; m.changedAt = snapshot.fetchedAt
+                    metrics[name] = m
+                }
+            } else {
+                metrics[name] = Metric(current: value, previous: nil, changedAt: nil)
+            }
+        }
+        return true
+    }
+
+    /// Current minus previous, or nil when there's no earlier distinct sample.
+    func delta(_ name: String) -> Double? {
+        guard let m = metrics[name], let p = m.previous else { return nil }
+        return m.current - p
+    }
+}
+
 struct SpaceWeatherService {
     static func fetch() async throws -> SpaceWeatherSnapshot {
         async let fluxData = get(URL(string: "https://services.swpc.noaa.gov/json/f107_cm_flux.json")!)
@@ -2139,22 +2197,26 @@ struct AmsatStatusService {
         } else if let d = object as? [String: Any] {
             records = (d["data"] as? [[String: Any]]) ?? (d["summary"] as? [[String: Any]]) ?? []
         } else { records = object as? [[String: Any]] ?? [] }
-        var grouped: [String: (display: String, reports: Int, heard: Int, last: String)] = [:]
+        var grouped: [String: (display: String, reports: Int, heard: Int, last: String, lastHeard: String)] = [:]
         for row in records {
             let name = (row["name"] as? String) ?? (row["satellite"] as? String) ?? ""
             guard !name.isEmpty else { continue }
             let count = int(row["report_count"] ?? row["reports"] ?? row["count"])
             let status = String(describing: row["report"] ?? row["status"] ?? "")
             let last = String(describing: row["latest_reported_time"] ?? row["last_report"] ?? row["reported_time"] ?? "")
-            var g = grouped[name] ?? (pretty(name), 0, 0, "")
+            var g = grouped[name] ?? (pretty(name), 0, 0, "", "")
             g.reports += count
-            if status.lowercased().hasPrefix("heard") { g.heard += count }
+            if status.lowercased().hasPrefix("heard") {
+                g.heard += count
+                if last > g.lastHeard { g.lastHeard = last }
+            }
             if last > g.last { g.last = last }
             grouped[name] = g
         }
         return grouped.map { key, value in
             AmsatStatusSummaryRecord(id: key, apiName: key, displayName: value.display,
-                                     reports: value.reports, heard: value.heard, lastReport: value.last)
+                                     reports: value.reports, heard: value.heard, lastReport: value.last,
+                                     lastHeard: value.lastHeard.isEmpty ? nil : parseAmsatDate(value.lastHeard))
         }.sorted { a, b in
             a.reports != b.reports ? a.reports > b.reports : a.displayName < b.displayName
         }
@@ -3579,6 +3641,35 @@ private actor AmsatCatalogCache {
     func set(_ value: [String]) { names = value }
 }
 
+/// Persisted, rate-limited cache behind `AmsatStatusService.recentlyHeard`.
+private actor AmsatHeardStore {
+    static let shared = AmsatHeardStore()
+    private static let heardKey = "OrbitDeckIOS.amsat.heardCache"
+    private static let fetchedKey = "OrbitDeckIOS.amsat.heardCache.fetchedAt"
+    private var inFlight: Task<[String: Date], Never>?
+
+    func recentlyHeard(maxAge: TimeInterval) async -> [String: Date] {
+        let defaults = UserDefaults.standard
+        let cached = (defaults.dictionary(forKey: Self.heardKey) as? [String: Double] ?? [:])
+            .mapValues { Date(timeIntervalSince1970: $0) }
+        let fetched = defaults.double(forKey: Self.fetchedKey)
+        if fetched > 0, Date().timeIntervalSince1970 - fetched < maxAge { return cached }
+        if let inFlight { return await inFlight.value }
+        let task = Task<[String: Date], Never> {
+            guard let rows = try? await AmsatStatusService.fetchSummary(hours: 24) else { return cached }
+            var heard: [String: Date] = [:]
+            for row in rows { if let d = row.lastHeard { heard[row.apiName] = d } }
+            defaults.set(heard.mapValues(\.timeIntervalSince1970), forKey: Self.heardKey)
+            defaults.set(Date().timeIntervalSince1970, forKey: Self.fetchedKey)
+            return heard
+        }
+        inFlight = task
+        let result = await task.value
+        inFlight = nil
+        return result
+    }
+}
+
 extension AmsatStatusService {
     static let reportStatuses = ["Heard", "Telemetry Only", "Not Heard", "Crew Active"]
 
@@ -3652,6 +3743,44 @@ extension AmsatStatusService {
             throw NSError(domain: "AMSAT", code: 4, userInfo: [NSLocalizedDescriptionKey: "AMSAT rejected the report: \(text.prefix(120))"])
         }
         return "\(status) reported for \(apiName)."
+    }
+
+    /// Distinct 4-character reporter grids per AMSAT API name over the window. The
+    /// reports feed is capped server-side at 500 rows (newest first), so on a very busy
+    /// 48–72 h window this undercounts the oldest reports rather than failing.
+    static func fetchGridCounts(hours: Int) async throws -> [String: Int] {
+        var comps = URLComponents(string: "\(apiBase)/reports.php")!
+        comps.queryItems = [URLQueryItem(name: "hours", value: String(hours)), URLQueryItem(name: "limit", value: "500")]
+        let data = try await requestData(comps.url!)
+        let object = try JSONSerialization.jsonObject(with: data)
+        let rows: [[String: Any]]
+        if let dict = object as? [String: Any] {
+            rows = (dict["data"] as? [[String: Any]]) ?? (dict["reports"] as? [[String: Any]]) ?? []
+        } else { rows = object as? [[String: Any]] ?? [] }
+        var grids: [String: Set<String>] = [:]
+        for row in rows {
+            guard let name = (row["name"] as? String) ?? (row["satellite"] as? String), !name.isEmpty else { continue }
+            let grid = ((row["grid_square"] as? String) ?? (row["grid"] as? String) ?? "").uppercased()
+            guard grid.count >= 4 else { continue }
+            grids[name, default: []].insert(String(grid.prefix(4)))
+        }
+        return grids.mapValues(\.count)
+    }
+
+    /// "4 min ago" / "3 h ago" / "2 d ago" for a heard mark.
+    static func ageText(_ date: Date, now: Date = .now) -> String {
+        let s = max(0, now.timeIntervalSince(date))
+        if s < 3600 { return "\(max(1, Int(s / 60))) min ago" }
+        if s < 86400 { return "\(Int(s / 3600)) h ago" }
+        return "\(Int(s / 86400)) d ago"
+    }
+
+    /// AMSAT API name → newest "Heard" report over the last 24 h, from the cached
+    /// summary. Refetched at most every `maxAge` seconds (default 10 min) and
+    /// persisted, so the Satellites list shows marks immediately at launch and
+    /// offline. Plain async URLSession work — safe to call from any context.
+    static func recentlyHeard(maxAge: TimeInterval = 600) async -> [String: Date] {
+        await AmsatHeardStore.shared.recentlyHeard(maxAge: maxAge)
     }
 
     private static func requestData(_ url: URL, attempts: Int = 3) async throws -> Data {

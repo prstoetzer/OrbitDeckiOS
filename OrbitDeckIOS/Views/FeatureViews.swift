@@ -2672,6 +2672,7 @@ struct OrbitalHistoryView: View {
 struct SpaceWeatherView: View {
     @EnvironmentObject private var store: OrbitStore
     @State private var isLoading = false
+    @State private var trend = SpaceWeatherTrend.load()
 
     var body: some View {
         Form {
@@ -2679,12 +2680,12 @@ struct SpaceWeatherView: View {
                 Button("Refresh") { refresh() }.disabled(isLoading)
                 if isLoading { ProgressView() }
                 if let snapshot = store.spaceWeather {
-                    LabeledContent("F10.7 solar flux", value: snapshot.flux.map { String(format: "%.1f sfu — %@", $0, snapshot.fluxLabel) } ?? "—")
-                    LabeledContent("Sunspot number", value: snapshot.sunspotNumber.map { String(format: "%.0f", $0) } ?? "—")
-                    if let mean = snapshot.flux90Day { LabeledContent("F10.7 90-day mean", value: String(format: "%.1f sfu", mean)) }
-                    LabeledContent("Planetary Kp", value: snapshot.kp.map { String(format: "%.2f — %@", $0, snapshot.kpLabel) } ?? "—")
+                    trendRow("F10.7 solar flux", value: snapshot.flux.map { String(format: "%.1f sfu — %@", $0, snapshot.fluxLabel) }, metric: "flux", format: "%+.0f")
+                    trendRow("Sunspot number", value: snapshot.sunspotNumber.map { String(format: "%.0f", $0) }, metric: "ssn", format: "%+.0f")
+                    if let mean = snapshot.flux90Day { trendRow("F10.7 90-day mean", value: String(format: "%.1f sfu", mean), metric: "flux90", format: "%+.1f") }
+                    trendRow("Planetary Kp", value: snapshot.kp.map { String(format: "%.2f — %@", $0, snapshot.kpLabel) }, metric: "kp", format: "%.2g", arrows: true)
                     LabeledContent("Aurora likelihood", value: auroraLikelihood(kp: snapshot.kp))
-                    LabeledContent((snapshot.aIndexSource?.contains("planetary A") ?? false) ? "Planetary A" : "A / ap equivalent", value: snapshot.aIndex.map { String(format: "%.0f", $0) } ?? "—")
+                    trendRow((snapshot.aIndexSource?.contains("planetary A") ?? false) ? "Planetary A" : "A / ap equivalent", value: snapshot.aIndex.map { String(format: "%.0f", $0) }, metric: "a", format: "%+.0f")
                     if let source = snapshot.aIndexSource { LabeledContent("A-index source", value: source) }
                     LabeledContent("Fetched", value: ODFormat.utc.string(from: snapshot.fetchedAt))
                 }
@@ -2700,10 +2701,37 @@ struct SpaceWeatherView: View {
             }
         }
         .task {
+            recordTrend()
             isLoading = (store.spaceWeather == nil)
             await store.refreshSpaceWeatherIfNeeded()
             isLoading = false
         }
+        .onChange(of: store.spaceWeather?.fetchedAt) { _, _ in recordTrend() }
+    }
+
+    /// Index value with its change since the previous distinct sample: green for a
+    /// rise in flux/sunspots, but red for a rise in Kp/A (a disturbed field is bad).
+    @ViewBuilder
+    private func trendRow(_ title: String, value: String?, metric: String, format: String, arrows: Bool = false) -> some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Text(value ?? "—")
+                if value != nil, let d = trend.delta(metric), abs(d) > 0.001 {
+                    let geomagnetic = metric == "kp" || metric == "a"
+                    let good = geomagnetic ? d < 0 : d > 0
+                    Text(arrows ? "\(d > 0 ? "↑" : "↓")\(String(format: format, abs(d)))" : String(format: format, d))
+                        .font(.caption.monospacedDigit().bold())
+                        .foregroundStyle(good ? ODTheme.good : Color.red)
+                        .accessibilityLabel("\(d > 0 ? "up" : "down") \(String(format: "%.2g", abs(d))) since the previous reading")
+                }
+            }
+        }
+    }
+
+    private func recordTrend() {
+        guard let snapshot = store.spaceWeather else { return }
+        var t = trend
+        if t.record(snapshot) { t.save(); trend = t }
     }
 
     /// Kp-derived aurora visibility outlook (matches the desktop's guidance bands).
@@ -4043,6 +4071,9 @@ struct AmsatStatusInteractiveView: View {
     @State private var recentReports: [AmsatReportRecord] = []
     @State private var confirmPost = false
     @State private var isSending = false
+    /// AMSAT mode name the operator tapped on the board; wins over the first
+    /// catalog match when the report tab resolves the newly selected satellite.
+    @State private var preferredApiName: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -4064,18 +4095,45 @@ struct AmsatStatusInteractiveView: View {
     private var boardView: some View {
         Form {
             Section("Community status board") {
-                Picker("Window", selection: $hours) { Text("6 h").tag(6); Text("24 h").tag(24); Text("48 h").tag(48) }.pickerStyle(.segmented)
+                Picker("Window", selection: $hours) {
+                    ForEach([3, 6, 12, 24, 48, 72], id: \.self) { Text("\($0) h").tag($0) }
+                }.pickerStyle(.segmented)
                 Button("Refresh") { refreshBoard() }.disabled(isLoading)
                 if isLoading { ProgressView() }
                 if !message.isEmpty { Text(message).font(.caption).foregroundStyle(ODTheme.muted) }
             }
-            Section("Reported satellites") {
+            Section {
                 ForEach(board) { row in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack { Text(row.displayName).font(.headline); Spacer(); Text("\(row.heard)/\(row.reports) heard").font(.caption.monospaced()).foregroundStyle(ODTheme.accent) }
-                        if !row.lastReport.isEmpty { Text("Last: \(row.lastReport)").font(.caption).foregroundStyle(ODTheme.muted) }
+                    let selected = isSelected(row)
+                    Button { adopt(row) } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                if selected { Image(systemName: "scope").foregroundStyle(ODTheme.accent) }
+                                Text(row.displayName).font(.headline).foregroundStyle(.primary)
+                                Spacer()
+                                Text("\(row.heard)/\(row.reports) heard").font(.caption.monospaced()).foregroundStyle(ODTheme.accent)
+                            }
+                            HStack(spacing: 6) {
+                                if let heard = row.lastHeard {
+                                    Circle().fill(ODTheme.good).frame(width: 7, height: 7)
+                                    Text("Heard \(AmsatStatusService.ageText(heard))").foregroundStyle(ODTheme.good)
+                                } else if !row.lastReport.isEmpty {
+                                    Text("Last: \(row.lastReport)").foregroundStyle(ODTheme.muted)
+                                }
+                                Spacer()
+                                if let grids = row.gridCount { Text("\(grids) grid\(grids == 1 ? "" : "s")").foregroundStyle(ODTheme.muted) }
+                            }
+                            .font(.caption.monospacedDigit())
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Selects this satellite in OrbitDeck")
                 }
+            } header: {
+                Text("Reported satellites")
+            } footer: {
+                Text("Tap a satellite to select it in OrbitDeck. Grid counts are distinct 4-character reporter grids (AMSAT returns at most the 500 newest reports).")
             }
         }
     }
@@ -4121,10 +4179,42 @@ struct AmsatStatusInteractiveView: View {
         isLoading = true; message = ""
         let h = hours
         Task {
-            do { board = try await AmsatStatusService.fetchSummary(hours: h) }
-            catch { message = error.localizedDescription }
+            do {
+                var rows = try await AmsatStatusService.fetchSummary(hours: h)
+                guard h == hours else { return }   // window changed mid-fetch
+                board = rows
+                isLoading = false
+                // Grid counts are a second (larger) request; fill them in when it lands.
+                if let grids = try? await AmsatStatusService.fetchGridCounts(hours: h), h == hours {
+                    for i in rows.indices { rows[i].gridCount = grids[rows[i].apiName] ?? 0 }
+                    board = rows
+                }
+            } catch { message = error.localizedDescription }
             isLoading = false
         }
+    }
+
+    private func catalogIndex(for row: AmsatStatusSummaryRecord) -> Int? {
+        SatelliteNameMatch.matchIndex(apiName: row.apiName, in: store.satellites.map(\.name))
+    }
+
+    private func isSelected(_ row: AmsatStatusSummaryRecord) -> Bool {
+        guard let sel = store.selectedSatellite else { return false }
+        return SatelliteNameMatch.matchIndex(apiName: row.apiName, in: [sel.name]) != nil
+    }
+
+    /// Select ("adopt") the catalog satellite behind a board row and preload its
+    /// AMSAT mode name for the report tab.
+    private func adopt(_ row: AmsatStatusSummaryRecord) {
+        guard let index = catalogIndex(for: row) else {
+            message = "\(row.displayName) isn't in the satellite catalog."
+            return
+        }
+        let sat = store.satellites[index]
+        preferredApiName = row.apiName
+        if store.selectedSatellite?.id == sat.id { apiName = row.apiName }
+        store.select(sat.id)
+        message = "Selected \(sat.name)."
     }
 
     private func resolveSelectedSatellite() async {
@@ -4138,7 +4228,8 @@ struct AmsatStatusInteractiveView: View {
             do {
                 let matches = try await AmsatStatusService.catalogMatches(commonName: sat.name)
                 apiMatches = matches
-                if let first = matches.first { apiName = first }
+                if let preferred = preferredApiName, matches.contains(preferred) { apiName = preferred }
+                else if let first = matches.first { apiName = first }
                 else if apiName.isEmpty { apiName = sat.name }
                 if message.hasPrefix("AMSAT catalog match failed") { message = "" }
                 return
