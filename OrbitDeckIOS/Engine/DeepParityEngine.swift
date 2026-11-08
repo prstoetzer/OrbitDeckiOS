@@ -1945,6 +1945,9 @@ extension BenchTools {
         .init(id:"charLookup",category:"General",name:"Character / byte lookup",description:"Byte value in four bases, ASCII, Morse, ITA2 and BCD.",fields:[.init(id:"value",label:"Byte value",defaultValue:65,unit:"")]),
         .init(id:"dxccLookup",category:"General",name:"DXCC entity lookup",description:"Offline lookup over all 340 bundled DXCC entity reference points.",fields:[.init(id:"query",label:"Prefix or name",defaultValue:0,unit:"",isText:true,defaultText:"JA")]),
         .init(id:"gridConvert",category:"General",name:"Grid ↔ lat/lon",description:"Convert a Maidenhead locator to latitude/longitude, or “lat,lon” to a 6-character grid square.",fields:[.init(id:"loc",label:"Grid or lat,lon",defaultValue:0,unit:"",isText:true,defaultText:"FM18")]),
+        // Map/geo tools with their own views (UtilityFeatureViews.swift); listed in `customViewTools`.
+        .init(id:"locationConvert",category:"General",name:"Location converter",description:"Convert between Maidenhead (4/6/8), decimal degrees, DMS, DDM, Plus Code, UTM, MGRS and USNG. Type any of them, or use your location.",fields:[]),
+        .init(id:"gridDistance",category:"General",name:"Grid distance & bearing",description:"Short- and long-path distance and beam headings from your station to a grid, coordinates or a callsign (QRZ grid when configured, else the DXCC reference point).",fields:[]),
         .init(id:"ampacity",category:"Electronics & power",name:"Trace & wire ampacity",description:"IPC-2221 PCB trace width or chassis-wire ampacity.",fields:[.init(id:"mode",label:"Mode",defaultValue:0,unit:"",choices:["PCB external","PCB internal","Wire (AWG)"]),.init(id:"current",label:"Current",defaultValue:1,unit:"A"),.init(id:"rise",label:"Temp rise",defaultValue:10,unit:"°C"),.init(id:"copper",label:"Copper",defaultValue:1,unit:"oz"),.init(id:"awg",label:"Wire",defaultValue:24,unit:"AWG")]),
         .init(id:"toroid",category:"Electronics & power",name:"Toroid winding",description:"Turns required on common Amidon iron-powder/ferrite cores.",fields:[.init(id:"core",label:"Core",defaultValue:2,unit:"",choices:DeepToolMath.toroids.map{$0.0}),.init(id:"target",label:"Target L",defaultValue:10,unit:"µH")]),
         .init(id:"terrestrialBudget",category:"Terrestrial VHF/UHF",name:"Terrestrial path budget",description:"Two-way terrestrial link budget with nominal 12 kHz receiver noise floor.",fields:[.init(id:"power",label:"TX power",defaultValue:25,unit:"W"),.init(id:"txgain",label:"TX gain",defaultValue:6,unit:"dBi"),.init(id:"rxgain",label:"RX gain",defaultValue:6,unit:"dBi"),.init(id:"loss",label:"Line loss",defaultValue:2,unit:"dB"),.init(id:"freq",label:"Frequency",defaultValue:146,unit:"MHz"),.init(id:"distance",label:"Distance",defaultValue:50,unit:"km")]),
@@ -2030,5 +2033,575 @@ extension BenchTools {
         }
     }
 
+    /// Tools that render their own SwiftUI view instead of the generic field form.
+    static let customViewTools: Set<String> = ["sciCalc", "locationConvert", "gridDistance"]
+
     static func unitChoices(familyIndex:Int)->[String]{ DeepToolMath.unitFamilies[max(0,min(DeepToolMath.unitFamilies.count-1,familyIndex))].1.map{$0.0} }
+}
+
+// MARK: - Map / geo tools (location formats, great-circle paths, boundary polygons, star field)
+
+/// Location formats for the Location converter and Grid distance tools:
+/// Maidenhead 2/4/6/8, decimal degrees, DMS, DDM, Plus Code, UTM, MGRS and USNG.
+/// Pure math on WGS84; no network.
+enum GeoFormats {
+    // MARK: Maidenhead
+
+    /// Maidenhead locator of `length` characters (2 = "FN", 4 = "FN20",
+    /// 6 = "FN20xa", 8 = "FN20xa47"; the 8-character extended square is 30″ × 15″).
+    static func maidenhead(latitude: Double, longitude: Double, length: Int = 6) -> String {
+        let lon = max(0, min(359.9999999, longitude + 180)), lat = max(0, min(179.9999999, latitude + 90))
+        let upper = Array("ABCDEFGHIJKLMNOPQRSTUVWX"), lower = Array("abcdefghijklmnopqrstuvwx")
+        var out = [upper[min(17, Int(lon / 20))], upper[min(17, Int(lat / 10))]]
+        if length >= 4 {
+            out += [Character(String(min(9, Int(lon.truncatingRemainder(dividingBy: 20) / 2)))),
+                    Character(String(min(9, Int(lat.truncatingRemainder(dividingBy: 10)))))]
+        }
+        if length >= 6 {
+            out += [lower[min(23, Int(lon.truncatingRemainder(dividingBy: 2) * 12))],
+                    lower[min(23, Int(lat.truncatingRemainder(dividingBy: 1) * 24))]]
+        }
+        if length >= 8 {
+            out += [Character(String(min(9, Int(lon.truncatingRemainder(dividingBy: 1.0 / 12) * 120)))),
+                    Character(String(min(9, Int(lat.truncatingRemainder(dividingBy: 1.0 / 24) * 240))))]
+        }
+        return String(out)
+    }
+
+    /// Center of a 2/4/6/8-character Maidenhead locator, or nil if malformed.
+    static func gridCenter(_ text: String) -> LatLon? {
+        let g = Array(text.trimmingCharacters(in: .whitespaces).uppercased())
+        guard [2, 4, 6, 8].contains(g.count) else { return nil }
+        func letter(_ c: Character, _ count: Int) -> Int? {
+            guard let v = c.asciiValue, v >= 65, Int(v) - 65 < count else { return nil }
+            return Int(v) - 65
+        }
+        guard let a = letter(g[0], 18), let b = letter(g[1], 18) else { return nil }
+        var lon = Double(a) * 20, lat = Double(b) * 10, w = 20.0, h = 10.0
+        if g.count >= 4 {
+            guard let c = g[2].wholeNumberValue, let d = g[3].wholeNumberValue else { return nil }
+            lon += Double(c) * 2; lat += Double(d); w = 2; h = 1
+        }
+        if g.count >= 6 {
+            guard let e = letter(g[4], 24), let f = letter(g[5], 24) else { return nil }
+            w /= 24; h /= 24; lon += Double(e) * w; lat += Double(f) * h
+        }
+        if g.count >= 8 {
+            guard let x = g[6].wholeNumberValue, let y = g[7].wholeNumberValue else { return nil }
+            w /= 10; h /= 10; lon += Double(x) * w; lat += Double(y) * h
+        }
+        return LatLon(latitude: lat + h / 2 - 90, longitude: lon + w / 2 - 180)
+    }
+
+    // MARK: Degrees
+
+    static func decimal(latitude: Double, longitude: Double) -> String {
+        String(format: "%+.6f, %+.6f", latitude, longitude)
+    }
+
+    /// Degrees, minutes, seconds: 39°55′48.0″N 74°53′24.0″W.
+    static func dms(latitude: Double, longitude: Double) -> String {
+        func one(_ v: Double, _ pos: String, _ neg: String) -> String {
+            // Round to 0.1″ first so 59.96″ carries into the minutes instead of printing 60.0″.
+            let tenths = Int((abs(v) * 36000).rounded())
+            let d = tenths / 36000, m = (tenths % 36000) / 600, s = Double(tenths % 600) / 10
+            return String(format: "%d°%02d′%04.1f″%@", d, m, s, v < 0 ? neg : pos)
+        }
+        return one(latitude, "N", "S") + " " + one(longitude, "E", "W")
+    }
+
+    /// Degrees and decimal minutes: 39°55.800′N 74°53.400′W.
+    static func ddm(latitude: Double, longitude: Double) -> String {
+        func one(_ v: Double, _ pos: String, _ neg: String) -> String {
+            let thousandths = Int((abs(v) * 60_000).rounded())
+            return String(format: "%d°%06.3f′%@", thousandths / 60_000, Double(thousandths % 60_000) / 1000, v < 0 ? neg : pos)
+        }
+        return one(latitude, "N", "S") + " " + one(longitude, "E", "W")
+    }
+
+    /// Parses decimal degrees ("39.93, -74.89"), DMS ("39°55'48"N 74°53'24"W"),
+    /// DDM ("N39 55.8 W74 53.4") and space-separated forms. Latitude comes first.
+    static func parseDegrees(_ text: String) -> LatLon? {
+        var s = text.uppercased()
+        for mark in ["°", "º", "'", "′", "’", "\"", "″", "”", ";"] { s = s.replacingOccurrences(of: mark, with: " ") }
+        let halves: [String]
+        let comma = s.split(separator: ",").map(String.init)
+        if comma.count == 2 {
+            halves = comma
+        } else if let ns = s.firstIndex(where: { $0 == "N" || $0 == "S" }) {
+            if s[..<ns].trimmingCharacters(in: .whitespaces).isEmpty {
+                // Leading hemisphere letters: "N39 55.8 W74 53.4".
+                guard let ew = s.firstIndex(where: { $0 == "E" || $0 == "W" }) else { return nil }
+                halves = [String(s[..<ew]), String(s[ew...])]
+            } else {
+                halves = [String(s[...ns]), String(s[s.index(after: ns)...])]
+            }
+        } else {
+            let tokens = s.split(separator: " ").map(String.init)
+            guard tokens.count % 2 == 0, (2...6).contains(tokens.count) else { return nil }
+            halves = [tokens[..<(tokens.count / 2)].joined(separator: " "), tokens[(tokens.count / 2)...].joined(separator: " ")]
+        }
+        guard halves.count == 2,
+              let lat = component(halves[0], positive: "N", negative: "S"),
+              let lon = component(halves[1], positive: "E", negative: "W"),
+              abs(lat) <= 90, abs(lon) <= 180 else { return nil }
+        return LatLon(latitude: lat, longitude: lon)
+    }
+
+    private static func component(_ text: String, positive: Character, negative: Character) -> Double? {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        let letters = t.filter(\.isLetter)
+        guard letters.count <= 1 else { return nil }
+        var sign = 1.0
+        if let l = letters.first {
+            if l == negative { sign = -1 } else if l != positive { return nil }
+        }
+        let parts = t.filter { !$0.isLetter }.split(separator: " ")
+        guard (1...3).contains(parts.count) else { return nil }
+        let values = parts.compactMap { Double($0) }
+        guard values.count == parts.count, values.dropFirst().allSatisfy({ $0 >= 0 && $0 < 60 }) else { return nil }
+        if parts[0].hasPrefix("-") { sign = -sign }
+        let minutes = values.count > 1 ? values[1] : 0, seconds = values.count > 2 ? values[2] : 0
+        return sign * (abs(values[0]) + minutes / 60 + seconds / 3600)
+    }
+
+    // MARK: Plus Code (Open Location Code)
+
+    private static let olcAlphabet = Array("23456789CFGHJMPQRVWX")
+
+    /// 10-digit Open Location Code (e.g. "87G7VM8C+2R", ~14 m), per the published
+    /// OLC specification: five base-20 lat/lon digit pairs, "+" after the eighth.
+    static func plusCode(latitude: Double, longitude: Double) -> String {
+        var latV = max(0, min(180 * 8000 - 1, Int(((latitude + 90) * 8000).rounded(.down))))
+        var lonV = Int(((longitude + 180) * 8000).rounded(.down)) % (360 * 8000)
+        if lonV < 0 { lonV += 360 * 8000 }
+        var pairs: [(Int, Int)] = []
+        for _ in 0..<5 { pairs.append((latV % 20, lonV % 20)); latV /= 20; lonV /= 20 }
+        var code = ""
+        for (i, p) in pairs.reversed().enumerated() {
+            code.append(olcAlphabet[p.0]); code.append(olcAlphabet[p.1])
+            if i == 3 { code.append("+") }
+        }
+        return code
+    }
+
+    /// Decodes a full Plus Code to the center of its cell. A short code (fewer
+    /// than eight digits before "+") is recovered against `reference`, using the
+    /// OLC "recover nearest" rule.
+    static func decodePlusCode(_ text: String, reference: LatLon?) -> LatLon? {
+        let code = text.trimmingCharacters(in: .whitespaces).uppercased()
+        guard let plus = code.firstIndex(of: "+"), code.filter({ $0 == "+" }).count == 1 else { return nil }
+        let before = code.distance(from: code.startIndex, to: plus)
+        guard before <= 8, before % 2 == 0, before >= 2 else { return nil }
+        if before < 8 {
+            guard let ref = reference else { return nil }
+            let pad = 8 - before
+            let resolution = pow(20.0, 2 - Double(pad / 2))
+            let prefix = String(plusCode(latitude: ref.latitude, longitude: ref.longitude).prefix(pad))
+            guard let full = decodePlusCode(prefix + code, reference: nil) else { return nil }
+            var lat = full.latitude, lon = full.longitude
+            if ref.latitude + resolution / 2 < lat && lat - resolution >= -90 { lat -= resolution }
+            else if ref.latitude - resolution / 2 > lat && lat + resolution <= 90 { lat += resolution }
+            if ref.longitude + resolution / 2 < lon { lon -= resolution }
+            else if ref.longitude - resolution / 2 > lon { lon += resolution }
+            if lon > 180 { lon -= 360 } else if lon < -180 { lon += 360 }
+            return LatLon(latitude: lat, longitude: lon)
+        }
+        let digits = Array(code.replacingOccurrences(of: "+", with: "").replacingOccurrences(of: "0", with: ""))
+        guard digits.count >= 2, digits.count <= 11 else { return nil }
+        let index = digits.compactMap { olcAlphabet.firstIndex(of: $0) }
+        guard index.count == digits.count else { return nil }
+        var lat = 0.0, lon = 0.0, res = 20.0, latRes = 20.0, lonRes = 20.0
+        var i = 0
+        while i + 1 < min(10, index.count) {
+            lat += Double(index[i]) * res; lon += Double(index[i + 1]) * res
+            latRes = res; lonRes = res; res /= 20; i += 2
+        }
+        if index.count == 11 {
+            // Optional 11th digit: a 4 × 5 grid refinement of the last pair's cell.
+            latRes /= 5; lonRes /= 4
+            lat += Double(index[10] / 4) * latRes; lon += Double(index[10] % 4) * lonRes
+        }
+        return LatLon(latitude: lat + latRes / 2 - 90, longitude: lon + lonRes / 2 - 180)
+    }
+
+    // MARK: UTM / MGRS / USNG
+
+    struct UTM: Sendable, Equatable {
+        let zone: Int
+        let band: Character
+        let easting: Double
+        let northing: Double
+        var text: String { String(format: "%d%@ %.0fmE %.0fmN", zone, String(band), easting, northing) }
+    }
+
+    private static let wgsA = 6378137.0, wgsF = 1 / 298.257223563, utmK0 = 0.9996
+    private static let bands = Array("CDEFGHJKLMNPQRSTUVWX")
+
+    static func latitudeBand(_ latitude: Double) -> Character? {
+        guard (-80...84).contains(latitude) else { return nil }
+        return bands[min(19, Int((latitude + 80) / 8))]
+    }
+
+    /// UTM zone, including the Norway (32V) and Svalbard (31X–37X) exceptions.
+    static func utmZone(latitude: Double, longitude: Double) -> Int {
+        var lon = longitude
+        if lon >= 180 { lon -= 360 }
+        var zone = Int((lon + 180) / 6) + 1
+        if (56..<64).contains(latitude) && (3..<12).contains(lon) { zone = 32 }
+        if (72...84).contains(latitude) {
+            switch lon {
+            case 0..<9: zone = 31
+            case 9..<21: zone = 33
+            case 21..<33: zone = 35
+            case 33..<42: zone = 37
+            default: break
+            }
+        }
+        return min(60, max(1, zone))
+    }
+
+    /// WGS84 transverse Mercator (Snyder, USGS PP 1395 series), valid −80°…84°.
+    static func utm(latitude: Double, longitude: Double, forceZone: Int? = nil) -> UTM? {
+        guard let band = latitudeBand(latitude) else { return nil }
+        let zone = forceZone ?? utmZone(latitude: latitude, longitude: longitude)
+        let e2 = wgsF * (2 - wgsF), ep2 = e2 / (1 - e2), e4 = e2 * e2, e6 = e4 * e2
+        let phi = latitude * .pi / 180
+        let lon0 = Double((zone - 1) * 6 - 180 + 3) * .pi / 180
+        var dLon = longitude * .pi / 180 - lon0
+        if dLon > .pi { dLon -= 2 * .pi } else if dLon < -.pi { dLon += 2 * .pi }
+        let n = wgsA / sqrt(1 - e2 * sin(phi) * sin(phi))
+        let t = tan(phi) * tan(phi), c = ep2 * cos(phi) * cos(phi), a = cos(phi) * dLon
+        let m = wgsA * ((1 - e2 / 4 - 3 * e4 / 64 - 5 * e6 / 256) * phi
+                        - (3 * e2 / 8 + 3 * e4 / 32 + 45 * e6 / 1024) * sin(2 * phi)
+                        + (15 * e4 / 256 + 45 * e6 / 1024) * sin(4 * phi)
+                        - (35 * e6 / 3072) * sin(6 * phi))
+        let x = utmK0 * n * (a + (1 - t + c) * pow(a, 3) / 6
+                             + (5 - 18 * t + t * t + 72 * c - 58 * ep2) * pow(a, 5) / 120) + 500_000
+        var y = utmK0 * (m + n * tan(phi) * (a * a / 2 + (5 - t + 9 * c + 4 * c * c) * pow(a, 4) / 24
+                                              + (61 - 58 * t + t * t + 600 * c - 330 * ep2) * pow(a, 6) / 720))
+        if latitude < 0 { y += 10_000_000 }
+        return UTM(zone: zone, band: band, easting: x, northing: y)
+    }
+
+    /// Inverse UTM. `south` selects the southern-hemisphere false northing.
+    static func latLon(zone: Int, south: Bool, easting: Double, northing: Double) -> LatLon? {
+        guard (1...60).contains(zone) else { return nil }
+        let e2 = wgsF * (2 - wgsF), ep2 = e2 / (1 - e2), e4 = e2 * e2, e6 = e4 * e2
+        let x = easting - 500_000, y = south ? northing - 10_000_000 : northing
+        let mu = y / utmK0 / (wgsA * (1 - e2 / 4 - 3 * e4 / 64 - 5 * e6 / 256))
+        let e1 = (1 - sqrt(1 - e2)) / (1 + sqrt(1 - e2))
+        let phi1 = mu + (3 * e1 / 2 - 27 * pow(e1, 3) / 32) * sin(2 * mu)
+            + (21 * e1 * e1 / 16 - 55 * pow(e1, 4) / 32) * sin(4 * mu)
+            + (151 * pow(e1, 3) / 96) * sin(6 * mu) + (1097 * pow(e1, 4) / 512) * sin(8 * mu)
+        let s1 = sin(phi1), cosPhi1 = cos(phi1)
+        let n1 = wgsA / sqrt(1 - e2 * s1 * s1), t1 = tan(phi1) * tan(phi1), c1 = ep2 * cosPhi1 * cosPhi1
+        let r1 = wgsA * (1 - e2) / pow(1 - e2 * s1 * s1, 1.5), d = x / (n1 * utmK0)
+        let lat = phi1 - (n1 * tan(phi1) / r1) * (d * d / 2 - (5 + 3 * t1 + 10 * c1 - 4 * c1 * c1 - 9 * ep2) * pow(d, 4) / 24
+                                                 + (61 + 90 * t1 + 298 * c1 + 45 * t1 * t1 - 252 * ep2 - 3 * c1 * c1) * pow(d, 6) / 720)
+        let lon0 = Double((zone - 1) * 6 - 180 + 3) * .pi / 180
+        let lon = lon0 + (d - (1 + 2 * t1 + c1) * pow(d, 3) / 6
+                          + (5 - 2 * c1 + 28 * t1 - 3 * c1 * c1 + 8 * ep2 + 24 * t1 * t1) * pow(d, 5) / 120) / cosPhi1
+        var lonDeg = lon * 180 / .pi
+        if lonDeg > 180 { lonDeg -= 360 } else if lonDeg < -180 { lonDeg += 360 }
+        let latDeg = lat * 180 / .pi
+        guard latDeg.isFinite, lonDeg.isFinite, abs(latDeg) <= 90 else { return nil }
+        return LatLon(latitude: latDeg, longitude: lonDeg)
+    }
+
+    private static let mgrsColumns = [Array("ABCDEFGH"), Array("JKLMNPQR"), Array("STUVWXYZ")]
+    private static let mgrsRows = Array("ABCDEFGHJKLMNPQRSTUV")
+
+    /// MGRS (WGS84, AA lettering) to 1 m: "18SWK1234567890"; `spaced` gives the
+    /// USNG form "18S WK 12345 67890". Nil in the UPS polar caps.
+    static func mgrs(latitude: Double, longitude: Double, spaced: Bool = false) -> String? {
+        guard let u = utm(latitude: latitude, longitude: longitude) else { return nil }
+        let col = Int(u.easting / 100_000), row = Int(u.northing / 100_000) % 20
+        guard (1...8).contains(col) else { return nil }
+        let colLetter = mgrsColumns[(u.zone - 1) % 3][col - 1]
+        let rowLetter = mgrsRows[(row + (u.zone % 2 == 0 ? 5 : 0)) % 20]
+        let e = Int(u.easting) % 100_000, n = Int(u.northing) % 100_000
+        let square = String([colLetter, rowLetter])
+        return spaced ? String(format: "%d%@ %@ %05d %05d", u.zone, String(u.band), square, e, n)
+                      : String(format: "%d%@%@%05d%05d", u.zone, String(u.band), square, e, n)
+    }
+
+    /// Parses MGRS / USNG at any even precision (spaces optional) to the center of
+    /// the referenced cell.
+    static func parseMGRS(_ text: String) -> LatLon? {
+        let s = text.uppercased().replacingOccurrences(of: " ", with: "")
+        guard let regex = try? Regex("^([0-9]{1,2})([C-HJ-NP-X])([A-HJ-NP-Z])([A-HJ-NP-V])([0-9]{0,10})$"),
+              let m = s.wholeMatch(of: regex),
+              let zone = m.output[1].substring.flatMap({ Int($0) }),
+              let band = m.output[2].substring?.first,
+              let colLetter = m.output[3].substring?.first,
+              let rowLetter = m.output[4].substring?.first,
+              let digits = m.output[5].substring.map(String.init),
+              digits.count % 2 == 0, (1...60).contains(zone) else { return nil }
+        guard let col = mgrsColumns[(zone - 1) % 3].firstIndex(of: colLetter),
+              let rowRaw = mgrsRows.firstIndex(of: rowLetter),
+              let bandIndex = bands.firstIndex(of: band) else { return nil }
+        let precision = digits.count / 2
+        let cell = pow(10.0, Double(5 - precision))
+        let eDigits = Double(digits.prefix(precision)) ?? 0, nDigits = Double(digits.suffix(precision)) ?? 0
+        let easting = Double(col + 1) * 100_000 + eDigits * cell + cell / 2
+        let row = (rowRaw - (zone % 2 == 0 ? 5 : 0) + 20) % 20
+        var northing = Double(row) * 100_000 + nDigits * cell + cell / 2
+        // The row letter repeats every 2,000 km; lift into the latitude band. The
+        // band's lowest northing is at the central meridian (north) or zone edge (south).
+        let bandSouth = -80 + 8 * Double(bandIndex)
+        let lon0 = Double((zone - 1) * 6 - 180 + 3)
+        let floors = [lon0, lon0 + 3].compactMap { utm(latitude: bandSouth, longitude: $0, forceZone: zone)?.northing }
+        guard let minNorthing = floors.min() else { return nil }
+        while northing < minNorthing - 1000 { northing += 2_000_000 }
+        return latLon(zone: zone, south: band < "N", easting: easting, northing: northing)
+    }
+
+    /// Parses UTM written with the latitude band: "18S 512345 4420000"
+    /// (optional "mE"/"mN" suffixes and comma).
+    static func parseUTM(_ text: String) -> LatLon? {
+        let s = text.uppercased().replacingOccurrences(of: ",", with: " ")
+        guard let regex = try? Regex("^\\s*([0-9]{1,2})\\s*([C-HJ-NP-X])\\s+([0-9]+(?:\\.[0-9]+)?)\\s*(?:M?E)?\\s+([0-9]+(?:\\.[0-9]+)?)\\s*(?:M?N)?\\s*$"),
+              let m = s.wholeMatch(of: regex),
+              let zone = m.output[1].substring.flatMap({ Int($0) }),
+              let band = m.output[2].substring?.first,
+              let e = m.output[3].substring.flatMap({ Double($0) }),
+              let n = m.output[4].substring.flatMap({ Double($0) }),
+              (100_000...900_000).contains(e), (0...10_000_000).contains(n) else { return nil }
+        return latLon(zone: zone, south: band < "N", easting: e, northing: n)
+    }
+
+    /// Recognizes any supported format; returns the position and the format name.
+    static func parseAny(_ text: String, reference: LatLon?) -> (location: LatLon, format: String)? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        if t.contains("+") { return decodePlusCode(t, reference: reference).map { ($0, "Plus Code") } }
+        if let regex = try? Regex("^[A-Ra-r]{2}([0-9]{2}([A-Xa-x]{2}([0-9]{2})?)?)?$"), t.wholeMatch(of: regex) != nil,
+           let ll = gridCenter(t) { return (ll, "Maidenhead") }
+        if let ll = parseMGRS(t) { return (ll, "MGRS / USNG") }
+        if let ll = parseUTM(t) { return (ll, "UTM") }
+        if let ll = parseDegrees(t) { return (ll, "Degrees") }
+        return nil
+    }
+}
+
+/// Great-circle short- and long-path geometry on a spherical Earth (IUGG mean
+/// radius), the convention used for amateur beam headings.
+enum GreatCirclePath {
+    static let earthMeanRadiusKm = 6371.0088
+
+    struct Result: Sendable {
+        let shortKm: Double
+        let longKm: Double
+        let bearing: Double        // short-path initial bearing from `from`, true north
+        let longBearing: Double    // long-path heading (reciprocal)
+        let reverseBearing: Double // short-path heading from the target back to `from`
+    }
+
+    static func initialBearing(from a: LatLon, to b: LatLon) -> Double {
+        let p1 = a.latitude * .pi / 180, p2 = b.latitude * .pi / 180, dl = (b.longitude - a.longitude) * .pi / 180
+        let y = sin(dl) * cos(p2), x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl)
+        return (atan2(y, x) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+    }
+
+    static func path(from a: LatLon, to b: LatLon) -> Result {
+        let p1 = a.latitude * .pi / 180, p2 = b.latitude * .pi / 180
+        let dp = p2 - p1, dl = (b.longitude - a.longitude) * .pi / 180
+        let h = sin(dp / 2) * sin(dp / 2) + cos(p1) * cos(p2) * sin(dl / 2) * sin(dl / 2)
+        let short = 2 * asin(min(1, sqrt(h))) * earthMeanRadiusKm
+        let bearing = initialBearing(from: a, to: b)
+        return Result(shortKm: short, longKm: 2 * .pi * earthMeanRadiusKm - short, bearing: bearing,
+                      longBearing: (bearing + 180).truncatingRemainder(dividingBy: 360),
+                      reverseBearing: initialBearing(from: b, to: a))
+    }
+}
+
+/// Polygon footprint tests for the Workable tool. Rings come from
+/// `WorldMapData.usStateRings` / `dxccRings` (Natural Earth, public domain). A
+/// footprint (spherical cap around the sub-point) works an entity when any
+/// vertex lies inside the cap, the sub-point lies inside the polygon, or an edge
+/// passes within the cap radius. DXCC entities with no polygon at this scale
+/// (small islands, enclaves) fall back to CardSat's reference-point test.
+enum GeoBoundaries {
+    struct Ring: Sendable {
+        let key: String
+        let lonLat: [(Double, Double)]
+        let vectors: [SIMD3<Double>]
+        let center: SIMD3<Double>
+        let radius: Double   // radians, bounding cap of the vertices
+    }
+
+    static func vector(latitude: Double, longitude: Double) -> SIMD3<Double> {
+        let p = latitude * .pi / 180, l = longitude * .pi / 180
+        return SIMD3(cos(p) * cos(l), cos(p) * sin(l), sin(p))
+    }
+
+    private static func angle(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Double {
+        acos(max(-1, min(1, (a * b).sum())))
+    }
+
+    private static func cross(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> SIMD3<Double> {
+        SIMD3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+    }
+
+    static func parse(_ table: String) -> [Ring] {
+        table.split(whereSeparator: \.isNewline).compactMap { line in
+            guard let eq = line.firstIndex(of: "=") else { return nil }
+            let pts: [(Double, Double)] = line[line.index(after: eq)...].split(separator: " ").compactMap { pair in
+                let xy = pair.split(separator: ",")
+                guard xy.count == 2, let x = Double(xy[0]), let y = Double(xy[1]) else { return nil }
+                return (x / 10, y / 10)
+            }
+            guard pts.count >= 3 else { return nil }
+            let vecs = pts.map { vector(latitude: $0.1, longitude: $0.0) }
+            let sum = vecs.reduce(SIMD3<Double>(0, 0, 0), +)
+            let len = (sum * sum).sum().squareRoot()
+            let center = len > 1e-9 ? sum / len : SIMD3(0, 0, 1)
+            let radius = len > 1e-9 ? (vecs.map { angle($0, center) }.max() ?? .pi) : .pi
+            return Ring(key: String(line[..<eq]), lonLat: pts, vectors: vecs, center: center, radius: radius)
+        }
+    }
+
+    static let states: [Ring] = parse(WorldMapData.usStateRings)
+    static let dxcc: [Ring] = parse(WorldMapData.dxccRings)
+    static let dxccPolygonKeys: Set<String> = Set(dxcc.map(\.key))
+    private static let dxccByPrefix: [String: DXCCEntity] =
+        Dictionary(DXCCData.entities.map { ($0.prefix, $0) }, uniquingKeysWith: { first, _ in first })
+
+    private static func contains(_ ring: Ring, latitude: Double, longitude: Double) -> Bool {
+        var inside = false
+        var j = ring.lonLat.count - 1
+        for i in ring.lonLat.indices {
+            let (xi, yi) = ring.lonLat[i], (xj, yj) = ring.lonLat[j]
+            if (yi > latitude) != (yj > latitude), longitude < (xj - xi) * (latitude - yi) / (yj - yi) + xi { inside.toggle() }
+            j = i
+        }
+        return inside
+    }
+
+    /// True when the spherical cap (center `c`, radius `r` radians) touches the ring.
+    static func capIntersects(_ ring: Ring, center c: SIMD3<Double>, radius r: Double,
+                              latitude: Double, longitude: Double) -> Bool {
+        if ring.radius < 1.4, angle(c, ring.center) > r + ring.radius { return false }
+        let cosR = cos(r)
+        if ring.vectors.contains(where: { ($0 * c).sum() >= cosR }) { return true }
+        if contains(ring, latitude: latitude, longitude: longitude) { return true }
+        let sinR = sin(r)
+        for i in ring.vectors.indices {
+            let j = (i + 1) % ring.vectors.count
+            // Edges wider than 180° of longitude are the antimeridian/polar closures
+            // of split rings (Antarctica, Chukotka), not real boundary arcs.
+            guard abs(ring.lonLat[i].0 - ring.lonLat[j].0) <= 180 else { continue }
+            let a = ring.vectors[i], b = ring.vectors[j]
+            var n = cross(a, b)
+            let len = (n * n).sum().squareRoot()
+            guard len > 1e-12 else { continue }
+            n /= len
+            let s = (c * n).sum()
+            guard abs(s) <= sinR else { continue }
+            // The cap reaches the edge's great circle; the edge counts if the
+            // closest point on that circle falls between its endpoints (endpoint
+            // hits were caught by the vertex test above).
+            let p = c - s * n
+            if (cross(a, p) * n).sum() >= 0, (cross(p, b) * n).sum() >= 0 { return true }
+        }
+        return false
+    }
+
+    static func snapshot(subLatitude: Double, subLongitude: Double, altitudeKm: Double) -> WorkableSetSnapshot {
+        let radiusDeg = FeatureEngine.footprintRadiusDegrees(altitudeKm: altitudeKm)
+        guard radiusDeg > 0 else { return .init(grids: [], states: [], dxcc: []) }
+        let c = vector(latitude: subLatitude, longitude: subLongitude), r = radiusDeg * .pi / 180
+        func hits(_ rings: [Ring]) -> Set<String> {
+            Set(rings.filter { capIntersects($0, center: c, radius: r, latitude: subLatitude, longitude: subLongitude) }.map(\.key))
+        }
+        let states = hits(Self.states)
+        var dxcc = Set(hits(Self.dxcc).compactMap { key in dxccByPrefix[key].map { "\($0.prefix) \($0.name)" } })
+        for e in DXCCData.workable(subLatitude: subLatitude, subLongitude: subLongitude, altitudeKm: altitudeKm)
+        where !dxccPolygonKeys.contains(e.prefix) {
+            dxcc.insert("\(e.prefix) \(e.name)")
+        }
+        let grids = FeatureEngine.workableGrids(subLatitude: subLatitude, subLongitude: subLongitude, altitudeKm: altitudeKm)
+        return .init(grids: grids, states: states.sorted(), dxcc: dxcc.sorted())
+    }
+
+    static func workableNow(_ satellite: SatelliteRecord, at date: Date = .now) throws -> WorkableSetSnapshot {
+        let sub = try OrbitPredictor.subpoint(satellite, at: date)
+        return snapshot(subLatitude: sub.latitude, subLongitude: sub.longitude, altitudeKm: sub.altitudeKm)
+    }
+
+    /// Union of everything the footprint touches from AOS to LOS of `pass`.
+    static func workable(_ satellite: SatelliteRecord, pass: PredictedPass, step: TimeInterval = 30) throws -> WorkableSetSnapshot {
+        var grids = Set<String>(), states = Set<String>(), dxcc = Set<String>()
+        var t = pass.aos
+        while true {
+            let sub = try OrbitPredictor.subpoint(satellite, at: t)
+            let snap = snapshot(subLatitude: sub.latitude, subLongitude: sub.longitude, altitudeKm: sub.altitudeKm)
+            grids.formUnion(snap.grids); states.formUnion(snap.states); dxcc.formUnion(snap.dxcc)
+            if t >= pass.los { break }
+            t = min(pass.los, t.addingTimeInterval(step))
+        }
+        return .init(grids: grids.sorted(), states: states.sorted(), dxcc: dxcc.sorted())
+    }
+}
+
+/// Bright stars and constellation figures for the sky map, from
+/// `WorldMapData.brightStars` / `constellationLines` (J2000; precession to date,
+/// ~0.4° by 2026, and refraction are ignored — fine at sky-map scale).
+enum StarField {
+    struct Star: Sendable { let ra: Double; let dec: Double; let magnitude: Double }
+    struct HorizonPoint: Sendable { let azimuth: Double; let elevation: Double; let magnitude: Double }
+
+    static let stars: [Star] = WorldMapData.brightStars.split(whereSeparator: { $0 == " " || $0.isNewline }).compactMap { item in
+        let f = item.split(separator: ",").compactMap { Double($0) }
+        guard f.count == 3 else { return nil }
+        return Star(ra: f[0] / 10, dec: f[1] / 10, magnitude: f[2] / 10 - 2)
+    }
+
+    static let lines: [[(ra: Double, dec: Double)]] = WorldMapData.constellationLines.split(whereSeparator: \.isNewline).map { line in
+        line.split(separator: " ").compactMap { pair in
+            let f = pair.split(separator: ",").compactMap { Double($0) }
+            return f.count == 2 ? (f[0] / 10, f[1] / 10) : nil
+        }
+    }
+
+    /// Local sidereal time in degrees (IAU 1982 GMST, ample for a sky map).
+    static func localSiderealDegrees(_ date: Date, longitude: Double) -> Double {
+        let jd = date.timeIntervalSince1970 / 86400 + 2440587.5
+        let gmst = 280.46061837 + 360.98564736629 * (jd - 2451545.0)
+        let lst = (gmst + longitude).truncatingRemainder(dividingBy: 360)
+        return lst < 0 ? lst + 360 : lst
+    }
+
+    static func horizon(ra: Double, dec: Double, latitude: Double, lst: Double) -> (azimuth: Double, elevation: Double) {
+        let h = (lst - ra) * .pi / 180, d = dec * .pi / 180, p = latitude * .pi / 180
+        let el = asin(max(-1, min(1, sin(p) * sin(d) + cos(p) * cos(d) * cos(h))))
+        let az = atan2(-sin(h) * cos(d), cos(p) * sin(d) - sin(p) * cos(d) * cos(h)) * 180 / .pi
+        return ((az + 360).truncatingRemainder(dividingBy: 360), el * 180 / .pi)
+    }
+
+    /// Stars above the horizon and constellation polylines (split into runs of
+    /// above-horizon points) for an observer at `date`.
+    static func snapshot(latitude: Double, longitude: Double, at date: Date) -> (stars: [HorizonPoint], lines: [[HorizonPoint]]) {
+        let lst = localSiderealDegrees(date, longitude: longitude)
+        let visible = stars.compactMap { s -> HorizonPoint? in
+            let hz = horizon(ra: s.ra, dec: s.dec, latitude: latitude, lst: lst)
+            return hz.elevation >= 0 ? HorizonPoint(azimuth: hz.azimuth, elevation: hz.elevation, magnitude: s.magnitude) : nil
+        }
+        var runs: [[HorizonPoint]] = []
+        for line in lines {
+            var run: [HorizonPoint] = []
+            for p in line {
+                let hz = horizon(ra: p.ra, dec: p.dec, latitude: latitude, lst: lst)
+                if hz.elevation >= 0 {
+                    run.append(HorizonPoint(azimuth: hz.azimuth, elevation: hz.elevation, magnitude: 0))
+                } else {
+                    if run.count > 1 { runs.append(run) }
+                    run = []
+                }
+            }
+            if run.count > 1 { runs.append(run) }
+        }
+        return (visible, runs)
+    }
 }

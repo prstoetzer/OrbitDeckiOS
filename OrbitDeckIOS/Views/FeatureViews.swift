@@ -6,6 +6,9 @@ import Network
 
 private struct CelestialPolarPlot: View {
     let points: [CelestialPoint]
+    /// Optional faint star field (Sky Map): unlabeled dots and constellation lines
+    /// drawn under everything else so they never compete for label space.
+    var starField: (stars: [StarField.HorizonPoint], lines: [[StarField.HorizonPoint]])? = nil
 
     var body: some View {
         Canvas { context, size in
@@ -25,6 +28,24 @@ private struct CelestialPolarPlot: View {
             cross.move(to: CGPoint(x: center.x - radius, y: center.y))
             cross.addLine(to: CGPoint(x: center.x + radius, y: center.y))
             context.stroke(cross, with: .color(ODTheme.grid.opacity(0.75)), lineWidth: 1)
+
+            if let starField {
+                func plot(_ p: StarField.HorizonPoint) -> CGPoint {
+                    let theta = p.azimuth * .pi / 180, r = radius * max(0, min(1, (90 - p.elevation) / 90))
+                    return CGPoint(x: center.x + r * sin(theta), y: center.y - r * cos(theta))
+                }
+                var figures = Path()
+                for run in starField.lines {
+                    figures.move(to: plot(run[0]))
+                    for p in run.dropFirst() { figures.addLine(to: plot(p)) }
+                }
+                context.stroke(figures, with: .color(.white.opacity(0.16)), lineWidth: 0.6)
+                for star in starField.stars {
+                    let q = plot(star), d = max(1.2, 4.2 - star.magnitude * 0.85)
+                    context.fill(Path(ellipseIn: CGRect(x: q.x - d / 2, y: q.y - d / 2, width: d, height: d)),
+                                 with: .color(.white.opacity(star.magnitude < 1.5 ? 0.85 : 0.55)))
+                }
+            }
 
             // Track occupied label rectangles so nearby objects don't stack
             // their names on top of one another.
@@ -204,16 +225,21 @@ struct SunMoonView: View {
 struct SkyMapView: View {
     @EnvironmentObject private var store: OrbitStore
     @State private var showBelowHorizon = false
+    @AppStorage("skyMap.showStars") private var showStars = true
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 10)) { timeline in
             let all = FeatureEngine.skyObjects(site: store.preferences.observer, at: timeline.date, selectedSatellite: store.selectedSatellite)
             let visible = showBelowHorizon ? all : all.filter { $0.elevation >= 0 }
+            let site = store.preferences.observer
             ScrollView {
                 VStack(spacing: 14) {
                     Toggle("Include below-horizon objects in list", isOn: $showBelowHorizon)
                         .padding(.horizontal)
-                    CelestialPolarPlot(points: all)
+                    Toggle("Bright stars & constellations", isOn: $showStars)
+                        .padding(.horizontal)
+                    CelestialPolarPlot(points: all, starField: showStars
+                        ? StarField.snapshot(latitude: site.latitude, longitude: site.longitude, at: timeline.date) : nil)
                         .frame(maxWidth: 620)
                         .padding()
                         .background(ODTheme.panel, in: RoundedRectangle(cornerRadius: 14))
@@ -707,10 +733,18 @@ struct WorkableView: View {
     @State private var snapshot = WorkableSetSnapshot(grids: [], states: [], dxcc: [])
     @State private var isLoading = false
     @State private var error: String?
+    /// Upcoming passes of the selected satellite, for the pass picker.
+    @State private var passes: [PredictedPass] = []
+    @State private var selectedPassID: Date?
+    @State private var exportURL: URL?
     // A fixed anchor for the live TimelineView. Anchoring to `.now` inline would
     // re-anchor the schedule on every body render (e.g. when the mode toggles),
     // recreating the timeline and contributing to a detail re-layout flash.
     @State private var clockAnchor = Date()
+
+    private var selectedPass: PredictedPass? {
+        passes.first { $0.id == selectedPassID } ?? passes.first
+    }
 
     private func items(from snapshot: WorkableSetSnapshot) -> [String] {
         switch kind { case "states": snapshot.states; case "dxcc": snapshot.dxcc; default: snapshot.grids }
@@ -721,24 +755,52 @@ struct WorkableView: View {
         return q.isEmpty ? all : all.filter { $0.uppercased().contains(q) }
     }
 
+    private var passKey: String {
+        let o = store.preferences.observer
+        return "\(store.selectedSatellite?.id ?? 0)-\(o.latitude)-\(o.longitude)-\(store.preferences.minElevation)"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             SelectedSatelliteHeader()
             VStack(spacing: 14) {
-                Picker("Mode", selection: $acrossPass) { Text("Live footprint").tag(false); Text("Across next pass").tag(true) }.pickerStyle(.segmented)
+                Picker("Mode", selection: $acrossPass) { Text("Live footprint").tag(false); Text("Across a pass").tag(true) }.pickerStyle(.segmented)
+                if acrossPass {
+                    HStack {
+                        Text("Pass").foregroundStyle(ODTheme.muted)
+                        Spacer()
+                        if passes.isEmpty {
+                            Text(isLoading ? "Finding passes…" : "No pass in the next 3 days").foregroundStyle(ODTheme.muted)
+                        } else {
+                            Picker("Pass", selection: Binding(get: { selectedPass?.id ?? passes[0].id }, set: { selectedPassID = $0 })) {
+                                ForEach(passes) { pass in
+                                    Text("\(ODFormat.utc.string(from: pass.aos)) · \(Int(pass.maxElevation.rounded()))°").tag(pass.id)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
+                    }
+                }
                 Picker("Workable", selection: $kind) { Text("Grids").tag("grids"); Text("US states").tag("states"); Text("DXCC").tag("dxcc") }.pickerStyle(.segmented)
-                TextField(kind == "dxcc" ? "Filter prefix/entity" : "Filter", text: $filter)
-                    .textInputAutocapitalization(.characters).textFieldStyle(.odField)
+                HStack {
+                    TextField(kind == "dxcc" ? "Filter prefix/entity" : "Filter", text: $filter)
+                        .textInputAutocapitalization(.characters).textFieldStyle(.odField)
+                    Menu {
+                        Button { export(pdf: false) } label: { Label("CSV", systemImage: "tablecells") }
+                        Button { export(pdf: true) } label: { Label("PDF", systemImage: "doc.richtext") }
+                    } label: { Label("Export", systemImage: "square.and.arrow.up") }
+                        .disabled(store.selectedSatellite == nil)
+                }
 
                 // A single, structurally-stable TimelineView drives both modes so
                 // toggling Live/Across doesn't swap the view tree. In Live mode it
                 // recomputes the current-sub-point footprint each second (a cheap
-                // point-in-footprint scan); in Across mode it just shows the
-                // precomputed pass snapshot (the tick is a no-op re-read).
+                // polygon scan); in Across mode it just shows the precomputed pass
+                // snapshot (the tick is a no-op re-read).
                 TimelineView(.periodic(from: clockAnchor, by: 1)) { context in
                     let display: WorkableSetSnapshot = {
                         if !acrossPass, let satellite = store.selectedSatellite {
-                            return (try? ParityPlanningEngine.workableNow(satellite, at: context.date))
+                            return (try? GeoBoundaries.workableNow(satellite, at: context.date))
                                 ?? WorkableSetSnapshot(grids: [], states: [], dxcc: [])
                         }
                         return snapshot
@@ -747,12 +809,16 @@ struct WorkableView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                Text("DXCC uses 340 bundled reference points. State and entity results are point-based footprint tests rather than political-boundary polygon intersections.").font(.caption).foregroundStyle(ODTheme.muted)
+                Text("States and DXCC entities are tested against simplified boundary polygons (Natural Earth 1:110m, ~10–35 km): anything the footprint touches counts. Small islands and enclaves without a polygon use their DXCC reference point; England, Scotland and Wales share one Great Britain outline, and European/Asiatic Russia are split at 60°E.").font(.caption).foregroundStyle(ODTheme.muted)
             }.padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .task(id: passKey) { await loadPasses() }
         .onChange(of: acrossPass) { _, isAcross in if isAcross { compute() } }
-        .onChange(of: store.preferences.selectedNorad) { _, _ in if acrossPass { compute() } }
+        .onChange(of: selectedPassID) { _, _ in if acrossPass { compute() } }
+        .sheet(isPresented: Binding(get: { exportURL != nil }, set: { if !$0 { exportURL = nil } })) {
+            if let exportURL { ActivityView(url: exportURL) }
+        }
     }
 
     @ViewBuilder private func resultsSection(_ snapshot: WorkableSetSnapshot) -> some View {
@@ -767,7 +833,7 @@ struct WorkableView: View {
                 Text("\(all.count) workable").font(.headline)
                 if acrossPass && isLoading { ProgressView().controlSize(.small) }
                 Spacer()
-                if acrossPass, let error {
+                if let error {
                     Text(error).font(.caption).foregroundStyle(.red).lineLimit(1)
                 } else if !filter.isEmpty {
                     Text("\(shown.count) matching").foregroundStyle(ODTheme.muted)
@@ -785,11 +851,28 @@ struct WorkableView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    /// Computes the across-next-pass footprint union (the heavier scan). Live
-    /// footprint mode recomputes inline via the TimelineView above.
+    /// Upcoming passes (3 days, up to 12) for the pass picker; keeps the current
+    /// choice when it is still in the list.
+    @MainActor private func loadPasses() async {
+        guard let satellite = store.selectedSatellite else { passes = []; return }
+        let site = store.preferences.observer, minEl = store.preferences.minElevation
+        isLoading = true
+        let found = (try? await Task.detached {
+            try OrbitPredictor.predictPasses(satellite, observer: site, from: .now, minElevation: minEl, maxCount: 12, horizonDays: 3)
+        }.value) ?? []
+        if Task.isCancelled { return }
+        passes = found
+        isLoading = false
+        // A changed selection recomputes through onChange(of: selectedPassID).
+        let keep = found.contains { $0.id == selectedPassID } ? selectedPassID : found.first?.id
+        if keep != selectedPassID { selectedPassID = keep } else if acrossPass { compute() }
+    }
+
+    /// Computes the footprint union across the chosen pass (the heavier scan).
+    /// Live footprint mode recomputes inline via the TimelineView above.
     private func compute() {
         guard let satellite = store.selectedSatellite else { return }
-        let site = store.preferences.observer, minEl = store.preferences.minElevation
+        guard let pass = selectedPass else { snapshot = .init(grids: [], states: [], dxcc: []); return }
         isLoading = true
         error = nil
         // Run the heavy footprint scan off the main actor, but publish the result
@@ -801,11 +884,44 @@ struct WorkableView: View {
         Task { @MainActor in
             do {
                 snapshot = try await Task.detached {
-                    try ParityPlanningEngine.workableAcrossNextPass(satellite, observer: site, minimumElevation: minEl)
+                    try GeoBoundaries.workable(satellite, pass: pass)
                 }.value
             } catch { self.error = error.localizedDescription }
             isLoading = false
         }
+    }
+
+    /// Writes all three workable lists (grids, states, DXCC) for the current mode
+    /// to a CSV or PDF and opens the share sheet.
+    private func export(pdf: Bool) {
+        guard let satellite = store.selectedSatellite else { return }
+        let now = Date()
+        let data: WorkableSetSnapshot
+        let scope: String
+        if acrossPass, let pass = selectedPass {
+            data = snapshot
+            scope = "pass AOS \(ODFormat.utc.string(from: pass.aos)) – LOS \(ODFormat.utc.string(from: pass.los)), max \(Int(pass.maxElevation.rounded()))°"
+        } else {
+            data = (try? GeoBoundaries.workableNow(satellite, at: now)) ?? .init(grids: [], states: [], dxcc: [])
+            scope = "live footprint at \(ODFormat.utc.string(from: now))"
+        }
+        func field(_ s: String) -> String { s.contains(",") || s.contains("\"") ? "\"\(s.replacingOccurrences(of: "\"", with: "\"\""))\"" : s }
+        var csv = "type,item\n"
+        for (type, list) in [("grid", data.grids), ("state", data.states), ("dxcc", data.dxcc)] {
+            for item in list { csv += "\(type),\(field(item))\n" }
+        }
+        let base = "workable_\(satellite.id)_\(acrossPass ? "pass" : "live")"
+        do {
+            if pdf {
+                let doc = OrbitExportService.planningReportPDF(
+                    title: "Workable — \(satellite.name)",
+                    subtitle: "\(scope) · \(data.grids.count) grids, \(data.states.count) states, \(data.dxcc.count) DXCC",
+                    csvText: csv)
+                exportURL = try OrbitExportService.temporaryFile(name: base + ".pdf", data: doc)
+            } else {
+                exportURL = try OrbitExportService.temporaryTextFile(name: base + ".csv", text: csv)
+            }
+        } catch { self.error = error.localizedDescription }
     }
 }
 

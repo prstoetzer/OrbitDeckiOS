@@ -5,6 +5,8 @@ struct PassDetailView: View {
     @EnvironmentObject private var store: OrbitStore
     @State private var pass: PredictedPass?
     @State private var path: [SkyPoint] = []
+    /// Per-sample illumination for `path` (`LiveLook.sunlit`), same order.
+    @State private var sunlit: [Bool] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
 
@@ -26,19 +28,30 @@ struct PassDetailView: View {
 
                         if path.count > 1 {
                             SectionCard("Elevation profile") {
-                                Chart(path) { point in
-                                    AreaMark(
-                                        x: .value("Time", point.date),
-                                        y: .value("Elevation", max(0, point.elevation))
-                                    )
-                                    .foregroundStyle(ODTheme.accent.opacity(0.15))
-                                    LineMark(
-                                        x: .value("Time", point.date),
-                                        y: .value("Elevation", max(0, point.elevation))
-                                    )
-                                    .interpolationMethod(.catmullRom)
-                                    .foregroundStyle(ODTheme.accent)
+                                // The curve is split into runs by illumination (one
+                                // series per run, sharing the boundary sample) so it
+                                // reads sunlit vs eclipse at a glance.
+                                let runs = illuminationRuns
+                                Chart {
+                                    ForEach(path) { point in
+                                        AreaMark(
+                                            x: .value("Time", point.date),
+                                            y: .value("Elevation", max(0, point.elevation))
+                                        )
+                                        .foregroundStyle(ODTheme.accent.opacity(0.15))
+                                    }
+                                    ForEach(runs) { point in
+                                        LineMark(
+                                            x: .value("Time", point.date),
+                                            y: .value("Elevation", max(0, point.elevation)),
+                                            series: .value("Run", point.run)
+                                        )
+                                        .interpolationMethod(.catmullRom)
+                                        .lineStyle(StrokeStyle(lineWidth: 2.5))
+                                        .foregroundStyle(by: .value("Illumination", point.sunlit ? "Sunlit" : "Eclipse"))
+                                    }
                                 }
+                                .chartForegroundStyleScale(["Sunlit": ODTheme.warning, "Eclipse": Color.indigo])
                                 .chartYScale(domain: 0...90)
                                 .chartYAxisLabel("Elevation (°)")
                                 .frame(height: 200)
@@ -90,6 +103,24 @@ struct PassDetailView: View {
         }
     }
 
+    /// `path` cut into same-illumination runs for the elevation chart. Each change
+    /// of state repeats the boundary sample in both runs so the line is continuous.
+    private var illuminationRuns: [IlluminationSample] {
+        guard sunlit.count == path.count else {
+            return path.enumerated().map { IlluminationSample(id: $0.offset, date: $0.element.date, elevation: $0.element.elevation, run: 0, sunlit: true) }
+        }
+        var out: [IlluminationSample] = []
+        var run = 0
+        for (i, point) in path.enumerated() {
+            if i > 0, sunlit[i] != sunlit[i - 1] {
+                out.append(IlluminationSample(id: out.count, date: point.date, elevation: point.elevation, run: run, sunlit: sunlit[i - 1]))
+                run += 1
+            }
+            out.append(IlluminationSample(id: out.count, date: point.date, elevation: point.elevation, run: run, sunlit: sunlit[i]))
+        }
+        return out
+    }
+
     private var taskKey: String {
         let o = store.preferences.observer
         return "\(store.selectedSatellite?.id ?? 0)-\(o.latitude)-\(o.longitude)-\(store.preferences.minElevation)"
@@ -100,6 +131,7 @@ struct PassDetailView: View {
         guard let satellite = store.selectedSatellite else {
             pass = nil
             path = []
+            sunlit = []
             return
         }
         let observer = store.preferences.observer
@@ -107,6 +139,7 @@ struct PassDetailView: View {
         if initial {
             pass = nil
             path = []
+            sunlit = []
             errorMessage = nil
             isLoading = true
         }
@@ -121,16 +154,28 @@ struct PassDetailView: View {
                     maxCount: 1
                 )
                 guard let next = matches.first else {
-                    return (Optional<PredictedPass>.none, [SkyPoint]())
+                    return (Optional<PredictedPass>.none, [SkyPoint](), [Bool]())
                 }
-                return (Optional(next), try OrbitPredictor.skyPath(satellite, observer: observer, pass: next))
+                let sky = try OrbitPredictor.skyPath(satellite, observer: observer, pass: next)
+                let lit = sky.map { (try? OrbitPredictor.look(satellite, observer: observer, at: $0.date))?.sunlit ?? true }
+                return (Optional(next), sky, lit)
             }.value
             if Task.isCancelled { return }
             pass = result.0
             path = result.1
+            sunlit = result.2
             errorMessage = nil
         } catch {
             if initial { errorMessage = error.localizedDescription }
         }
     }
+}
+
+/// One elevation-chart sample tagged with its illumination run.
+private struct IlluminationSample: Identifiable {
+    let id: Int
+    let date: Date
+    let elevation: Double
+    let run: Int
+    let sunlit: Bool
 }
