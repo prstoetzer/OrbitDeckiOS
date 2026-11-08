@@ -31,7 +31,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     case home, track, globe, radar, gridfinder
     case passes, skyglance, schedule, passdetail, groundtrack, tenday
     case orbit, orbithistory, illum, zones, ao7, mutual, transits, astronomy, skymap, conjunction, grids
-    case radio, log, sstv, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, oscarsim, oscarref, learn, references, exports
+    case radio, log, sstv, planning, tools, graphcalc, tinybasic, datafeeds, amsatstatus, nearby, oscarsim, oscarref, learn, references, exports
     case sunmoon, celestial, eme, spacewx, muf, propagation
     case satellites, newlaunch, sites, calibrations, autoswitch, settings, about
 
@@ -70,6 +70,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .tinybasic: "Tiny BASIC"
         case .datafeeds: "Activations / QRZ"
         case .amsatstatus: "AMSAT Status"
+        case .nearby: "Nearby & DX"
         case .oscarsim: "OSCARLOCATOR Sim"
         case .oscarref: "OSCARLOCATOR Reference Orbits"
         case .learn: "Learn"
@@ -124,6 +125,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .tinybasic: "terminal"
         case .datafeeds: "antenna.radiowaves.left.and.right"
         case .amsatstatus: "waveform.path.ecg"
+        case .nearby: "dot.radiowaves.up.forward"
         case .oscarsim: "scope"
         case .oscarref: "calendar.badge.clock"
         case .learn: "book"
@@ -150,7 +152,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
     var usesSelectedSatellite: Bool {
         switch self {
         case .radar, .gridfinder, .schedule, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
-             .datafeeds, .learn, .references, .newlaunch, .sites, .astronomy, .eme, .log, .sstv,
+             .datafeeds, .nearby, .learn, .references, .newlaunch, .sites, .astronomy, .eme, .log, .sstv,
              .satellites, .calibrations, .autoswitch, .settings, .about:
             return false
         default:
@@ -163,7 +165,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         case .home, .track, .globe, .radar, .gridfinder, .passes, .skyglance, .schedule, .passdetail, .groundtrack, .tenday,
              .orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy,
              .skymap, .conjunction, .grids,
-             .radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
+             .radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .nearby, .oscarsim, .oscarref, .learn, .references, .exports, .sunmoon, .celestial, .eme, .spacewx, .muf, .propagation,
              .satellites, .newlaunch, .sites, .calibrations, .autoswitch, .settings, .about:
             true
         default:
@@ -182,7 +184,7 @@ private let navGroups: [NavGroup] = [
     NavGroup(id: "live", title: "LIVE", items: [.home, .globe, .radar, .gridfinder]),
     NavGroup(id: "passes", title: "PASSES", items: [.passes, .skyglance, .schedule, .groundtrack, .tenday]),
     NavGroup(id: "analysis", title: "ANALYSIS", items: [.orbit, .orbithistory, .illum, .zones, .ao7, .mutual, .transits, .astronomy, .skymap, .conjunction, .grids]),
-    NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .oscarsim, .oscarref, .learn, .references, .exports]),
+    NavGroup(id: "operating", title: "OPERATING TOOLS", items: [.radio, .log, .sstv, .planning, .tools, .graphcalc, .tinybasic, .datafeeds, .amsatstatus, .nearby, .oscarsim, .oscarref, .learn, .references, .exports]),
     NavGroup(id: "sky", title: "SKY & SPACE", items: [.sunmoon, .celestial, .eme, .spacewx, .muf, .propagation]),
     NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .calibrations, .autoswitch, .settings, .about])
 ]
@@ -428,6 +430,7 @@ struct RootView: View {
         case .tinybasic: DeepTinyBasicView()
         case .datafeeds: DataFeedsView()
         case .amsatstatus: AmsatStatusInteractiveView()
+        case .nearby: NearbyDXView()
         case .oscarsim: OscarLocatorView()
         case .oscarref: OscarReferenceOrbitsView()
         case .learn: DeepLearnView()
