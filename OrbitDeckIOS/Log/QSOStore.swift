@@ -56,21 +56,44 @@ final class QSOStore: ObservableObject {
         qsos.insert(q, at: 0); saveQSOs()
         requestName(for: q)
     }
-    func update(_ q: QSORecord) {
+    /// Replace a QSO. Unless `keepUploadFlags` (the editor's flag toggles were set by
+    /// hand), changing a field an upload carries clears that service's uploaded flag so
+    /// the corrected QSO is sent again.
+    func update(_ q: QSORecord, keepUploadFlags: Bool = false) {
         var q = q
         Self.fillDXCC(&q)
-        if let i = qsos.firstIndex(where: { $0.id == q.id }) { qsos[i] = q; saveQSOs(); requestName(for: q) }
+        guard let i = qsos.firstIndex(where: { $0.id == q.id }) else { return }
+        if !keepUploadFlags { q.uploaded.subtract(q.uploadFlagsInvalidated(from: qsos[i])) }
+        qsos[i] = q; saveQSOs(); requestName(for: q)
     }
     func delete(_ q: QSORecord) { qsos.removeAll { $0.id == q.id }; saveQSOs() }
     func delete(at offsets: IndexSet) { qsos.remove(atOffsets: offsets); saveQSOs() }
+    func delete(ids: Set<UUID>) { qsos.removeAll { ids.contains($0.id) }; saveQSOs() }
 
-    func countUnuploaded(_ flag: UploadFlags) -> Int { qsos.filter { !$0.uploaded.contains(flag) }.count }
+    /// Clear an upload flag on the given QSOs (all when nil) so the next upload re-sends them.
+    func clearUploaded(_ flag: UploadFlags, ids: Set<UUID>? = nil) {
+        for i in qsos.indices where ids?.contains(qsos[i].id) ?? true { qsos[i].uploaded.remove(flag) }
+        saveQSOs()
+    }
+
+    // Stubs (voice-memo QSOs without a call yet) are never uploaded.
+    func countUnuploaded(_ flag: UploadFlags) -> Int { qsos.filter { !$0.isStub && !$0.uploaded.contains(flag) }.count }
 
     private func saveQSOs() { save(qsos, "QSOLog.json") }
 
     // MARK: Media indexes (populated by Phase 4 / 5b)
 
     func addRecording(_ r: RecordingEntry) { recordings.insert(r, at: 0); save(recordings, "Recordings.json") }
+
+    /// Register a finished voice memo and log the QSO stub that goes with it (the stub
+    /// carries the memo's filename; the operator completes the contact later).
+    func addVoiceMemo(_ r: RecordingEntry, stub: QSORecord) {
+        addRecording(r)
+        var q = stub
+        q.memoFile = r.filename
+        if q.notes.isEmpty { q.notes = "Voice memo" }
+        add(q)
+    }
     func deleteRecording(_ r: RecordingEntry) {
         recordings.removeAll { $0.id == r.id }
         try? FileManager.default.removeItem(at: Self.recordingsDir.appendingPathComponent(r.filename))
@@ -100,7 +123,8 @@ final class QSOStore: ObservableObject {
 
     // MARK: ADIF import/export
 
-    func adifExport() -> String { ADIF.export(qsos) }
+    // Memo stubs without a call would be invalid ADIF records; they stay on device.
+    func adifExport() -> String { ADIF.export(qsos.filter { !$0.isStub }) }
 
     @discardableResult
     func adifImport(_ text: String) -> Int {
@@ -136,13 +160,15 @@ final class QSOStore: ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.dxccBackfillKey)
     }
 
-    // MARK: QRZ name lookup
+    // MARK: QRZ name / state lookup
 
-    // Fills an empty `name` from QRZ XML in the background: one request at a time,
-    // at most one per second, results cached in memory for the session (including
-    // "no name"), and a back-off after login/network failures. Logging never waits.
+    // Fills an empty `name` (and, for US contacts, an empty `state`) from QRZ XML in the
+    // background: one request at a time, at most one per second, results cached in
+    // memory for the session (including "nothing"), and a back-off after login/network
+    // failures. Logging never waits.
+    private struct QRZFill { var name = ""; var state = "" }
     private let qrz = QRZService()
-    private var nameCache: [String: String] = [:]     // base call → name ("" = none)
+    private var nameCache: [String: QRZFill] = [:]    // base call → QRZ name/state
     private var nameQueue: [UUID] = []
     private var nameWorker: Task<Void, Never>?
     private var lastQRZRequest: Date?
@@ -159,24 +185,43 @@ final class QSOStore: ObservableObject {
         return password.isEmpty ? nil : (user, password)
     }
 
+    /// DXCC entities whose STATE is a US state (WAS): USA, Alaska, Hawaii.
+    nonisolated static let usEntities: Set<Int> = [291, 6, 110]
+
+    /// Whether QRZ could still add something to this QSO.
+    private func needsLookup(_ q: QSORecord) -> Bool {
+        q.name.isEmpty || (q.state.isEmpty && Self.usEntities.contains(q.dxcc ?? -1))
+    }
+
     private func requestName(for q: QSORecord) {
-        guard config.qrzNameLookup, q.name.isEmpty else { return }
+        guard config.qrzNameLookup, needsLookup(q) else { return }
         let call = DXCCLookup.baseCall(q.call)
         guard call.count >= 3 else { return }
-        if let cached = nameCache[call] { applyName(cached, to: q.id, call: call); return }
+        if let cached = nameCache[call] { applyLookup(cached, to: q.id, call: call); return }
         if let until = qrzBackoffUntil, until > Date() { return }
         guard qrzCredentials() != nil else { return }
         if !nameQueue.contains(q.id) { nameQueue.append(q.id) }
         if nameWorker == nil { nameWorker = Task { await drainNameQueue() } }
     }
 
+    /// Queue every US contact without a state for a QRZ lookup (for WAS). Returns how
+    /// many were queued; they fill in at one lookup per second.
+    @discardableResult
+    func fillMissingStatesFromQRZ() -> Int {
+        guard config.qrzNameLookup, qrzCredentials() != nil else { return 0 }
+        qrzBackoffUntil = nil
+        let pending = qsos.filter { !$0.isStub && $0.state.isEmpty && Self.usEntities.contains($0.dxcc ?? -1) }
+        for q in pending { requestName(for: q) }
+        return pending.count
+    }
+
     private func drainNameQueue() async {
         defer { nameWorker = nil }
         while !nameQueue.isEmpty {
             let id = nameQueue.removeFirst()
-            guard let q = qsos.first(where: { $0.id == id }), q.name.isEmpty, config.qrzNameLookup else { continue }
+            guard let q = qsos.first(where: { $0.id == id }), needsLookup(q), config.qrzNameLookup else { continue }
             let call = DXCCLookup.baseCall(q.call)
-            if let cached = nameCache[call] { applyName(cached, to: id, call: call); continue }
+            if let cached = nameCache[call] { applyLookup(cached, to: id, call: call); continue }
             guard let creds = qrzCredentials() else { nameQueue.removeAll(); return }
             if let last = lastQRZRequest {
                 let wait = 1.0 - Date().timeIntervalSince(last)
@@ -184,11 +229,12 @@ final class QSOStore: ObservableObject {
             }
             lastQRZRequest = Date()
             do {
-                let name = try await qrz.operatorName(username: creds.username, password: creds.password, callsign: call)
-                nameCache[call] = name
-                applyName(name, to: id, call: call)
+                let info = try await qrz.operatorInfo(username: creds.username, password: creds.password, callsign: call)
+                let fill = QRZFill(name: info.name, state: info.state)
+                nameCache[call] = fill
+                applyLookup(fill, to: id, call: call)
             } catch let error as NSError where error.domain == "QRZ" && error.code == 2 {
-                nameCache[call] = ""                     // not on QRZ: don't ask again this session
+                nameCache[call] = QRZFill()              // not on QRZ: don't ask again this session
             } catch {
                 // Bad credentials or no network: stop and wait before trying again.
                 let ns = error as NSError
@@ -200,21 +246,29 @@ final class QSOStore: ObservableObject {
         }
     }
 
-    /// Store a looked-up name unless the operator has since typed one or changed the call.
-    private func applyName(_ name: String, to id: UUID, call: String) {
-        guard !name.isEmpty, let i = qsos.firstIndex(where: { $0.id == id }),
-              qsos[i].name.isEmpty, DXCCLookup.baseCall(qsos[i].call) == call else { return }
-        qsos[i].name = name
-        saveQSOs()
+    /// Store a looked-up name / state unless the operator has since typed one or changed
+    /// the call. The state is only taken for a US contact and only when it's a real
+    /// US state code (QRZ also returns provinces and free text for other countries).
+    private func applyLookup(_ fill: QRZFill, to id: UUID, call: String) {
+        guard let i = qsos.firstIndex(where: { $0.id == id }), DXCCLookup.baseCall(qsos[i].call) == call else { return }
+        var changed = false
+        if !fill.name.isEmpty, qsos[i].name.isEmpty { qsos[i].name = fill.name; changed = true }
+        if qsos[i].state.isEmpty, Self.usEntities.contains(qsos[i].dxcc ?? -1), LogAwards.usStateCodes.contains(fill.state) {
+            qsos[i].state = fill.state; changed = true
+        }
+        if changed { saveQSOs() }
     }
 
     // MARK: Uploads
 
-    /// Sign + upload all not-yet-LoTW'd QSOs; mark them on success. Returns a
-    /// human-readable status.
-    func uploadLoTW() async -> String {
-        let pending = qsos.filter { !$0.uploaded.contains(.lotw) }
-        guard !pending.isEmpty else { return "Nothing to upload — all QSOs already sent to LoTW." }
+    /// Sign + upload the not-yet-LoTW'd QSOs (or, with `ids`, exactly those QSOs,
+    /// already-uploaded or not — the "re-send" path); mark them on success. Stubs
+    /// without a callsign are never sent. Returns a human-readable status.
+    func uploadLoTW(ids: Set<UUID>? = nil) async -> String {
+        let pending = qsos.filter { q in !q.isStub && (ids.map { $0.contains(q.id) } ?? !q.uploaded.contains(.lotw)) }
+        guard !pending.isEmpty else {
+            return ids == nil ? "Nothing to upload — all QSOs already sent to LoTW." : "No QSOs with a callsign to send."
+        }
         let station = config.station
         do {
             // Sign + gzip off the main actor — RSA signing every QSO on the main
@@ -233,10 +287,12 @@ final class QSOStore: ObservableObject {
         }
     }
 
-    /// Upload all not-yet-Cloudlog'd QSOs; mark them on success.
-    func uploadCloudlog() async -> String {
-        let pending = qsos.filter { !$0.uploaded.contains(.cloudlog) }
-        guard !pending.isEmpty else { return "Nothing to upload — all QSOs already sent to Cloudlog." }
+    /// Upload the not-yet-Cloudlog'd QSOs (or exactly `ids`, re-sending); mark them on success.
+    func uploadCloudlog(ids: Set<UUID>? = nil) async -> String {
+        let pending = qsos.filter { q in !q.isStub && (ids.map { $0.contains(q.id) } ?? !q.uploaded.contains(.cloudlog)) }
+        guard !pending.isEmpty else {
+            return ids == nil ? "Nothing to upload — all QSOs already sent to Cloudlog." : "No QSOs with a callsign to send."
+        }
         let key = OrbitSecretStore.get(.cloudlogKey)
         do {
             let n = try await Cloudlog.upload(pending, config: config.cloudlog, apiKey: key)
@@ -278,5 +334,125 @@ final class QSOStore: ObservableObject {
     private func save<T: Encodable>(_ value: T, _ name: String) {
         let url = Self.appSupport.appendingPathComponent(name)
         if let data = try? JSONEncoder().encode(value) { try? data.write(to: url, options: .atomic) }
+    }
+}
+
+// MARK: - Awards
+
+/// Worked (and, where the log carries LoTW QSL status, confirmed) award totals
+/// computed from the log: QSOs, satellites, VUCC grids, WAS states (50 + DC) and
+/// DXCC entities, overall and per satellite. Recomputed on demand — it's a pass over
+/// an in-memory array. Voice-memo stubs without a call are left out.
+///
+/// States come only from each QSO's STATE field (editor, ADIF import or QRZ); they
+/// are never guessed from a grid, since a grid square can straddle state lines.
+struct LogAwards {
+    struct Tally {
+        var qsos = 0
+        var grids: Set<String> = []
+        var states: Set<String> = []
+        var dxcc: Set<Int> = []
+        var confirmedGrids: Set<String> = []
+        var confirmedStates: Set<String> = []
+        var confirmedDXCC: Set<Int> = []
+        var confirmedQSOs = 0
+    }
+
+    struct SatelliteTally: Identifiable {
+        let name: String
+        var tally = Tally()
+        var id: String { name }
+    }
+
+    var all = Tally()
+    var satellites: [SatelliteTally] = []     // most QSOs first
+    /// The log has LoTW QSL data (any QSO marked confirmed), so "confirmed" is meaningful.
+    var hasConfirmations = false
+    /// US contacts with no STATE, which can't count toward WAS until one is set.
+    var usWithoutState = 0
+
+    static let wasTotal = 51                  // 50 states + DC
+    static let usStateCodes: Set<String> = Set(LoTWSubdivisions.usStates.map(\.code))
+
+    /// VUCC credits the 4-character grid field; anything not shaped like one is skipped.
+    static func vuccGrid(_ raw: String) -> String? {
+        let g = Array(raw.uppercased().unicodeScalars.prefix(4))
+        guard g.count == 4, ("A"..."R").contains(g[0]), ("A"..."R").contains(g[1]),
+              ("0"..."9").contains(g[2]), ("0"..."9").contains(g[3]) else { return nil }
+        return String(String.UnicodeScalarView(g))
+    }
+
+    static func stateName(_ code: String) -> String {
+        LoTWSubdivisions.usStates.first { $0.code == code }?.name ?? code
+    }
+
+    static func entityName(_ code: Int) -> String {
+        DXCCNumericData.nameByCode[code] ?? LoTWSubdivisions.entity(code)?.name.capitalized ?? "DXCC \(code)"
+    }
+
+    init(_ qsos: [QSORecord]) {
+        var bySat: [String: SatelliteTally] = [:]
+        for q in qsos where !q.isStub {
+            let sat = q.sat.trimmingCharacters(in: .whitespaces).isEmpty ? "(no satellite)" : q.sat.trimmingCharacters(in: .whitespaces)
+            let grids = Set(q.gridList.compactMap(Self.vuccGrid))
+            let st = q.state.trimmingCharacters(in: .whitespaces).uppercased()
+            // A US state only for a US entity (or an unresolved one), and only a real code.
+            let isUS = q.dxcc.map { QSOStore.usEntities.contains($0) } ?? true
+            let state: String? = (isUS && Self.usStateCodes.contains(st)) ? st : nil
+            if state == nil, st.isEmpty, let d = q.dxcc, QSOStore.usEntities.contains(d) { usWithoutState += 1 }
+            let entity: Int? = (q.dxcc ?? 0) > 0 ? q.dxcc : nil
+            if q.lotwConfirmed { hasConfirmations = true }
+
+            func add(_ t: inout Tally) {
+                t.qsos += 1
+                t.grids.formUnion(grids)
+                if let state { t.states.insert(state) }
+                if let entity { t.dxcc.insert(entity) }
+                if q.lotwConfirmed {
+                    t.confirmedQSOs += 1
+                    t.confirmedGrids.formUnion(grids)
+                    if let state { t.confirmedStates.insert(state) }
+                    if let entity { t.confirmedDXCC.insert(entity) }
+                }
+            }
+            add(&all)
+            let key = sat.uppercased()
+            var s = bySat[key] ?? SatelliteTally(name: sat)
+            add(&s.tally)
+            bySat[key] = s
+        }
+        satellites = bySat.values.sorted { $0.tally.qsos != $1.tally.qsos ? $0.tally.qsos > $1.tally.qsos : $0.name < $1.name }
+    }
+
+    // MARK: Export
+
+    /// CSV: a totals block, then one row per worked grid / state / entity (with the
+    /// satellites it was worked on), then the per-satellite tally.
+    func csv() -> String {
+        func esc(_ s: String) -> String {
+            s.contains(where: { ",\"\n".contains($0) }) ? "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : s
+        }
+        var out = "Award,Worked,Confirmed\n"
+        out += "QSOs,\(all.qsos),\(hasConfirmations ? String(all.confirmedQSOs) : "")\n"
+        out += "Satellites,\(satellites.count),\n"
+        out += "VUCC grids,\(all.grids.count),\(hasConfirmations ? String(all.confirmedGrids.count) : "")\n"
+        out += "WAS states (of \(Self.wasTotal)),\(all.states.count),\(hasConfirmations ? String(all.confirmedStates.count) : "")\n"
+        out += "DXCC entities,\(all.dxcc.count),\(hasConfirmations ? String(all.confirmedDXCC.count) : "")\n"
+        out += "\nType,Item,Name,Confirmed,Satellites\n"
+        func sats(_ has: (Tally) -> Bool) -> String { esc(satellites.filter { has($0.tally) }.map(\.name).joined(separator: "; ")) }
+        for g in all.grids.sorted() {
+            out += "Grid,\(g),,\(all.confirmedGrids.contains(g) ? "Y" : "N"),\(sats { $0.grids.contains(g) })\n"
+        }
+        for s in all.states.sorted() {
+            out += "State,\(s),\(esc(Self.stateName(s))),\(all.confirmedStates.contains(s) ? "Y" : "N"),\(sats { $0.states.contains(s) })\n"
+        }
+        for d in all.dxcc.sorted(by: { Self.entityName($0) < Self.entityName($1) }) {
+            out += "DXCC,\(d),\(esc(Self.entityName(d))),\(all.confirmedDXCC.contains(d) ? "Y" : "N"),\(sats { $0.dxcc.contains(d) })\n"
+        }
+        out += "\nSatellite,QSOs,Grids,States,DXCC\n"
+        for s in satellites {
+            out += "\(esc(s.name)),\(s.tally.qsos),\(s.tally.grids.count),\(s.tally.states.count),\(s.tally.dxcc.count)\n"
+        }
+        return out
     }
 }

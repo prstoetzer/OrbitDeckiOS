@@ -197,6 +197,8 @@ enum LoTW {
         if !st.grid.isEmpty { s += st.grid }
         if !st.iota.isEmpty { s += st.iota }
         if !st.ituz.isEmpty { s += st.ituz }
+        // JA_CITY_GUN_KU (secondary, gated by JA_PREFECTURE) sorts before JA_PREFECTURE.
+        if !st.subdiv2.isEmpty && st.subdiv2Field == "JA_CITY_GUN_KU" { s += st.subdiv2 }
         if subIs("JA_PREFECTURE") { s += st.subdiv }
         if subIs("RU_OBLAST") { s += st.subdiv }
         let county = countyName(st.usCounty)
@@ -230,6 +232,8 @@ enum LoTW {
         r += adifSp("CQZ", st.cqz)
         r += adifSp("ITUZ", st.ituz)
         if !st.subdiv.isEmpty, !st.subdivField.isEmpty { r += adifSp(st.subdivField, st.subdiv) }
+        // Secondary subdivision (JA city/gun/ku); the US county is US_COUNTY above.
+        if !st.subdiv2.isEmpty, !st.subdiv2Field.isEmpty { r += adifSp(st.subdiv2Field, st.subdiv2) }
         r += adifSp("IOTA", st.iota)
         r += "<eor>\n"
         return r

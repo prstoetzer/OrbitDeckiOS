@@ -3483,10 +3483,17 @@ actor QRZService {
     /// word of the first name — never the full legal name. "" when QRZ has none.
     /// Throws code 1 for credential/login problems, code 2 for not found.
     func operatorName(username: String, password: String, callsign: String) async throws -> String {
+        try await operatorInfo(username: username, password: password, callsign: callsign).name
+    }
+
+    /// The log name (as `operatorName`) plus the QRZ `<state>` (US state / province
+    /// code as QRZ has it, "" when none) for the QSO log's STATE field.
+    func operatorInfo(username: String, password: String, callsign: String) async throws -> (name: String, state: String) {
         let body = try await callsignBody(username: username, password: password, callsign: callsign)
+        let state = xmlUnescape(xmlTag(body, "state")).uppercased()
         let nickname = xmlUnescape(xmlTag(body, "nickname"))
-        if !nickname.isEmpty { return nickname }
-        return xmlUnescape(xmlTag(body, "fname")).split(separator: " ").first.map(String.init) ?? ""
+        if !nickname.isEmpty { return (nickname, state) }
+        return (xmlUnescape(xmlTag(body, "fname")).split(separator: " ").first.map(String.init) ?? "", state)
     }
 
     /// The XML response holding a `<Callsign>` record, logging in (or back in

@@ -37,6 +37,7 @@ struct HomeRecordingCard: View {
                 }
                 SatelliteStatusLine(satellite: satellite)
                 AudioLevelControl(title: "Recording level", gain: $recorder.inputGain, level: recorder.level)
+                VoiceMemoControl(satellite: satellite)
                 Text("Records the received audio from your USB (or network) audio interface, tagged with the satellite and time. Set the level so the meter rides in the green. Keeps recording with the screen locked or the app backgrounded during a pass.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
@@ -132,5 +133,70 @@ struct HomeRemoteAudioCard: View {
                     .onChanged { _ in if !voice.isTransmitting { voice.startTX() } }
                     .onEnded { _ in voice.stopTX() }
             )
+    }
+}
+
+// ===========================================================================
+//  VoiceMemoControl — record a quick spoken note with a QSO stub
+//
+//  Used on the pass-recording card and the Log screen. Records through the shared
+//  AudioHub capture (built-in mic allowed: memos are spoken by the operator) up to
+//  PassRecorder.memoCap, then saves the clip with the recordings and logs a QSO stub
+//  — UTC time, satellite, transponder mode and frequencies, no callsign — linked to
+//  it, to be completed after the pass.
+// ===========================================================================
+struct VoiceMemoControl: View {
+    @EnvironmentObject private var audio: AudioHub
+    @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var qso: QSOStore
+    @ObservedObject private var memo = PassRecorder.memo
+    /// The satellite to tag the memo with; nil uses the selected satellite.
+    var satellite: SatelliteRecord?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Button { toggle() } label: {
+                    Label(memo.isRecording ? "Stop memo" : "Voice memo",
+                          systemImage: memo.isRecording ? "stop.circle.fill" : "mic.circle")
+                }
+                .buttonStyle(.bordered)
+                .tint(memo.isRecording ? ODTheme.warning : ODTheme.accent)
+                if memo.isRecording {
+                    Text("\(ODFormat.duration(memo.elapsed)) / \(ODFormat.duration(PassRecorder.memoCap))")
+                        .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.warning)
+                    AudioLevelBar(level: memo.level)
+                }
+            }
+            if !memo.errorText.isEmpty {
+                Text(memo.errorText).font(.caption).foregroundStyle(ODTheme.warning)
+            }
+            Text("Speak a note (up to \(Int(PassRecorder.memoCap / 60)) min); it's saved with your recordings and a QSO stub with the time, satellite, mode and frequencies is added to the Log for you to complete later. Uses the built-in mic or a headset — or, with a USB audio interface connected, that interface's input.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    private func toggle() {
+        Self.toggle(satellite: satellite ?? store.selectedSatellite, audio: audio, store: store, rig: rig, qso: qso)
+    }
+
+    /// Start or stop the voice memo (shared with the Log screen's toolbar action).
+    static func toggle(satellite sat: SatelliteRecord?, audio: AudioHub, store: OrbitStore,
+                       rig: RigController, qso: QSOStore) {
+        let memo = PassRecorder.memo
+        if memo.isRecording { memo.stop(); return }
+        guard let source = audio.makeSource(allowMicFallback: true) else {
+            memo.errorText = "No audio input available."
+            return
+        }
+        var stub = QSORecord.prefilled(satellite: sat, transponder: sat.flatMap { rig.transponder(for: $0) },
+                                       myGrid: store.operatorGrid6, myCall: qso.config.myCall,
+                                       defaultRst: qso.config.defaultRst)
+        if let sat, rig.config.tuning.linearCW, rig.transponder(for: sat)?.isLinear ?? false {
+            stub.mode = "CW"; stub.uplinkMode = nil; stub.downlinkMode = nil
+            stub.rstSent = qso.config.rst(for: "CW"); stub.rstRcvd = stub.rstSent
+        }
+        memo.startMemo(source: source, qso: qso, stub: stub)
     }
 }
