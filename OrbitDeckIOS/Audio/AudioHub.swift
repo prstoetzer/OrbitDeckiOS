@@ -677,6 +677,8 @@ final class RemoteVoiceController: ObservableObject {
     /// Remote voice is a network-radio feature (phone mic → radio, radio audio → phone).
     var available: Bool { hub?.icomAudioReady ?? false }
     var pttOverCAT: Bool { rig?.pttSupported ?? false }
+    /// Why transmitting is refused right now (receive-only transponder), or nil.
+    var pttBlockedReason: String? { rig?.pttBlockedReason }
 
     func startListen() {
         guard !isListening, let hub, available else { return }
@@ -720,6 +722,8 @@ final class RemoteVoiceController: ObservableObject {
     /// Push-to-talk down: mic → radio, key PTT.
     func startTX() {
         guard isListening, !isTransmitting, let s = sub else { return }
+        // Receive-only transponder: no uplink to talk on (and no mic audio for VOX).
+        if let why = rig?.pttBlockedReason { errorText = why; return }
         isTransmitting = true
         bridge.startMic()
         do { try s.startPlayback(pull: { [weak self] n in self?.bridge.drainTX(n) ?? [] }) }

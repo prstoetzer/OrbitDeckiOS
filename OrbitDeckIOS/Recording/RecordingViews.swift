@@ -99,7 +99,9 @@ struct HomeRemoteAudioCard: View {
                 if voice.isListening {
                     AudioLevelBar(level: voice.micLevel)
                     pttButton
-                    if !voice.pttOverCAT {
+                    if let why = voice.pttBlockedReason {
+                        Text(why).font(.caption2).foregroundStyle(ODTheme.warning)
+                    } else if !voice.pttOverCAT {
                         Text("No CAT PTT on this radio — use VOX, or the TRANSMIT button just sends mic audio.")
                             .font(.caption2).foregroundStyle(ODTheme.muted)
                     }

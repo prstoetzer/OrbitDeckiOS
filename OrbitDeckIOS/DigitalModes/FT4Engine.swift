@@ -345,8 +345,9 @@ final class FT4Engine: ObservableObject {
                 self.dialSteppedForSlot = upcoming
             }
             if keyPTT {
-                await rig.setPTT(true)
-                self.pttArmed = true
+                // Refused (e.g. a receive-only transponder): not armed, so the boundary
+                // path tries again and aborts the burst with the reason.
+                self.pttArmed = await rig.setPTT(true)
             }
         }
     }
@@ -980,6 +981,13 @@ final class FT4Engine: ObservableObject {
     /// stations' decoders expect them; otherwise the burst plays from its start.
     private func beginTransmit(slot txSlot: Int, pttAlreadyKeyed: Bool = false, lateStart: Bool = false) {
         guard let source, !isTransmitting else { return }
+        // No uplink on the tracked transponder: don't key, and don't play TX audio either
+        // (a radio on VOX would transmit it on the downlink).
+        if let why = rig?.pttBlockedReason {
+            errorText = why
+            if pttAlreadyKeyed { Task { await rig?.setPTT(false) } }
+            return
+        }
         guard let tones = FT4Engine.encodeTones(txMessage) else { errorText = "Could not encode \"\(txMessage)\"."; return }
         let rate = source.sampleRate
         let tx = makeTXWaveform(tones: tones, slot: txSlot, rate: rate)
@@ -1007,8 +1015,16 @@ final class FT4Engine: ObservableObject {
         // Transmission is a fixed length; end it on a timer so PTT always unkeys and
         // the UI clears even if the audio output node never pulls the buffer dry.
         Task {
-            // PTT is already up when the slot was pre-armed; otherwise key it now.
-            if !pttAlreadyKeyed { await rig?.setPTT(true) }
+            // PTT is already up when the slot was pre-armed; otherwise key it now. If CAT
+            // PTT refuses (the transponder changed to receive-only meanwhile), abort.
+            if !pttAlreadyKeyed, let rig = self.rig {
+                let keyed = await rig.setPTT(true)
+                if !keyed, self.pttOverCAT {
+                    self.errorText = rig.pttBlockedReason ?? "CAT PTT failed — burst not sent."
+                    await self.endTransmit()
+                    return
+                }
+            }
             // Diagnostic: how late the burst starts relative to the slot boundary. WSJT-X
             // stations see this as the decode's dT; aim for well under a few hundred ms.
             let dT = Date().timeIntervalSince1970 - Double(txSlot) * kFT4SlotSeconds
@@ -3219,7 +3235,7 @@ final class PacketEngine: ObservableObject {
             engagedDataMode = true
         }
         // Stuck-PTT recovery: make sure the radio isn't left keyed from a previous run.
-        if rig?.pttSupported ?? false { Task { await rig?.setPTT(false) } }
+        if rig?.pttCapable ?? false { Task { await rig?.setPTT(false) } }
         startMeter()
     }
 
@@ -3613,6 +3629,8 @@ final class PacketEngine: ObservableObject {
     /// the playback path stalls.
     private func transmit(_ samples: [Float], label: String) async {
         guard let source else { return }
+        // Receive-only transponder: never key or play TX audio (VOX would transmit it).
+        if let why = rig?.pttBlockedReason { errorText = why; return }
         txLock.withLock { txBuffer = samples; txIndex = 0 }
         transmissionID += 1
         let thisTX = transmissionID

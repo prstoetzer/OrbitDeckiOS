@@ -355,8 +355,8 @@ struct RigControlSettingsView: View {
             }
             Toggle("Follow selection while connected", isOn: bindTuning(\.followSelection))
             Text(rig.config.tuning.followSelection
-                 ? "Selecting another satellite retunes the radio right away, even mid-pass."
-                 : "During a pass the radio stays on the satellite it's tuned to when you select another one; the Home rig card asks before switching. Automatic switching always moves the radio.")
+                 ? "Selecting another satellite retunes the radio and re-points the rotator right away, even mid-pass."
+                 : "From shortly before AOS (the rotator's pre-position lead) until LOS, the radio and rotator stay on the satellite they're tracking when you select another one; the Home cards ask before switching. Automatic switching always moves both.")
                 .font(.caption).foregroundStyle(ODTheme.muted)
             Stepper("Command delay: \(rig.config.tuning.commandDelayMs) ms", value: bindTuning(\.commandDelayMs), in: 0...500, step: 10)
             Toggle("MAIN = uplink, SUB = downlink", isOn: bindTuning(\.mainIsUplink))
@@ -808,10 +808,7 @@ struct HomeRigControlCard: View {
     /// Selects a transponder on the Home card (CAT follows it) — used by "Beacon".
     var selectTransponder: ((String) -> Void)? = nil
 
-    @EnvironmentObject private var ft4: FT4Engine
-    @EnvironmentObject private var packet: PacketEngine
-    @EnvironmentObject private var rotator: RotatorController
-    @State private var confirmStopAll = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         if rig.config.isConfigured {
@@ -866,6 +863,10 @@ struct HomeRigControlCard: View {
                         Label("At passband edge", systemImage: "arrow.left.and.right.square")
                             .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.warning)
                     }
+                    if rig.pttCapable, let why = rig.pttBlockedReason {
+                        Label(why, systemImage: "mic.slash.fill")
+                            .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.warning)
+                    }
                     MetricRow("Downlink", ODFormat.frequency(rig.downlinkDialHz), valueColor: ODTheme.good)
                     if rig.uplinkDialHz > 0 {
                         MetricRow("Uplink", ODFormat.frequency(rig.uplinkDialHz), valueColor: ODTheme.warning)
@@ -904,20 +905,7 @@ struct HomeRigControlCard: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                if stopAllAvailable {
-                    Button(role: .destructive) {
-                        confirmStopAll = true
-                    } label: {
-                        Label("Stop all", systemImage: "stop.circle.fill").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent).tint(.red)
-                    .confirmationDialog("Stop everything?", isPresented: $confirmStopAll, titleVisibility: .visible) {
-                        Button("Stop all", role: .destructive) { stopAll() }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Releases PTT, stops FT4 and packet, disconnects the radio, and parks and disconnects the rotator.")
-                    }
-                }
+                StopAllButton()
                 Text("CAT works only while OrbitDeck is in the foreground. Keep the Home screen awake during a pass (Settings ▸ Display).")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
@@ -926,6 +914,18 @@ struct HomeRigControlCard: View {
                 if !rig.tuningOtherSatellite { rig.config.tuning.passbandOffsetHz = passbandOffsetHz }
             }
             .onChange(of: selectedTransponderID) { _, v in rig.transponderID = v }
+            // Tilt tuning reads the motion sensor: only while this card is on screen and
+            // the app is active, never in a pocket or the background.
+            .onDisappear { rig.tiltTuning = false }
+            .onChange(of: scenePhase) { _, phase in if phase != .active { rig.tiltTuning = false } }
+            // CAT switched satellites (Switch, automatic switching, follow, pass end): the
+            // rig reset the passband trim, so put the Home slider back in step with it.
+            .onChange(of: rig.engagedNorad) { old, new in
+                guard old != nil, new != nil, !rig.tuningOtherSatellite else { return }
+                if abs(passbandOffsetHz - rig.config.tuning.passbandOffsetHz) > 0.5 {
+                    passbandOffsetHz = rig.config.tuning.passbandOffsetHz
+                }
+            }
             // Home slider → rig (operator scrubs the passband). Not while CAT is locked on
             // another satellite: Home's slider then belongs to the selection, not the radio.
             .onChange(of: passbandOffsetHz) { _, v in
@@ -976,24 +976,6 @@ struct HomeRigControlCard: View {
         .accessibilityLabel("Tune mode: \(rig.config.tuning.tuneMode.label)")
     }
 
-    private var stopAllAvailable: Bool {
-        rig.connected || rig.connecting || rotator.connected || ft4.isRunning || packet.isRunning
-    }
-
-    /// Release PTT, stop the digital engines, disconnect CAT, park + disconnect the rotator.
-    private func stopAll() {
-        ODLog.shared.log("Stop all", category: "cat")
-        // The engines unkey on stop; release PTT explicitly too, before CAT goes away.
-        let wasConnected = rig.connected
-        ft4.stop()
-        packet.stop()
-        Task {
-            if wasConnected { await rig.setPTT(false) }
-            if rig.connected || rig.connecting { rig.disconnect() }
-        }
-        if rotator.connected { rotator.disconnect() }
-    }
-
     private var statusTitle: String {
         rig.connecting ? "Connecting…" : (rig.connected ? "Connected" : "Not connected")
     }
@@ -1012,6 +994,60 @@ struct HomeRigControlCard: View {
     }
 }
 
+// MARK: - Stop all
+
+/// "Stop all" with its confirmation, shared by the Home rig card and (for a station with
+/// no CAT radio configured) the Home rotator card. Shown only while something is running.
+struct StopAllButton: View {
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var rotator: RotatorController
+    @EnvironmentObject private var ft4: FT4Engine
+    @EnvironmentObject private var packet: PacketEngine
+    @ObservedObject private var rigServer = RigctldServer.shared
+    @ObservedObject private var rotServer = RotctldServer.shared
+    @State private var confirm = false
+
+    var body: some View {
+        if available {
+            Button(role: .destructive) {
+                confirm = true
+            } label: {
+                Label("Stop all", systemImage: "stop.circle.fill").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).tint(.red)
+            .confirmationDialog("Stop everything?", isPresented: $confirm, titleVisibility: .visible) {
+                Button("Stop all", role: .destructive) { stopAll() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Releases PTT, stops FT4 and packet, ends rigctld/rotctld client control, disconnects the radio, and parks and disconnects the rotator.")
+            }
+        }
+    }
+
+    private var available: Bool {
+        rig.connected || rig.connecting || rotator.connected || ft4.isRunning || packet.isRunning
+            || rigServer.externalControl || rigServer.clientKeyed || rotServer.externalControl
+    }
+
+    /// Release PTT and any network-client control, stop the digital engines, disconnect
+    /// CAT, park + disconnect the rotator.
+    private func stopAll() {
+        ODLog.shared.log("Stop all", category: "cat")
+        // The engines unkey on stop; release PTT explicitly too, before CAT goes away.
+        let wasConnected = rig.connected
+        ft4.stop()
+        packet.stop()
+        // A network client's key and Doppler hold, and a rotctld client's pause.
+        rigServer.releaseForStopAll()
+        rotServer.resumeTracking()
+        Task {
+            if wasConnected { await rig.setPTT(false) }
+            if rig.connected || rig.connecting { rig.disconnect() }
+        }
+        if rotator.connected { rotator.disconnect() }
+    }
+}
+
 // MARK: - Hamlib server settings
 
 /// Settings section for the built-in rigctld server (bottom of the CAT screen).
@@ -1022,6 +1058,11 @@ struct RigctldServerSection: View {
         Section("rigctld server") {
             Toggle("Run rigctld server", isOn: Binding(get: { server.enabled }, set: { server.setEnabled($0) }))
             HamlibPortField(port: server.port, placeholder: "\(RigctldServer.defaultPort)") { server.setPort($0) }
+            Toggle("Allow PTT from network clients", isOn: Binding(get: { server.allowPTT }, set: { server.setAllowPTT($0) }))
+            Text(server.allowPTT
+                 ? "A client may key the radio (T 1). It's unkeyed when that client disconnects, the server stops, OrbitDeck goes to the background, or after \(Int(RigctldServer.pttLimitSec / 60)) minutes keyed."
+                 : "Clients can't key the radio: PTT commands are refused (RPRT -11).")
+                .font(.caption).foregroundStyle(ODTheme.muted)
             if server.enabled {
                 HamlibServerStatusRows(port: server.port, listening: server.listening, errorText: server.errorText,
                                        clientCount: server.clientCount, lastCommand: server.lastCommand)
@@ -1029,6 +1070,11 @@ struct RigctldServerSection: View {
                     Text("A client is tuning the radio — OrbitDeck's Doppler tuning is paused until it disconnects.")
                         .font(.caption).foregroundStyle(ODTheme.warning)
                     Button("Resume OrbitDeck Doppler") { server.resumeDoppler() }
+                }
+                if server.clientKeyed {
+                    Text("A network client has the radio keyed.")
+                        .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.warning)
+                    Button("Unkey now", role: .destructive) { server.unkeyClient() }
                 }
             }
             Text("Lets Gpredict, SatPC32, WSJT-X or a logger on your local network read or drive the radio through OrbitDeck's CAT link — in the client choose Hamlib NET rigctl (model 2) and enter an address below. VFOA is the downlink, VFOB the uplink; frequencies are the radio's dial. Reading never disturbs OrbitDeck. When a client sets a frequency, OrbitDeck pauses its own Doppler tuning for as long as that client stays connected, so let the client do Doppler (or only read).")

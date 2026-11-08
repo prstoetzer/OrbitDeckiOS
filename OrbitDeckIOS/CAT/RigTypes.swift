@@ -527,7 +527,8 @@ struct CATTuning: Codable, Sendable, Equatable {
     /// Automatic switching always moves CAT.
     var followSelection = false
     /// rigctld full duplex in VFO mode (`V VFOA`/`V VFOB` + `F`/`M`, like CardSat and
-    /// gpredict). Off = the older split method (`S 1 VFOB` + `I`/`X`).
+    /// gpredict). Off = the older split method (`S 1 VFOB` + `I`/`X`). On for new configs;
+    /// a saved config without the key decodes to off (see `init(from:)`).
     var rigctldVFOMode = true
 
     /// Whether the One True Rule read-back runs in the current tune mode.
@@ -674,7 +675,9 @@ extension CATTuning {
         let legacyMode: CATTuneMode = (t.followRadio && t.followLeg == .uplink) ? .fullUplink : .full
         t.tuneMode = c.value(CATTuneMode.self, .tuneMode, legacyMode)
         t.followSelection = c.value(Bool.self, .followSelection, t.followSelection)
-        t.rigctldVFOMode = c.value(Bool.self, .rigctldVFOMode, t.rigctldVFOMode)
+        // A config saved before VFO mode existed ran the split method: keep it (missing →
+        // false). Only a brand-new config (no saved CAT config) starts in VFO mode.
+        t.rigctldVFOMode = c.value(Bool.self, .rigctldVFOMode, false)
         self = t
     }
     func encode(to encoder: Encoder) throws {
@@ -719,6 +722,8 @@ extension CATConfig {
         cfg.slots = c.value([RigSlot].self, .slots, cfg.slots)
         if cfg.slots.count < 2 { cfg.slots += Array(repeating: RigSlot(), count: 2 - cfg.slots.count) }
         cfg.tuning = c.value(CATTuning.self, .tuning, cfg.tuning)
+        // A saved config without tuning predates rigctld VFO mode too (legacy split).
+        if !c.contains(.tuning) { cfg.tuning.rigctldVFOMode = false }
         self = cfg
     }
     func encode(to encoder: Encoder) throws {

@@ -1020,12 +1020,20 @@ final class HamlibLineServer: @unchecked Sendable {
 /// that client stays connected — Gpredict or WSJT-X then owns the dial. When the last
 /// controlling client disconnects (or sends `q`, or the operator taps Resume) Doppler
 /// resumes and re-commands both legs. Mode, split and PTT commands don't take control.
+///
+/// PTT: refused (`RPRT -11`) unless the operator turned on "Allow PTT from network
+/// clients" (off by default). A client's key is released when that client disconnects or
+/// quits, the server is turned off or moved to another port, OrbitDeck goes to the
+/// background, or after `pttLimitSec` keyed (a safety limit).
 @MainActor
 final class RigctldServer: ObservableObject {
     static let shared = RigctldServer()
     static let defaultPort = 4532
     private static let enabledKey = "orbitdeck.rigctldServer.enabled"
     private static let portKey = "orbitdeck.rigctldServer.port"
+    private static let allowPTTKey = "orbitdeck.rigctldServer.allowPTT"
+    /// Longest a network client may keep the radio keyed before the server unkeys it.
+    static let pttLimitSec: Double = 180
 
     @Published private(set) var enabled: Bool
     @Published private(set) var port: Int
@@ -1034,8 +1042,17 @@ final class RigctldServer: ObservableObject {
     @Published private(set) var clientCount = 0
     @Published private(set) var lastCommand = ""
     @Published private(set) var externalControl = false
+    /// "Allow PTT from network clients" (persisted; off unless the operator turns it on).
+    @Published private(set) var allowPTT: Bool
+    /// True while a network client has the radio keyed through the server.
+    @Published private(set) var clientKeyed = false
 
     private weak var rig: RigController?
+    /// The client that keyed the radio (nil = the server hasn't keyed it).
+    private var pttClient: Int? { didSet { clientKeyed = pttClient != nil } }
+    /// Bumped on every key/release, so a stale safety-limit timer or a key that completes
+    /// after a release can tell it's out of date.
+    private var pttSeq = 0
     private var core: HamlibLineServer!
     private var clientVFO: [Int: RigRole] = [:]
     private var clientAddress: [Int: String] = [:]
@@ -1057,6 +1074,7 @@ final class RigctldServer: ObservableObject {
         enabled = d.bool(forKey: Self.enabledKey)
         let p = d.integer(forKey: Self.portKey)
         port = (1024...65535).contains(p) ? p : Self.defaultPort
+        allowPTT = d.bool(forKey: Self.allowPTTKey)        // absent → false
         core = HamlibLineServer(name: "rigctld", handler: { [weak self] id, line in
             guard let self else { return .init(text: "RPRT -\(HamlibProtocol.eIO)\n", close: false) }
             return await self.handle(id, line)
@@ -1074,7 +1092,11 @@ final class RigctldServer: ObservableObject {
                 Task { @MainActor in if self?.enabled == true { self?.core.ensureRunning() } }
             })
             observers.append(nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.core.stop() }
+                Task { @MainActor in self?.releasePTT("OrbitDeck is quitting"); self?.core.stop() }
+            })
+            // Nobody can watch a network-keyed transmitter once the app leaves the screen.
+            observers.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.releasePTT("OrbitDeck went to the background") }
             })
         }
         if enabled { core.start(port: UInt16(port)) }
@@ -1084,7 +1106,7 @@ final class RigctldServer: ObservableObject {
         guard on != enabled else { return }
         enabled = on
         UserDefaults.standard.set(on, forKey: Self.enabledKey)
-        if on { core.start(port: UInt16(port)) } else { core.stop(); releaseAll() }
+        if on { core.start(port: UInt16(port)) } else { releasePTT("server turned off"); core.stop(); releaseAll() }
     }
 
     func setPort(_ p: Int) {
@@ -1092,11 +1114,27 @@ final class RigctldServer: ObservableObject {
         guard p != port else { return }
         port = p
         UserDefaults.standard.set(p, forKey: Self.portKey)
-        if enabled { releaseAll(); core.start(port: UInt16(p)) }
+        if enabled { releasePTT("server port changed"); releaseAll(); core.start(port: UInt16(p)) }
+    }
+
+    func setAllowPTT(_ on: Bool) {
+        guard on != allowPTT else { return }
+        allowPTT = on
+        UserDefaults.standard.set(on, forKey: Self.allowPTTKey)
+        if !on { releasePTT("network PTT turned off") }
     }
 
     /// Operator override: hand the dial back to OrbitDeck's Doppler loop now.
     func resumeDoppler() { releaseAll() }
+
+    /// Unkey a client-keyed radio now (operator button).
+    func unkeyClient() { releasePTT("unkeyed by the operator") }
+
+    /// Stop all: unkey anything a client keyed and hand the dial back to OrbitDeck.
+    func releaseForStopAll() {
+        releasePTT("Stop all")
+        releaseAll()
+    }
 
     // MARK: Events
 
@@ -1123,6 +1161,7 @@ final class RigctldServer: ObservableObject {
 
     private func endClient(_ id: Int) {
         clientVFO.removeValue(forKey: id)
+        if pttClient == id { releasePTT("\(clientAddress[id] ?? "the client that keyed it") disconnected") }
         guard controllers.remove(id) != nil else { return }
         if controllers.isEmpty { releaseAll() }
     }
@@ -1131,6 +1170,57 @@ final class RigctldServer: ObservableObject {
         controllers.removeAll()
         if ownsHold { rig?.serverEndExternalHold(); ownsHold = false }
         externalControl = false
+    }
+
+    // MARK: PTT
+
+    /// Unkey the radio if a network client keyed it (no-op otherwise, so FT4's or the
+    /// operator's own transmission is never touched).
+    private func releasePTT(_ reason: String) {
+        guard pttClient != nil else { return }
+        pttClient = nil
+        pttSeq += 1
+        ODLog.shared.log("rigctld server: PTT released — \(reason)", category: "cat")
+        guard let rig else { return }
+        Task { _ = await rig.serverSetPTT(false) }
+    }
+
+    /// `T 1` / `T 0` from a client.
+    private func setPTT(_ id: Int, on: Bool) async -> HamlibResult {
+        guard let rig, rig.connected else { return .error(HamlibProtocol.eIO) }
+        guard on else {
+            let ok = await rig.serverSetPTT(false)
+            if pttClient != nil { pttClient = nil; pttSeq += 1 }
+            return ok ? .ok : .error(HamlibProtocol.eNotAvailable)
+        }
+        guard allowPTT else {
+            ODLog.shared.log("rigctld server: PTT from \(clientAddress[id] ?? "client") refused — network PTT is off", category: "cat")
+            return .error(HamlibProtocol.eNotAvailable)
+        }
+        // Already keyed by a client: the safety limit keeps running from that key.
+        if pttClient != nil, rig.serverPTT { return .ok }
+        pttSeq += 1
+        let seq = pttSeq
+        pttClient = id
+        let keyed = await rig.serverSetPTT(true)
+        guard seq == pttSeq, pttClient == id else {
+            // Released while keying (client gone, server off, backgrounded): make sure it's down.
+            if keyed { _ = await rig.serverSetPTT(false) }
+            return .error(HamlibProtocol.eIO)
+        }
+        guard keyed else {
+            pttClient = nil; pttSeq += 1
+            if let why = rig.pttBlockedReason { ODLog.shared.log("rigctld server: PTT refused — \(why)", category: "cat") }
+            return .error(HamlibProtocol.eNotAvailable)
+        }
+        ODLog.shared.log("rigctld server: \(clientAddress[id] ?? "client") keyed the radio", category: "cat")
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pttLimitSec) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.pttSeq == seq, self.pttClient != nil else { return }
+                self.releasePTT("keyed for \(Int(Self.pttLimitSec / 60)) minutes (safety limit)")
+            }
+        }
+        return .ok
     }
 
     // MARK: Commands
@@ -1178,8 +1268,7 @@ final class RigctldServer: ObservableObject {
         case "get_ptt": return .values([("PTT", rig?.serverPTT == true ? "1" : "0")])
         case "set_ptt":
             guard let a = cmd.args.first, let n = Int(a) else { return .error(HamlibProtocol.eInval) }
-            guard let rig, rig.connected else { return .error(HamlibProtocol.eIO) }
-            return await rig.serverSetPTT(n != 0) ? .ok : .error(HamlibProtocol.eNotAvailable)
+            return await setPTT(id, on: n != 0)
         default:
             return .error(HamlibProtocol.eNotImplemented)
         }

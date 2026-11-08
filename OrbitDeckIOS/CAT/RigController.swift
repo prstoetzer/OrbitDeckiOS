@@ -20,7 +20,10 @@ import CoreMotion
 
 @MainActor
 final class RigController: ObservableObject {
-    @Published var config = CATConfig()
+    @Published var config = CATConfig() {
+        // The rotator honors the same "Follow selection while connected" setting.
+        didSet { EngagementLock.followSelection = config.tuning.followSelection }
+    }
     @Published var connected = false
     @Published var connecting = false
     @Published var statusText = "Not connected."
@@ -44,6 +47,10 @@ final class RigController: ObservableObject {
             ODLog.shared.log("Doppler hold \(holdDoppler ? "ON for \(holdSatTp.isEmpty ? "(no transponder yet)" : holdSatTp)" : "OFF")", category: "cat")
         }
     }
+    /// Set while a rigctld-server client steers the dial (`serverBeginExternalHold`). Kept
+    /// apart from FT4's `holdDoppler` so neither clears the other's hold: while it's on, the
+    /// periodic loop AND `stepDopplerNow()` (FT4's per-slot step) leave the dial alone.
+    private(set) var externalHold = false
     /// "<NORAD>|<transponder id>" the FT4 hold applies to ("" = not yet known).
     private var holdSatTp = ""
     /// True while the hold is bypassed because CAT is on a different transponder (logged once).
@@ -203,10 +210,10 @@ final class RigController: ObservableObject {
         connected && engagedNorad != nil && engagedNorad != store?.selectedSatellite?.id
     }
 
-    /// Follow (or hold off on) a selection change. While the engaged satellite is above
-    /// the horizon a manual change is only offered (`pendingSwitchNorad`); automatic
-    /// switching, the "Follow selection while connected" setting, or the engaged pass
-    /// having ended move CAT at once.
+    /// Follow (or hold off on) a selection change. While the engaged satellite is in its
+    /// locked window (`EngagementLock`: the AOS lead through LOS) a manual change is only
+    /// offered (`pendingSwitchNorad`); automatic switching, the "Follow selection while
+    /// connected" setting, or the engaged pass having ended move CAT at once.
     private func resolveEngagement() {
         guard let store, let sel = store.selectedSatellite else { return }
         guard let current = engagedNorad, current != sel.id else {
@@ -217,9 +224,9 @@ final class RigController: ObservableObject {
         }
         let automatic = Self.automaticSelectionNorad == sel.id
         let engagedSat = store.satellites.first { $0.id == current }
-        let up = engagedSat.flatMap { try? OrbitPredictor.look($0, observer: store.preferences.observer, at: Date()).elevation }
-            .map { $0 >= 0 } ?? false
-        if automatic || config.tuning.followSelection || !up {
+        // The same lock window the rotator uses (AOS lead through LOS).
+        let locked = engagedSat.map { EngagementLock.holds($0, observer: store.preferences.observer) } ?? false
+        if automatic || config.tuning.followSelection || !locked {
             ODLog.shared.log("CAT follows the selection to \(sel.name)\(automatic ? " (automatic switching)" : "")", category: "cat")
             Self.automaticSelectionNorad = nil
             switchEngaged(to: sel.id)
@@ -230,8 +237,16 @@ final class RigController: ObservableObject {
     }
 
     private func switchEngaged(to norad: UInt) {
+        let moved = engagedNorad != nil && engagedNorad != norad
         engagedNorad = norad; engagedTpID = nil
         pendingSwitchNorad = nil; dismissedSwitchNorad = nil
+        // A passband trim belongs to one bird/transponder (like the per-transponder reset
+        // in `tick`): don't carry it onto the satellite CAT switches to. Reset here, with
+        // `engagedNorad`, so the Home slider (which observes it) resyncs at once.
+        if moved {
+            if config.tuning.passbandOffsetHz != 0 { config.tuning.passbandOffsetHz = 0 }
+            atPassbandEdge = false
+        }
     }
 
     /// "Switch": move CAT to the pending selection.
@@ -295,6 +310,9 @@ final class RigController: ObservableObject {
         /// Position in `links` (0 = primary radio, 1 = two-radio uplink), for per-link
         /// "what we changed on the radio" bookkeeping.
         var index = 0
+        /// The self-test's short-lived link: its rigctld state lives in `selfTestInline`,
+        /// never in the live links' bookkeeping.
+        var selfTest = false
     }
 
     /// Links whose uplink CTCSS encoder OrbitDeck turned on (by `LiveLink.index`), so it
@@ -306,6 +324,8 @@ final class RigController: ObservableObject {
     private var rigctldInline = Set<Int>()
     /// rigctld VFO mode on a plain server: the VFO last selected with `V`, per link.
     private var rigctldCurrentVFO: [Int: String] = [:]
+    /// The self-test link's `--vfo` probe result (kept apart from `rigctldInline`).
+    private var selfTestInline = false
 
     /// True while OrbitDeck has the uplink keyed (FT4/PTT). Split rigs that must
     /// swap VFOs to reach VFO B skip uplink writes then, so a swap never lands
@@ -341,6 +361,8 @@ final class RigController: ObservableObject {
         // The exit sequence of a just-requested disconnect is still talking to the old
         // links; connecting now would let its teardown remove the new ones.
         guard !disconnecting else { statusText = "Disconnecting…"; return }
+        // The self-test has its own link to the radio; two would talk over each other.
+        guard !selfTestRunning else { errorText = "Wait for the radio self-test to finish."; return }
         guard config.isConfigured, let slot0 = config.slots.first, let spec0 = slot0.spec else {
             errorText = "Configure a radio first."; return
         }
@@ -868,6 +890,8 @@ final class RigController: ObservableObject {
         t.setEventHandler { [weak self] in
             Task { @MainActor in
                 guard let self, !self.isTicking else { return }
+                // A rigctld-server client owns the dial: no Doppler writes at all.
+                if self.externalHold { return }
                 // Slot-gated (FT4): the periodic loop is suppressed; frequency is stepped
                 // at slot boundaries via stepDopplerNow() instead — but only while CAT is
                 // still on the transponder the hold began on.
@@ -885,9 +909,10 @@ final class RigController: ObservableObject {
     /// active FT4 session to step the dial once per slot boundary (between the RX and TX
     /// slots) so it never retunes mid-slot. Overlap-guarded like the periodic tick, so
     /// when the hold doesn't apply (CAT on another transponder, loop running) it's just
-    /// one extra tick.
+    /// one extra tick. Skipped while a rigctld-server client holds the dial
+    /// (`externalHold`), so FT4's per-slot step never overwrites a client-set frequency.
     func stepDopplerNow() async {
-        guard connected, !isTicking else { return }
+        guard connected, !isTicking, !externalHold else { return }
         isTicking = true
         await tick()
         isTicking = false
@@ -1683,7 +1708,7 @@ final class RigController: ObservableObject {
     /// pre-selected with `V` (cached, so a bare command doesn't re-select every time). The
     /// split method maps the uplink to the split command (`F`→`I`, `M`→`X`, `f`→`i`).
     private func rigctldSend(_ link: LiveLink, _ cmd: String, leg: RigRole, _ args: String = "") async {
-        let inline = rigctldInline.contains(link.index)
+        let inline = link.selfTest ? selfTestInline : rigctldInline.contains(link.index)
         var command = cmd
         var vfo: String? = inline ? "currVFO" : nil
         if link.leg == .both, config.tuning.rigctldVFOMode {
@@ -1728,8 +1753,9 @@ final class RigController: ObservableObject {
 
     // MARK: PTT (for full-duplex FT4)
 
-    /// Whether the uplink radio can be keyed over CAT.
-    var pttSupported: Bool {
+    /// Whether the uplink radio has a CAT PTT command at all (regardless of the current
+    /// transponder). Unkey paths use this, so a radio is always released.
+    var pttCapable: Bool {
         guard connected, let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else { return false }
         switch link.spec.family {
         case .civ: return link.spec.civHasPTT      // IC-706 family, IC-821H, … have no 1C
@@ -1738,12 +1764,37 @@ final class RigController: ObservableObject {
         }
     }
 
+    /// Whether the uplink radio can be keyed over CAT right now: it has CAT PTT and the
+    /// tracked transponder has an uplink (see `pttBlockedReason`).
+    var pttSupported: Bool { pttCapable && pttBlockedReason == nil }
+
+    /// Why transmitting is refused right now, or nil. A receive-only (beacon/telemetry)
+    /// transponder has no uplink, and an Icom sat rig in the receive-only layout has its
+    /// MAIN band on the downlink — keying then would transmit on the downlink frequency.
+    /// Applies to every keyer (FT4, packet, remote voice, the rigctld server).
+    var pttBlockedReason: String? {
+        guard connected else { return nil }
+        if links.contains(where: { $0.rxOnlyLayout }) {
+            return "Transmit disabled: the radio is set up for a receive-only (beacon/telemetry) transponder."
+        }
+        if let sat = trackedSatellite, let tp = transponder(for: sat), tp.uplinkCenter <= 0 {
+            return "Transmit disabled: this \(sat.name) transponder has no uplink (receive only)."
+        }
+        return nil
+    }
+
     /// Key/unkey the uplink radio over CAT, if supported. No-op otherwise (the
-    /// operator uses VOX or manual PTT).
-    func setPTT(_ on: Bool) async {
+    /// operator uses VOX or manual PTT). Keying is refused (false, with the reason logged)
+    /// while `pttBlockedReason` applies; unkeying is always sent.
+    @discardableResult
+    func setPTT(_ on: Bool) async -> Bool {
         guard connected, let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else {
             ODLog.shared.log("setPTT(\(on)) ignored — not connected or no keyable uplink link", category: "cat")
-            return
+            return false
+        }
+        if on, let why = pttBlockedReason {
+            ODLog.shared.log("setPTT(true) refused → \(link.spec.name): \(why)", category: "cat")
+            return false
         }
         ODLog.shared.log("setPTT(\(on)) → \(link.spec.name) [\(link.spec.family)]", category: "cat")
         // Split: put VFO B on the current Doppler target before keying, since uplink
@@ -1756,7 +1807,8 @@ final class RigController: ObservableObject {
             var waited = 0
             while isTicking, waited < 2000 { await pace(20); waited += 20 }
             if !isTicking { isTicking = true; heldTickLock = true }
-            if lastTargetTx > 0, lastTargetTx != lastSentTx {
+            // Not while a rigctld client owns the dial: it set VFO B itself.
+            if !externalHold, lastTargetTx > 0, lastTargetTx != lastSentTx {
                 await sendSplitFreq(link, leg: .uplink, hz: lastTargetTx)
                 lastSentTx = lastTargetTx
             }
@@ -1786,6 +1838,7 @@ final class RigController: ObservableObject {
             await sendRaw(link, CATCodec.yaesuSetFreq(link.spec, hz: UInt64(lastTargetRx), vfo: .plain))
             lastSentRx = lastTargetRx
         }
+        return true
     }
 
     // MARK: Helpers
@@ -1837,13 +1890,14 @@ final class RigController: ObservableObject {
     /// mode (so the radio is left as found), checking the ACK/NAK where the protocol has
     /// one (CI-V FB/FA, Kenwood `?;`, rigctld RPRT). Only while CAT is disconnected.
     func runSelfTest(slot index: Int) async {
-        guard !selfTestRunning, !connected, !connecting, index < config.slots.count else { return }
+        guard !selfTestRunning, !connected, !connecting, !disconnecting, index < config.slots.count else { return }
         let slot = config.slots[index]
         guard let spec = slot.spec else { return }
         selfTestRunning = true; selfTestSlot = index; selfTestSteps = []
         defer { selfTestRunning = false }
         let transport = makeTransport(slot, spec: spec, index: index)
-        let link = LiveLink(slot: slot, spec: spec, transport: transport, leg: .downlink, index: index)
+        let link = LiveLink(slot: slot, spec: spec, transport: transport, leg: .downlink, index: index, selfTest: true)
+        selfTestInline = false
         let addr = civAddr(link)
         let baud = slot.baudOverride > 0 ? slot.baudOverride : spec.defaultBaud
         func add(_ name: String, _ passed: Bool?, _ detail: String, hint: String? = nil) {
@@ -1882,7 +1936,7 @@ final class RigController: ObservableObject {
             await sendRaw(link, CATCodec.rigctldChkVFO)
             let reply = await readReply(link, maxWait: 0.5)
             let inline = CATCodec.rigctldParseChkVFO(reply)
-            if inline { rigctldInline.insert(link.index) }
+            selfTestInline = inline
             add("rigctld", reply.isEmpty ? false : true,
                 reply.isEmpty ? "No answer to \\chk_vfo." : (inline ? "Server runs with --vfo (VFO sent inline)." : "Plain server (VFO selected with V)."),
                 hint: reply.isEmpty ? "rigctld didn't answer. Check that it's running and connected to the radio." : nil)
@@ -1934,7 +1988,11 @@ final class RigController: ObservableObject {
             let body = CATCodec.civReply(await readReply(link, maxWait: 0.5), addr: addr, cmd: 0x04)
             let mode = body?.first.flatMap(CATCodec.civModeFromByte)
             add("Read mode", mode != nil, mode.map { $0.label } ?? "No usable reply.", hint: mode == nil ? noReplyHint : nil)
-            let setMode = mode ?? .usb
+            // Leave the radio as found: never force a mode we didn't read back.
+            guard let setMode = mode else {
+                add("Set mode", nil, "Skipped: the current mode is unknown, so it was left as is.")
+                break
+            }
             await sendRaw(link, CATCodec.civSetMode(spec, addr: addr, mode: setMode))
             switch CATCodec.civAck(await readReply(link, maxWait: 0.5), addr: addr) {
             case true?: add("Set mode (\(setMode.label))", true, "Radio answered OK (FB).")
@@ -1947,7 +2005,10 @@ final class RigController: ObservableObject {
             await sendRaw(link, CATCodec.kwReadMode)
             let mode = CATCodec.kwParseMode(await readReply(link, maxWait: 0.5))
             add("Read mode", mode != nil, mode.map { $0.label } ?? "No usable reply.", hint: mode == nil ? noReplyHint : nil)
-            let setMode = mode ?? .usb
+            guard let setMode = mode else {
+                add("Set mode", nil, "Skipped: the current mode is unknown, so it was left as is.")
+                break
+            }
             for f in CATCodec.kwSetMode(spec, setMode) { await sendRaw(link, f) }
             let reply = await readReply(link, maxWait: 0.3)
             let rejected = String(decoding: reply, as: UTF8.self).contains("?")
@@ -1960,8 +2021,17 @@ final class RigController: ObservableObject {
             await rigctldSend(link, "m", leg: .downlink)
             let name = CATCodec.rigctldParseMode(await readReply(link, maxWait: 0.5))
             add("Read mode", name != nil, name ?? "No usable reply.", hint: name == nil ? noReplyHint : nil)
-            let mode = name.map { RigMode.parse($0) } ?? .usb
-            await rigctldSend(link, "M", leg: .downlink, CATCodec.rigctldModeArgs(mode))
+            // Only Hamlib modes that map 1:1 onto ours are set back (PKT* as the data
+            // variant); anything else (CWR, RTTY, WFM, …) is left as found.
+            let hamlib = name?.uppercased() ?? ""
+            let exact: [String: RigMode] = ["USB": .usb, "LSB": .lsb, "CW": .cw, "FM": .fm, "AM": .am,
+                                            "PKTUSB": .usb, "PKTLSB": .lsb, "PKTFM": .fm]
+            guard let mode = exact[hamlib] else {
+                add("Set mode", nil, name == nil ? "Skipped: the current mode is unknown, so it was left as is."
+                                                 : "Skipped: \(hamlib) is left as is.")
+                break
+            }
+            await rigctldSend(link, "M", leg: .downlink, CATCodec.rigctldModeArgs(mode, data: hamlib.hasPrefix("PKT")))
             let status = CATCodec.rigctldStatus(await readReply(link, maxWait: 0.5))
             add("Set mode (\(mode.label))", status == 0, status.map { "RPRT \($0)" } ?? "No RPRT reply.",
                 hint: status == 0 ? nil : "rigctld refused the mode. Check the Hamlib model and that the radio is in VFO mode.")
@@ -1984,7 +2054,7 @@ final class RigController: ObservableObject {
         }
 
         await transport.disconnect()
-        rigctldInline.remove(link.index)
+        selfTestInline = false
         let failed = selfTestSteps.contains { $0.passed == false }
         ODLog.shared.log("self-test \(spec.name): \(failed ? "FAILED" : "passed") — \(selfTestSteps.map { "\($0.name)=\($0.passed.map { $0 ? "ok" : "fail" } ?? "info")" }.joined(separator: ", "))", category: "cat")
     }
@@ -2092,7 +2162,7 @@ extension RigController {
     /// True while the Doppler loop is actively commanding the radio (connected, Track
     /// Doppler on, a target computed, not held by FT4 or an external client).
     var serverDopplerDriving: Bool {
-        connected && config.tuning.trackDoppler && !holdDoppler && lastTargetRx > 0
+        connected && config.tuning.trackDoppler && !holdDoppler && !externalHold && lastTargetRx > 0
     }
 
     /// Whether Hamlib's "Main" VFO name means the uplink on this station.
@@ -2144,7 +2214,8 @@ extension RigController {
 
     /// The mode OrbitDeck would put on a leg for the current transponder, if known.
     func serverDerivedMode(leg: RigRole) -> RigMode? {
-        guard let sat = store?.selectedSatellite, let tp = transponder(for: sat) else { return nil }
+        // The satellite CAT is actually tuning (the engaged one during a locked pass).
+        guard let sat = trackedSatellite, let tp = transponder(for: sat) else { return nil }
         var dl = RigMode.downlink(for: tp)
         var ul = RigMode.uplink(for: tp, downlink: dl)
         if config.tuning.linearCW, tp.isLinear, !useDataModeForDigital {
@@ -2157,33 +2228,29 @@ extension RigController {
     /// Whether OrbitDeck has keyed the uplink radio.
     var serverPTT: Bool { pttKeyed }
 
-    /// Key/unkey through the normal PTT path. False when the uplink radio can't be keyed.
+    /// Key/unkey through the normal PTT path. False when the uplink radio can't be keyed
+    /// (no CAT PTT, or `pttBlockedReason` applies). Unkeying needs only the capability.
     func serverSetPTT(_ on: Bool) async -> Bool {
-        guard pttSupported else { return false }
-        await setPTT(on)
-        return true
+        guard pttCapable else { return false }
+        return await setPTT(on)
     }
 
-    /// Hold the Doppler loop for an external client. Returns true if this call took the
-    /// hold (it was off). If it's already held (by this server or by FT4) the hold is just
-    /// re-scoped to the current satellite/transponder, so automatic switching can't
-    /// silently resume OrbitDeck's own Doppler while the client is still steering.
+    /// Hold the Doppler loop for an external client (`externalHold`, independent of FT4's
+    /// `holdDoppler`). Returns true if this call took the hold (it was off). It isn't
+    /// scoped to a transponder: the client owns the dial whatever CAT is engaged on.
     @discardableResult
     func serverBeginExternalHold() -> Bool {
-        if holdDoppler {
-            holdSatTp = currentSatTp(); holdScopeMismatch = false
-            return false
-        }
-        holdDoppler = true
+        guard !externalHold else { return false }
+        externalHold = true
         ODLog.shared.log("rigctld server: external client is tuning — OrbitDeck Doppler paused", category: "cat")
         return true
     }
 
     /// Release a hold taken by `serverBeginExternalHold`, forcing both legs to be
-    /// re-commanded on the next tick.
+    /// re-commanded on the next tick. FT4's own hold (`holdDoppler`) is left as it is.
     func serverEndExternalHold() {
-        guard holdDoppler else { return }
-        holdDoppler = false
+        guard externalHold else { return }
+        externalHold = false
         lastSentRx = 0; lastSentTx = 0
         ODLog.shared.log("rigctld server: external control ended — OrbitDeck Doppler resumed", category: "cat")
     }
@@ -2197,5 +2264,39 @@ extension RigController {
         let result = await body()
         if took { isTicking = false }
         return result
+    }
+}
+
+// MARK: - Engaged-satellite lock (shared by CAT and the rotator)
+
+/// One rule for how long CAT (`RigController.resolveEngagement`) and the rotator
+/// (`RotatorController.engagedSatellite`) stay on the satellite they're engaged on when the
+/// app-wide selection changes: from the AOS lead (the rotator's pre-position window)
+/// through LOS of that satellite's pass. Inside the window a manual selection is only
+/// offered; the "Follow selection while connected" setting lifts the lock for both, and
+/// automatic switching is always authoritative.
+@MainActor
+enum EngagementLock {
+    /// Mirrors CAT's `followSelection` (kept in sync by `RigController.config`).
+    static var followSelection = false
+    /// The lead before AOS from which the engaged satellite is already locked, in seconds.
+    /// Mirrors the rotator's pre-position lead (kept in sync by `RotatorController.config`);
+    /// 0 = locked from AOS.
+    static var aosLeadSec: Double = 120
+
+    /// Whether `sat` is inside its locked window at `now`: above the horizon, or rising
+    /// within `aosLeadSec`. Only evaluated while the selection differs from the engaged
+    /// satellite, so the few SGP4 samples across the lead window cost nothing noticeable.
+    static func holds(_ sat: SatelliteRecord, observer: ObserverSite, at now: Date = Date()) -> Bool {
+        guard let look = try? OrbitPredictor.look(sat, observer: observer, at: now) else { return false }
+        if look.elevation >= 0 { return true }
+        let lead = max(0, aosLeadSec)
+        guard lead > 0 else { return false }
+        let steps = max(1, Int((lead / 30).rounded(.up)))       // ≤ 30 s between samples
+        for i in 1...steps {
+            let t = now.addingTimeInterval(lead * Double(i) / Double(steps))
+            if let l = try? OrbitPredictor.look(sat, observer: observer, at: t), l.elevation >= 0 { return true }
+        }
+        return false
     }
 }

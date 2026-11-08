@@ -180,6 +180,7 @@ struct RotatorSettingsView: View {
 struct HomeRotatorCard: View {
     @EnvironmentObject private var store: OrbitStore
     @EnvironmentObject private var rot: RotatorController
+    @EnvironmentObject private var rig: RigController
     let satellite: SatelliteRecord
     @State private var showManual = false
 
@@ -210,6 +211,8 @@ struct HomeRotatorCard: View {
                     }
                     .buttonStyle(.bordered)
                 }
+                // A rotator-only station has no rig card, so Stop all lives here instead.
+                if !rig.config.isConfigured { StopAllButton() }
                 Text("Rotator control works only while OrbitDeck is in the foreground. Keep the Home screen awake during a pass (Settings ▸ Display).")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }

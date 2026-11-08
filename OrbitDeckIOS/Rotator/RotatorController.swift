@@ -19,7 +19,10 @@ import SatelliteKit
 
 @MainActor
 final class RotatorController: ObservableObject {
-    @Published var config = RotatorConfig()
+    @Published var config = RotatorConfig() {
+        // CAT locks onto its engaged satellite from the same AOS lead (see EngagementLock).
+        didSet { EngagementLock.aosLeadSec = Double(max(0, config.leadSec)) }
+    }
     @Published var connected = false
     @Published var connecting = false
     @Published var statusText = "Not connected"
@@ -42,6 +45,9 @@ final class RotatorController: ObservableObject {
     }
     /// `stopMotion()` was called: nothing is sent until a target is set again.
     @Published private(set) var holding = false
+    /// Bumped by `stopMotion()`. A point command captures it before waiting for the link
+    /// and is dropped if a stop came in meanwhile, so an in-flight tick can't undo a stop.
+    private var motionGeneration = 0
 
     // Position read-back (protocols with a position query, on a transport that replies).
     @Published private(set) var actualAz: Double?      // reported azimuth (+ declination if magnetic), comparable to `commandedAz`
@@ -271,12 +277,14 @@ final class RotatorController: ObservableObject {
         timer = t
     }
 
-    /// Run one tick now (after a target change), waiting out a tick in progress.
+    /// Run one tick now (after a target change), waiting out a tick in progress. Not
+    /// while a rotctld-server client has paused tracking: it owns the rotator until it
+    /// lets go (`serverResumeTracking`).
     private func retick() {
-        guard connected else { return }
+        guard connected, !serverTrackingPaused else { return }
         Task {
             while isTicking { await Self.gcdDelay(0.05) }
-            guard connected else { return }
+            guard connected, !serverTrackingPaused else { return }
             isTicking = true
             await tick()
             isTicking = false
@@ -400,18 +408,19 @@ final class RotatorController: ObservableObject {
     // MARK: Engaged-satellite lock
 
     /// The satellite to fly this tick. A new selection made while the engaged satellite
-    /// is mid-pass (tracking or pre-positioning) is offered, not obeyed; automatic
-    /// switching is authoritative and retargets at once. Once the engaged pass ends
-    /// (parked), the selection is adopted.
+    /// is in its locked window (`EngagementLock`: the AOS lead through LOS — the same rule
+    /// CAT uses) is offered, not obeyed; automatic switching and the shared "Follow
+    /// selection while connected" setting retarget at once. Once the engaged pass ends,
+    /// the selection is adopted.
     private func engagedSatellite(_ store: OrbitStore, selected: SatelliteRecord) -> SatelliteRecord {
         var autoPick = false
         if let event = autoSwitch?.lastEvent, event.id != seenAutoEventID {
             seenAutoEventID = event.id
             autoPick = event.norad == selected.id
         }
-        if let id = engagedSatelliteID, id != selected.id, !autoPick,
-           mode == .tracking || mode == .prepositioning,
-           let engaged = store.satellites.first(where: { $0.id == id }) {
+        if let id = engagedSatelliteID, id != selected.id, !autoPick, !EngagementLock.followSelection,
+           let engaged = store.satellites.first(where: { $0.id == id }),
+           EngagementLock.holds(engaged, observer: store.preferences.observer) {
             let offer = keptForSatID == selected.id ? nil : PendingSwitch(id: selected.id, name: selected.name)
             if pendingSwitch != offer { pendingSwitch = offer }
             return engaged
@@ -485,13 +494,14 @@ final class RotatorController: ObservableObject {
         let here = currentTrueBearing()
         target = .fixed(azimuth: here.az, elevation: here.el)
         holding = true
+        motionGeneration += 1
         let bytes = RotatorCodec.stop(config.proto)
         guard connected else { return }
         statusText = bytes.isEmpty ? "Holding · \(config.proto.label) has no stop command" : "Stopped · holding"
         guard !bytes.isEmpty else { return }
         Task {
             let err = await withLink { () async -> String? in
-                guard let t = self.transport else { return nil }
+                guard let t = self.transport else { return CATError.notConnected.localizedDescription }
                 do { try await self.tx(t, bytes); return nil } catch { return error.localizedDescription }
             }
             txSeq += 1
@@ -536,21 +546,27 @@ final class RotatorController: ObservableObject {
     }
 
     private func command(az: Double, el: Double) async {
-        commandedAz = az; commandedEl = el          // show the true bearing
         let sendAz = az - declination
+        let generation = motionGeneration
+        let err = await sendPoint(az: sendAz, el: el, generation: generation)
+        // Stopped while this point waited for the link: it was dropped, not sent.
+        guard generation == motionGeneration else { return }
+        commandedAz = az; commandedEl = el          // show the true bearing
         txSeq += 1
-        let err = await sendPoint(az: sendAz, el: el)
         lastTx = err == nil ? "TX #\(txSeq): ok" : "TX #\(txSeq): \(err ?? "")"
         lastAz = az; lastEl = el; lastSendAt = Date()
         sentAz = sendAz; sentEl = max(0, el)
     }
 
     /// Send a mechanical position (offsets/declination already applied). Returns nil on
-    /// success, else the error text.
-    private func sendPoint(az: Double, el: Double) async -> String? {
+    /// success, else the error text. With a `generation` (the pointing loop's sends), the
+    /// point is dropped — returning nil, sending nothing — if `stopMotion()` ran while it
+    /// waited for the link.
+    private func sendPoint(az: Double, el: Double, generation: Int? = nil) async -> String? {
         await withLink { () async -> String? in
+            if let generation, generation != self.motionGeneration { return nil }
             if self.config.proto == .spid, self.canReadReplies { return await self.spidCommand(az: az, el: el) }
-            guard let t = self.transport else { return nil }
+            guard let t = self.transport else { return CATError.notConnected.localizedDescription }
             var err: String?
             for datagram in RotatorCodec.pointDatagrams(self.config.proto, az: az, el: el, azimuthOnly: self.config.azimuthOnly) {
                 do { try await self.tx(t, datagram) }
@@ -1032,11 +1048,14 @@ extension RotatorController {
 
     /// Pause tracking and send the protocol's stop command (if it has one).
     func serverStop() async -> Bool {
-        guard connected, let t = transport else { return false }
+        guard connected, transport != nil else { return false }
         await serverPauseTracking()
         let bytes = RotatorCodec.stop(config.proto)
         guard !bytes.isEmpty else { return true }
-        do { try await t.send(bytes); return true } catch { return false }
+        return await withLink { () async -> Bool in
+            guard let t = self.transport else { return false }
+            do { try await self.tx(t, bytes); return true } catch { return false }
+        }
     }
 
     /// Pause tracking and move to the configured park position.
@@ -1069,16 +1088,9 @@ extension RotatorController {
     private func serverSend(az: Double, el: Double) async -> Bool {
         commandedAz = az; commandedEl = el
         txSeq += 1
-        var ok = true; var errText = ""
-        if config.proto == .spid, canReadReplies {
-            errText = await spidCommand(az: az, el: el) ?? ""
-            ok = errText.isEmpty
-        } else {
-            for datagram in RotatorCodec.pointDatagrams(config.proto, az: az, el: el, azimuthOnly: config.azimuthOnly) {
-                do { try await transport?.send(datagram) }
-                catch { ok = false; errText = error.localizedDescription }
-            }
-        }
+        // Through the link lock and the monitor, like OrbitDeck's own sends.
+        let errText = await sendPoint(az: az, el: el) ?? ""
+        let ok = errText.isEmpty
         lastTx = ok ? "TX #\(txSeq): ok (rotctld server)" : "TX #\(txSeq): \(errText)"
         lastAz = az; lastEl = el; lastSendAt = Date()
         return ok
