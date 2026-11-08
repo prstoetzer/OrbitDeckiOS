@@ -898,6 +898,8 @@ struct ExportsView: View {
                         if loading { ProgressView() }
                     }
 
+                    StationReportsCard()
+
                     SectionCard("Listings & reference orbits") {
                         Text("Desktop-style compact pass, equator-crossing and stepped ephemeris exports. Position listings include az/el/range, range-rate, sub-point, altitude and Sun/shadow state.")
                             .font(.caption).foregroundStyle(ODTheme.muted)

@@ -1,6 +1,7 @@
 import Foundation
 #if canImport(UIKit)
 import UIKit
+import CoreImage.CIFilterBuiltins
 #endif
 
 
@@ -2343,6 +2344,205 @@ enum OrbitBackupService {
     static func mergedLog(current: [QSORecord], restored: [QSORecord]) -> [QSORecord] {
         let have = Set(current.map(\.id))
         return (current + restored.filter { !have.contains($0.id) }).sorted { $0.utc > $1.utc }
+    }
+}
+
+// MARK: - TLE export
+
+/// Writes NORAD two-line element sets from loaded GP records (classic 69-column
+/// format with checksums; Alpha-5 catalog numbers above 99999). OMM feeds don't
+/// carry the n-dot/n-ddot terms SGP4 ignores, so those fields are written as zero.
+enum TLEFormatter {
+    static func lines(for sat: SatelliteRecord) -> [String] {
+        let cal = Calendar(identifier: .gregorian)
+        var utc = cal; utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        let year = utc.component(.year, from: sat.epoch)
+        let startOfYear = utc.date(from: DateComponents(year: year, month: 1, day: 1)) ?? sat.epoch
+        let dayOfYear = sat.epoch.timeIntervalSince(startOfYear) / 86400 + 1
+        let catalog = catalogField(sat.id)
+        let set = sat.elements.tleNumber % 10000
+        var l1 = "1 \(catalog)U \(intlField(sat.internationalDesignator)) "
+        l1 += String(format: "%02d%012.8f", year % 100, dayOfYear)
+        l1 += "  .00000000  00000-0 \(expField(sat.bstar)) 0 " + String(format: "%4d", set)
+        var l2 = "2 \(catalog) "
+        l2 += String(format: "%8.4f %8.4f %07d %8.4f %8.4f %11.8f%5d",
+                     sat.inclinationDeg, sat.raanDeg, Int((sat.eccentricity * 1e7).rounded()) % 10_000_000,
+                     sat.argumentOfPerigeeDeg, sat.meanAnomalyDeg, sat.meanMotionRevPerDay, sat.elements.revNumber % 100_000)
+        let name = String(sat.name.prefix(24))
+        return [name, l1 + String(checksum(l1)), l2 + String(checksum(l2))]
+    }
+
+    static func text(for sats: [SatelliteRecord]) -> String {
+        sats.map { lines(for: $0).joined(separator: "\n") }.joined(separator: "\n") + "\n"
+    }
+
+    /// Modulo-10 sum of the digits, with each minus sign counting as 1.
+    static func checksum(_ line: String) -> Int {
+        line.reduce(0) { sum, ch in
+            if let d = ch.wholeNumberValue { return sum + d }
+            return ch == "-" ? sum + 1 : sum
+        } % 10
+    }
+
+    /// 5-character catalog number; Alpha-5 (A=10 … Z=33, skipping I and O) above 99999.
+    static func catalogField(_ id: UInt) -> String {
+        guard id > 99_999, id < 340_000 else { return String(format: "%05d", Int(id % 100_000)) }
+        let letters = Array("ABCDEFGHJKLMNPQRSTUVWXYZ")
+        return String(letters[Int(id / 10_000) - 10]) + String(format: "%04d", Int(id % 10_000))
+    }
+
+    /// "1998-067A" → "98067A  " (TLE international-designator columns).
+    static func intlField(_ designator: String) -> String {
+        let d = designator.trimmingCharacters(in: .whitespaces)
+        var out = d
+        if d.count >= 9, d.dropFirst(4).first == "-" {
+            out = String(d.dropFirst(2).prefix(2)) + String(d.dropFirst(5))
+        }
+        return String(out.prefix(8)).padding(toLength: 8, withPad: " ", startingAt: 0)
+    }
+
+    /// TLE assumed-decimal exponent field: " 12345-3" = 0.12345e-3.
+    static func expField(_ value: Double) -> String {
+        guard value != 0, value.isFinite else { return " 00000-0" }
+        var exponent = Int(floor(log10(abs(value)))) + 1
+        var mantissa = Int((abs(value) / pow(10, Double(exponent)) * 1e5).rounded())
+        if mantissa >= 100_000 { mantissa /= 10; exponent += 1 }
+        exponent = max(-9, min(9, exponent))
+        return (value < 0 ? "-" : " ") + String(format: "%05d", mantissa) + (exponent < 0 ? "-" : "+") + String(abs(exponent))
+    }
+}
+
+// MARK: - Station reports (keps, readiness, Support AMSAT, contact card)
+
+/// A titled block for the simple text reports.
+struct ReportSection: Sendable {
+    let heading: String
+    let lines: [String]
+    var monospaced = false
+}
+
+enum StationReportService {
+    /// Letter-size text report: title, subtitle, sections that flow across pages,
+    /// a footer on each page and an optional QR code (top right of page 1).
+    static func textPDF(title: String, subtitle: String, sections: [ReportSection], footer: String,
+                        qr: (payload: String, caption: String)? = nil) -> Data {
+#if canImport(UIKit)
+        let page = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let margin: CGFloat = 54
+        let width = page.width - margin * 2
+        return UIGraphicsPDFRenderer(bounds: page).pdfData { context in
+            var y: CGFloat = 0
+            var pageNumber = 0
+            func newPage() {
+                context.beginPage()
+                pageNumber += 1
+                (footer + " · page \(pageNumber)" as NSString).draw(
+                    in: CGRect(x: margin, y: page.height - 34, width: width, height: 14),
+                    withAttributes: [.font: UIFont.systemFont(ofSize: 7.5), .foregroundColor: UIColor.darkGray])
+                y = margin
+            }
+            @discardableResult
+            func draw(_ text: String, font: UIFont, color: UIColor = .black, maxWidth: CGFloat = width, after: CGFloat = 4) -> CGFloat {
+                let style = NSMutableParagraphStyle(); style.lineSpacing = 2
+                let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: style]
+                let height = ceil((text as NSString).boundingRect(with: CGSize(width: maxWidth, height: .greatestFiniteMagnitude),
+                                                                  options: [.usesLineFragmentOrigin], attributes: attrs, context: nil).height)
+                if y + height > page.height - 48 { newPage() }
+                (text as NSString).draw(with: CGRect(x: margin, y: y, width: maxWidth, height: height),
+                                        options: [.usesLineFragmentOrigin], attributes: attrs, context: nil)
+                y += height + after
+                return height
+            }
+            newPage()
+            var headerWidth = width
+            if let qr, let image = qrImage(qr.payload) {
+                let side: CGFloat = 118
+                let rect = CGRect(x: page.width - margin - side, y: margin - 6, width: side, height: side)
+                context.cgContext.interpolationQuality = .none
+                image.draw(in: rect)
+                (qr.caption as NSString).draw(in: CGRect(x: rect.minX - 20, y: rect.maxY + 2, width: side + 40, height: 24),
+                                              withAttributes: [.font: UIFont.systemFont(ofSize: 7.5), .foregroundColor: UIColor.darkGray])
+                headerWidth = width - side - 16
+            }
+            draw(title, font: .boldSystemFont(ofSize: 22), maxWidth: headerWidth, after: 4)
+            draw(subtitle, font: .systemFont(ofSize: 10), color: .darkGray, maxWidth: headerWidth, after: 14)
+            if qr != nil { y = max(y, margin + 150) }
+            for section in sections {
+                if !section.heading.isEmpty {
+                    if y + 40 > page.height - 48 { newPage() }
+                    draw(section.heading, font: .boldSystemFont(ofSize: 13), after: 4)
+                }
+                for line in section.lines {
+                    draw(line, font: section.monospaced ? .monospacedSystemFont(ofSize: 8.6, weight: .regular) : .systemFont(ofSize: 10.5),
+                         after: section.monospaced ? 1 : 4)
+                }
+                y += 8
+            }
+        }
+#else
+        return Data((title + "\n" + sections.map { $0.heading + "\n" + $0.lines.joined(separator: "\n") }.joined(separator: "\n\n")).utf8)
+#endif
+    }
+
+#if canImport(UIKit)
+    /// Crisp QR code via Core Image (medium error correction), scaled up without smoothing.
+    static func qrImage(_ payload: String, scale: CGFloat = 12) -> UIImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(payload.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: scale, y: scale)),
+              let cg = CIContext().createCGImage(output, from: output.extent) else { return nil }
+        return UIImage(cgImage: cg)
+    }
+#endif
+
+    /// Favorites' element sets: the TLE text plus a one-line summary for each.
+    static func kepsPDF(_ sats: [SatelliteRecord], now: Date = .now) -> Data {
+        let sections = sats.map { sat -> ReportSection in
+            let age = now.timeIntervalSince(sat.epoch) / 86400
+            let summary = String(format: "Epoch %@ (%.1f days old) · set %d · i %.2f° · e %.4f · %.1f min · %.0f × %.0f km",
+                                 ODFormat.utc.string(from: sat.epoch), age, sat.elements.tleNumber,
+                                 sat.inclinationDeg, sat.eccentricity, sat.periodMinutes, sat.perigeeKm, sat.apogeeKm)
+            return ReportSection(heading: "\(sat.name) · NORAD \(sat.id)", lines: TLEFormatter.lines(for: sat) + [summary], monospaced: true)
+        }
+        return textPDF(title: "Favorite satellites — element sets",
+                       subtitle: "\(sats.count) satellite(s) · generated \(ODFormat.utc.string(from: now)). Two-line elements rebuilt from the loaded GP data; n-dot terms are written as zero (SGP4 doesn't use them). Refresh elements before precision work.",
+                       sections: sections, footer: "OrbitDeck iOS · keps export")
+    }
+
+    /// One-page "Support AMSAT" sheet (text ported from CardSat's printed pitch page).
+    static func supportAMSATPDF() -> Data {
+        textPDF(title: "Support AMSAT",
+                subtitle: "Keep amateur radio in space",
+                sections: [
+                    ReportSection(heading: "", lines: ["AMSAT is the volunteer, nonprofit organization that keeps amateur radio in space — designing, building and operating satellites that any licensed ham can use."]),
+                    ReportSection(heading: "Why it matters", lines: ["Ham satellites give students, experimenters and emergency operators a hands-on path to space: FM repeaters and linear transponders you can work with modest gear, plus telemetry and STEM projects that put real spacecraft in classrooms."]),
+                    ReportSection(heading: "How you can help", lines: ["•  Join or renew your membership at amsat.org", "•  Donate to the satellite programs", "•  Get on the birds and mentor a newcomer", "•  Volunteer your skills", "•  Outside the US, support your national AMSAT group too"]),
+                    ReportSection(heading: "", lines: ["Every membership and donation directly funds the next generation of amateur satellites. The satellites OrbitDeck tracks exist because of AMSAT and volunteer satellite builders. 73 and good passes!"])
+                ],
+                footer: "OrbitDeck iOS · amsat.org",
+                qr: (payload: "https://www.amsat.org", caption: "amsat.org"))
+    }
+
+    /// Operator contact card for public events (wording ported from CardSat's op card).
+    static func contactCardPDF(callsign: String, name: String, grid: String) -> Data {
+        let call = callsign.trimmingCharacters(in: .whitespaces).uppercased()
+        let qrz = call.isEmpty ? "https://www.qrz.com" : "https://www.qrz.com/db/\(call)"
+        var identity: [String] = []
+        if !name.isEmpty { identity.append(name) }
+        if !grid.isEmpty { identity.append("Grid \(grid)") }
+        identity.append(qrz)
+        return textPDF(title: call.isEmpty ? "Amateur Radio Contact" : call,
+                       subtitle: "Amateur radio contact card",
+                       sections: [
+                           ReportSection(heading: "", lines: identity),
+                           ReportSection(heading: "What is amateur radio?", lines: ["Amateur (\u{201C}ham\u{201D}) radio is a licensed hobby and service: operators use radio to talk across town or around the world, experiment with electronics, and provide communications in emergencies — no internet or phone network required."]),
+                           ReportSection(heading: "Radio… from space?", lines: ["Yes. Amateurs build and use their own satellites. Some carry FM repeaters you can work with a handheld and a small antenna; others carry linear transponders for SSB and CW. The International Space Station has ham gear too. Passes last only minutes, which is half the fun."]),
+                           ReportSection(heading: "How to get started", lines: ["•  Anyone can listen. To transmit, you need a license (in the US, no Morse code is required).", "•  Study, take a simple exam, get your callsign.", "•  Find a local club, or visit arrl.org (US) or your national society.", "•  For satellites specifically: amsat.org."]),
+                           ReportSection(heading: "", lines: ["Ask me about the satellite you just saw me work — I'm happy to show you how it works."])
+                       ],
+                       footer: "OrbitDeck iOS · contact card",
+                       qr: (payload: qrz, caption: call.isEmpty ? "qrz.com" : "\(call) on QRZ"))
     }
 }
 

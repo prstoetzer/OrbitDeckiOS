@@ -77,6 +77,8 @@ struct DeepToolsView: View {
                 if spec.id == "sciCalc" { SciCalcView() }
                 if spec.id == "locationConvert" { LocationConverterView() }
                 if spec.id == "gridDistance" { GridDistanceView() }
+                if spec.id == "comet" { CometPositionView() }
+                if spec.id == "debrisScreen" { DebrisScreenView() }
                 if !BenchTools.customViewTools.contains(spec.id) {
                     ForEach(spec.fields) { field in
                         HStack {
@@ -507,6 +509,9 @@ private enum DeepLearnTopic: String, CaseIterable, Identifiable {
     case transponder = "Transponder"
     case link = "Link budget"
     case antenna = "Antenna pattern"
+    case orbitTypes = "Orbit types (animated)"
+    case foxAnatomy = "AMSAT Fox anatomy"
+    case cubeSatSim = "CubeSat Simulator"
     var id: String { rawValue }
 }
 
@@ -800,6 +805,15 @@ struct DeepLearnView: View {
                     let angle=Double(item.element)/10, sigma=max(1,bw/2.355), level=exp(-0.5*pow(angle/sigma,2)); return GraphPoint(id:item.offset,x:angle,y:level)
                 }) { p in if let y=p.y { LineMark(x:.value("Angle",p.x),y:.value("Relative gain",y)) } }.frame(height:260)
                 Text("Higher gain concentrates energy into a narrower beam, improving link margin at the cost of more demanding pointing.").foregroundStyle(ODTheme.muted)
+            case .orbitTypes:
+                Text("Orbit types, animated").font(.title2.bold())
+                OrbitArchetypesLesson()
+            case .foxAnatomy:
+                Text("Inside an AMSAT Fox CubeSat").font(.title2.bold())
+                FoxAnatomyLesson()
+            case .cubeSatSim:
+                Text("The AMSAT CubeSat Simulator").font(.title2.bold())
+                CubeSatSimLesson()
             }
         }
     }
@@ -912,4 +926,223 @@ struct DeepLearnView: View {
         VStack(alignment:.leading){Text(ODFormat.units("\(label): \(String(format: "%.1f", value.wrappedValue)) \(unit)")).font(.caption.monospacedDigit());Slider(value:value,in:range)}
     }
     private func metric(_ label:String,_ value:String)->some View { HStack{Text(label).foregroundStyle(ODTheme.muted);Spacer();Text(value).font(.body.monospacedDigit())} }
+}
+
+// MARK: - Learn: orbit archetypes, Fox anatomy, CubeSatSim (CardSat parity)
+
+/// Animated orbit archetypes (CardSat Help → o): each ellipse drawn to scale with
+/// Earth at the focus, the satellite advancing by Kepler's equation (one orbit
+/// every ~8 s, so it visibly speeds up at perigee).
+struct OrbitArchetypesLesson: View {
+    private struct Archetype: Identifiable {
+        let id: String
+        let perigeeKm: Double, apogeeKm: Double, inclination: Double
+        let use: String, caption: String
+    }
+    // Shapes and uses ported from CardSat's OZ_ARCH table.
+    private let archetypes: [Archetype] = [
+        .init(id: "LEO", perigeeKm: 500, apogeeKm: 500, inclination: 51, use: "ISS, most CubeSats, weather",
+              caption: "Low Earth orbit: a few hundred km up, about 90–100 minutes per lap. Passes last 10–15 minutes with fast Doppler, but path loss is low — a handheld and a small Yagi work FM birds."),
+        .init(id: "Polar / SSO", perigeeKm: 700, apogeeKm: 700, inclination: 98, use: "Imaging, sun-synchronous",
+              caption: "A slightly retrograde polar orbit whose plane precesses ~1°/day (J2) to keep pace with the Sun, so it crosses each latitude at the same local time every day. Polar orbits see every point on Earth."),
+        .init(id: "MEO", perigeeKm: 20_200, apogeeKm: 20_200, inclination: 55, use: "GPS / GNSS navigation",
+              caption: "Medium Earth orbit: 2,000–35,786 km. GNSS satellites at ~20,200 km circle twice a sidereal day; each one is visible for hours at a time."),
+        .init(id: "GEO", perigeeKm: 35_786, apogeeKm: 35_786, inclination: 0, use: "TV, weather, comms (QO-100)",
+              caption: "Geostationary: one lap per sidereal day over the equator, so the satellite hangs still in your sky — no tracking or Doppler. QO-100 at 25.9° E is the amateur one."),
+        .init(id: "Molniya / HEO", perigeeKm: 500, apogeeKm: 39_900, inclination: 63.4, use: "High-latitude comms, long dwell",
+              caption: "Highly elliptical, 12 h period at the critical 63.4° inclination (apogee doesn't drift). The satellite races through perigee and loiters for hours near apogee — the AO-10/AO-13/AO-40 style of amateur orbit."),
+        .init(id: "Amateur MEO", perigeeKm: 5_900, apogeeKm: 5_900, inclination: 71, use: "GreenCube (IO-117) digipeater",
+              caption: "A rare amateur bird above LEO: at ~5,900 km GreenCube's footprint spans continents, giving long, slow passes and intercontinental digital contacts.")
+    ]
+    @State private var selected = "LEO"
+    @State private var start = Date()
+
+    var body: some View {
+        let arch = archetypes.first { $0.id == selected } ?? archetypes[0]
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Orbit", selection: $selected) { ForEach(archetypes) { Text($0.id).tag($0.id) } }
+                .pickerStyle(.segmented)
+                .onChange(of: selected) { _, _ in start = Date() }
+            TimelineView(.animation) { context in
+                Canvas { ctx, size in draw(arch, in: &ctx, size: size, t: context.date.timeIntervalSince(start)) }
+            }
+            .frame(height: 260)
+            .background(Color.black, in: RoundedRectangle(cornerRadius: 10))
+            .accessibilityLabel("Animation of a \(arch.id) orbit around Earth, drawn to scale")
+            let a = 6378.137 + (arch.perigeeKm + arch.apogeeKm) / 2
+            let period = 2 * Double.pi * sqrt(a * a * a / 398_600.4418) / 60
+            HStack {
+                Text(ODFormat.units(String(format: "%.0f × %.0f km", arch.perigeeKm, arch.apogeeKm)))
+                Spacer()
+                Text(String(format: "i %.1f°", arch.inclination))
+                Spacer()
+                Text(period < 120 ? String(format: "%.0f min", period) : String(format: "%.1f h", period / 60))
+            }
+            .font(.caption.monospacedDigit())
+            Text(arch.use).font(.subheadline.bold())
+            Text(arch.caption).foregroundStyle(ODTheme.muted)
+            Text("Drawn to scale (Earth radius 6,378 km); the dot runs one orbit every 8 seconds, so speed changes around an ellipse are real.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    private func draw(_ arch: Archetype, in ctx: inout GraphicsContext, size: CGSize, t: Double) {
+        let re = 6378.137
+        let rp = re + arch.perigeeKm, ra = re + arch.apogeeKm
+        let a = (rp + ra) / 2, e = (ra - rp) / (ra + rp), b = a * sqrt(1 - e * e)
+        // Fit the whole ellipse (focus at Earth's center) into the canvas.
+        let scale = min((size.width - 24) / (2 * a), (size.height - 24) / (2 * b))
+        let earthCenter = CGPoint(x: size.width / 2 - (a * e) * scale, y: size.height / 2)
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        ctx.stroke(Path(ellipseIn: CGRect(x: center.x - a * scale, y: center.y - b * scale, width: 2 * a * scale, height: 2 * b * scale)),
+                   with: .color(ODTheme.grid), lineWidth: 1)
+        let er = max(3, re * scale)
+        ctx.fill(Path(ellipseIn: CGRect(x: earthCenter.x - er, y: earthCenter.y - er, width: 2 * er, height: 2 * er)),
+                 with: .color(ODTheme.mapLand))
+        ctx.stroke(Path(ellipseIn: CGRect(x: earthCenter.x - er, y: earthCenter.y - er, width: 2 * er, height: 2 * er)),
+                   with: .color(ODTheme.good), lineWidth: 1)
+        // Position from mean anomaly (perigee on the left, toward −x from the focus).
+        func point(_ m: Double) -> CGPoint {
+            var ecc = m
+            for _ in 0..<12 { ecc -= (ecc - e * sin(ecc) - m) / (1 - e * cos(ecc)) }
+            let x = a * (cos(ecc) - e), y = b * sin(ecc)
+            return CGPoint(x: earthCenter.x - x * scale, y: earthCenter.y - y * scale)
+        }
+        let m = (t / 8).truncatingRemainder(dividingBy: 1) * 2 * Double.pi
+        for k in 1...24 {
+            let p = point(m - Double(k) * 0.03)
+            let r = 2.5 * (1 - Double(k) / 26)
+            ctx.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),
+                     with: .color(ODTheme.warning.opacity(0.6 * (1 - Double(k) / 25))))
+        }
+        let p = point(m)
+        ctx.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(ODTheme.warning))
+    }
+}
+
+/// Rotating 1U Fox CubeSat with cycling callouts (CardSat Help → a). Labels and
+/// facts as verified in CardSat against AMSAT's Fox documentation (amsat.org).
+struct FoxAnatomyLesson: View {
+    private struct Callout { let title: String; let text: String; let anchor: (Double, Double, Double) }
+    private let callouts: [Callout] = [
+        .init(title: "Deployable antennas", text: "70 cm receive and 2 m transmit whips — the only deployables on the spacecraft.", anchor: (0, 1, 0)),
+        .init(title: "Solar panels", text: "Fixed cells on all six sides, so it makes power in any attitude.", anchor: (0, 0, 1)),
+        .init(title: "Battery", text: "Rechargeable; runs the satellite through eclipse.", anchor: (-0.3, -0.3, 0)),
+        .init(title: "IHU computer", text: "The Internal Housekeeping Unit — the hub that runs every subsystem.", anchor: (0.3, 0.2, 0)),
+        .init(title: "FM transponder", text: "70 cm up, 2 m down: a repeater in the sky, with 200 bps telemetry under the voice.", anchor: (0, -0.4, 0.3)),
+        .init(title: "Magnetic stabilization", text: "Permanent magnets align the cube with Earth's magnetic field.", anchor: (-0.4, 0.5, -0.2)),
+        .init(title: "Experiment bay", text: "Student science payloads, e.g. a MEMS-gyro attitude experiment.", anchor: (0.4, -0.4, -0.3))
+    ]
+    @State private var spinning = true
+    @State private var labelOffset = 0
+    @State private var start = Date()
+    @State private var frozenAngle = 0.0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TimelineView(.animation(paused: !spinning)) { context in
+                let elapsed = context.date.timeIntervalSince(start)
+                let theta = spinning ? frozenAngle + elapsed * 0.45 : frozenAngle
+                let index = (Int(elapsed / 4.5) + labelOffset) % callouts.count
+                let callout = callouts[index]
+                VStack(alignment: .leading, spacing: 6) {
+                    Canvas { ctx, size in draw(&ctx, size: size, theta: theta, anchor: callout.anchor) }
+                        .frame(height: 230)
+                        .background(Color.black, in: RoundedRectangle(cornerRadius: 10))
+                    Text(callout.title).font(.headline).foregroundStyle(ODTheme.warning)
+                    Text(callout.text).foregroundStyle(ODTheme.muted).frame(minHeight: 40, alignment: .top)
+                }
+            }
+            .onTapGesture { labelOffset += 1 }
+            .accessibilityLabel("Rotating Fox CubeSat with labeled parts. Tap for the next label.")
+            HStack {
+                Button(spinning ? "Pause spin" : "Spin") {
+                    if spinning { frozenAngle += Date().timeIntervalSince(start) * 0.45 } else { start = Date() }
+                    spinning.toggle()
+                }
+                Button("Next label") { labelOffset += 1 }
+            }
+            .buttonStyle(.bordered)
+            Text("1U CubeSat · 10 × 10 × 10 cm").font(.caption.monospaced())
+            Text("What is a CubeSat?").font(.headline)
+            Text("A tiny standardized satellite built from 10 cm cubes (“1U”). Standard sizes and deployers let students and small teams fly as secondary payloads on big launches — space at a classroom scale.")
+                .foregroundStyle(ODTheme.muted)
+            Text("AMSAT's Fox series").font(.headline)
+            Text("Fox is AMSAT's line of 1U CubeSats: a complete working satellite — radios, computer, power, antennas — in one 10 cm cube. Their mission is to keep FM satellite contacts easy: each Fox flies an FM voice repeater you can work with simple gear, plus 200 bps telemetry hidden under the voice audio. Fox birds also host student experiments, like the MEMS-gyro attitude sensor — the CubeSat as a teaching platform in orbit.")
+                .foregroundStyle(ODTheme.muted)
+            Text("Hear the same Fox-style telemetry on your bench with the CubeSat Simulator lesson.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    private func draw(_ ctx: inout GraphicsContext, size: CGSize, theta: Double, anchor: (Double, Double, Double)) {
+        let s = min(size.width, size.height) * 0.2
+        let cx = size.width * 0.42, cy = size.height * 0.58
+        let tilt = 0.35, ct = cos(theta), st = sin(theta), cp = cos(tilt), sp = sin(tilt)
+        // Body → screen: spin about Y, tilt about X, orthographic; z kept for painter order.
+        func project(_ x: Double, _ y: Double, _ z: Double) -> (CGPoint, Double) {
+            let x1 = x * ct + z * st, z1 = -x * st + z * ct
+            return (CGPoint(x: cx + x1 * s, y: cy - (y * cp - z1 * sp) * s), y * sp + z1 * cp)
+        }
+        var v: [(CGPoint, Double)] = []
+        for ix in [-1.0, 1.0] { for iy in [-1.0, 1.0] { for iz in [-1.0, 1.0] { v.append(project(ix, iy, iz)) } } }
+        let faces = [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]]
+        let ordered = faces.sorted { a, b in a.map { v[$0].1 }.reduce(0, +) < b.map { v[$0].1 }.reduce(0, +) }
+        for (n, face) in ordered.enumerated() {
+            var path = Path()
+            path.move(to: v[face[0]].0)
+            for k in face.dropFirst() { path.addLine(to: v[k].0) }
+            path.closeSubpath()
+            let front = n >= 3
+            ctx.fill(path, with: .color(front ? Color(red: 0.10, green: 0.16, blue: 0.30) : Color(red: 0.05, green: 0.07, blue: 0.12)))
+            if front {   // solar-cell grid on the visible faces
+                for g in 1...2 {
+                    let t = Double(g) / 3
+                    func lerp(_ p: CGPoint, _ q: CGPoint) -> CGPoint { CGPoint(x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t) }
+                    var grid = Path()
+                    grid.move(to: lerp(v[face[0]].0, v[face[1]].0)); grid.addLine(to: lerp(v[face[3]].0, v[face[2]].0))
+                    grid.move(to: lerp(v[face[0]].0, v[face[3]].0)); grid.addLine(to: lerp(v[face[1]].0, v[face[2]].0))
+                    ctx.stroke(grid, with: .color(ODTheme.accent.opacity(0.7)), lineWidth: 0.8)
+                }
+            }
+            ctx.stroke(path, with: .color(.cyan), lineWidth: 1.2)
+        }
+        // Deployable whips rotate with the body.
+        let base = project(0, 1, 0).0
+        var whips = Path()
+        whips.move(to: base); whips.addLine(to: project(1.4, 2.3, 0.15).0)
+        whips.move(to: base); whips.addLine(to: project(-0.7, 2.5, -0.1).0)
+        ctx.stroke(whips, with: .color(.yellow), lineWidth: 1.5)
+        // Leader from the label corner to the rotating anchor.
+        let target = project(anchor.0, anchor.1, anchor.2).0
+        var leader = Path()
+        leader.move(to: CGPoint(x: size.width - 16, y: 18)); leader.addLine(to: target)
+        ctx.stroke(leader, with: .color(ODTheme.warning), lineWidth: 1)
+        ctx.fill(Path(ellipseIn: CGRect(x: target.x - 3, y: target.y - 3, width: 6, height: 6)), with: .color(ODTheme.warning))
+    }
+}
+
+/// CubeSat Simulator intro (CardSat Help → c; facts from cubesatsim.com via CardSat).
+struct CubeSatSimLesson: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Group {
+                Text("What it is").font(.headline)
+                Text("The AMSAT CubeSatSim is a fully open-source, low-cost working model of a satellite — solar panels, battery, UHF radio and a 3D-printed frame — built for STEM and ham education. Inside are a Raspberry Pi Zero 2 and a Raspberry Pi Pico on three custom boards (Main, Battery, Solar).")
+                Text("What it does").font(.headline)
+                Text("Everything a real bird does, on a desk: the panels charge the battery, sensors read the spacecraft, and it beacons real telemetry formats — APRS, Fox-style DUV FSK, BPSK, SSTV images and CW — on about 434.9 MHz FM.")
+                Text("Why it matters").font(.headline)
+                Text("Power budgets, telemetry and command & control — hands-on satellite systems with no launch required. You can command it over the air with DTMF, APRS or a brief carrier; the commands and mode numbers are in References → CubeSatSim C2C.")
+                Text("Get one, build one").font(.headline)
+                Text("No-solder kits and bare PCBs are sold through the AMSAT Store; documentation and build guides are at cubesatsim.com, and the source is at github.com/alanbjohnston/CubeSatSim.")
+            }
+            .foregroundStyle(.primary)
+            HStack {
+                Link("cubesatsim.com", destination: URL(string: "https://cubesatsim.com")!)
+                Spacer()
+                Link("AMSAT", destination: URL(string: "https://www.amsat.org")!)
+            }
+            .font(.callout)
+        }
+    }
 }

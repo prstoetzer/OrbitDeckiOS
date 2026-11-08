@@ -98,6 +98,33 @@ struct OrbitalAnalysisView: View {
                 MetricRow("Mean motion", String(format: "%.8f rev/day", satellite.meanMotionRevPerDay))
                 MetricRow("Period", String(format: "%.3f min", satellite.periodMinutes))
             }
+            SectionCard("Element set & launch") {
+                let trust = FeatureEngine.elementTrust(satellite)
+                MetricRow("Element set #", satellite.elements.tleNumber > 0 ? "\(satellite.elements.tleNumber)" : "—")
+                MetricRow("Rev at epoch", satellite.elements.revNumber > 0 ? "\(satellite.elements.revNumber)" : "—")
+                MetricRow("Epoch age", ageLabel(satellite.elementAgeDays) + " · " + trust.level,
+                          valueColor: trust.ageDays <= 3 ? ODTheme.good : (trust.ageDays <= 7 ? .primary : ODTheme.warning))
+                Text(trust.note).font(.caption).foregroundStyle(ODTheme.muted)
+                MetricRow("International designator", satellite.internationalDesignator.isEmpty ? "—" : satellite.internationalDesignator)
+                if let prefix = Self.launchPrefix(satellite.internationalDesignator) {
+                    let siblings = store.satellites
+                        .filter { $0.id != satellite.id && Self.launchPrefix($0.internationalDesignator) == prefix }
+                        .sorted { $0.internationalDesignator < $1.internationalDesignator }
+                    MetricRow("Launch siblings", "\(siblings.count) in catalog")
+                    ForEach(siblings.prefix(40)) { sib in
+                        HStack {
+                            Text(sib.name).lineLimit(1)
+                            Spacer()
+                            Text(verbatim: "\(sib.internationalDesignator) · \(sib.id)")
+                                .font(.caption.monospaced()).foregroundStyle(ODTheme.muted)
+                        }
+                        .font(.callout)
+                    }
+                    if siblings.count > 40 { Text("…and \(siblings.count - 40) more").font(.caption).foregroundStyle(ODTheme.muted) }
+                    Text("Objects sharing launch \(prefix) in the loaded catalog only. A broad source (e.g. CelesTrak Active Satellites or Last 30 Days' Launches) lists more of the same launch.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
+            }
             SectionCard("Derived orbit") {
                 MetricRow("Semi-major axis", ODFormat.units(String(format: "%.1f km", satellite.semiMajorAxisKm)))
                 MetricRow("Perigee", ODFormat.units(String(format: "%.1f km", satellite.perigeeKm)))
@@ -187,6 +214,24 @@ struct OrbitalAnalysisView: View {
             crossings = []
         }
         crossingsLoading = false
+    }
+
+    /// Launch part of an international designator: "2024-123A" → "2024-123";
+    /// TLE-style "24123A" → "2024-123". Nil when unrecognizable.
+    static func launchPrefix(_ designator: String) -> String? {
+        let d = designator.trimmingCharacters(in: .whitespaces).uppercased()
+        let chars = Array(d)
+        if chars.count >= 8, chars[4] == "-", chars[0..<4].allSatisfy(\.isNumber), chars[5..<8].allSatisfy(\.isNumber) {
+            return String(chars[0..<8])
+        }
+        if chars.count >= 5, chars[0..<5].allSatisfy(\.isNumber), let yy = Int(String(chars[0..<2])) {
+            return String(format: "%04d-%@", yy < 57 ? 2000 + yy : 1900 + yy, String(chars[2..<5]))
+        }
+        return nil
+    }
+
+    private func ageLabel(_ days: Double) -> String {
+        days < 1 ? String(format: "%.1f h", days * 24) : String(format: "%.2f days", days)
     }
 
     private func decayLabel(_ days: Double) -> String {
