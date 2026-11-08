@@ -10,6 +10,10 @@ import Combine
 //  — no whole-clip RAM buffer. AAC is ~1/15 the size of 16-bit PCM WAV (a 10-min
 //  pass is a few MB instead of ~60 MB) and plays everywhere. Each clip is tagged
 //  with the satellite + UTC start and registered with the QSOStore for the Log.
+//
+//  A second instance (`PassRecorder.memo`) records short voice memos the same way:
+//  the shared AudioHub capture with built-in-mic fallback, capped at `memoCap`, and on
+//  stop it saves the clip and logs a QSO stub (prefilled by the caller) linked to it.
 // ===========================================================================
 
 @MainActor
@@ -18,10 +22,25 @@ final class PassRecorder: ObservableObject {
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var level: Float = 0        // 0…1 peak meter
     /// Recording input gain (linear); scales the captured audio into the file. Persisted.
-    @Published var inputGain: Float = AudioGainStore.load("orbitdeck.recorder.inputGain") {
-        didSet { source?.inputGain = inputGain; AudioGainStore.save("orbitdeck.recorder.inputGain", inputGain) }
+    @Published var inputGain: Float {
+        didSet { source?.inputGain = inputGain; AudioGainStore.save(gainKey, inputGain) }
     }
     @Published var errorText = ""
+
+    /// The voice-memo recorder (separate from pass recording, so both can run at once).
+    static let memo = PassRecorder(memo: true)
+    /// Longest voice memo; recording stops on its own at this length.
+    static let memoCap: TimeInterval = 120
+
+    let isMemo: Bool
+    private let gainKey: String
+    private var memoStub: QSORecord?
+
+    init(memo: Bool = false) {
+        isMemo = memo
+        gainKey = memo ? "orbitdeck.memo.inputGain" : "orbitdeck.recorder.inputGain"
+        inputGain = AudioGainStore.load(gainKey)
+    }
 
     private weak var qso: QSOStore?
     private var source: AudioSource?
@@ -44,6 +63,16 @@ final class PassRecorder: ObservableObject {
 
     func attach(_ qso: QSOStore) { self.qso = qso }
 
+    /// Start a voice memo (memo instance only). `stub` is the QSO logged with it when
+    /// the memo is saved; the memo is tagged with the stub's satellite.
+    func startMemo(source: AudioSource, qso: QSOStore, stub: QSORecord) {
+        guard isMemo, !isRecording else { return }
+        self.qso = qso
+        memoStub = stub
+        start(source: source, satellite: stub.sat)
+        if !isRecording { memoStub = nil }
+    }
+
     func start(source: AudioSource, satellite: String) {
         guard !isRecording else { return }
         // Recording shares the AudioHub capture, so it can run alongside a decoder or the
@@ -52,7 +81,9 @@ final class PassRecorder: ObservableObject {
         self.source = source
         self.sat = satellite
         self.startDate = Date()
-        filename = "\(safe(satellite))_\(stamp(Date())).m4a"
+        filename = isMemo
+            ? "memo_\(stamp(Date()))\(satellite.isEmpty ? "" : "_" + safe(satellite)).m4a"
+            : "\(safe(satellite))_\(stamp(Date())).m4a"
         recordURL = QSOStore.recordingsDir.appendingPathComponent(filename)
         fileCreateTried = false
         file = nil; processingFormat = nil
@@ -85,6 +116,8 @@ final class PassRecorder: ObservableObject {
         meterTimer?.cancel(); meterTimer = nil
         let duration = elapsed
         let sat = self.sat, filename = self.filename, start = startDate ?? Date()
+        let isMemo = self.isMemo, stub = memoStub
+        memoStub = nil
         writeQueue.async { [weak self] in
             self?.file = nil     // finalize (AVAudioFile flushes on dealloc)
             // Only register a clip that was actually created (the lazy AAC create may have
@@ -95,7 +128,14 @@ final class PassRecorder: ObservableObject {
                 self?.isRecording = false
                 self?.level = 0
                 if duration >= 0.5, exists {
-                    self?.qso?.addRecording(RecordingEntry(sat: sat, start: start, duration: duration, filename: filename))
+                    let entry = RecordingEntry(sat: sat, start: start, duration: duration, filename: filename,
+                                               isMemo: isMemo ? true : nil)
+                    if isMemo, var stub {
+                        stub.utc = start          // the contact time is when the memo began
+                        self?.qso?.addVoiceMemo(entry, stub: stub)
+                    } else {
+                        self?.qso?.addRecording(entry)
+                    }
                 }
             }
         }
@@ -159,6 +199,7 @@ final class PassRecorder: ObservableObject {
             self.elapsed = Date().timeIntervalSince(start)
             self.peakLock.lock(); let p = self.peak; self.peak = 0; self.peakLock.unlock()
             self.level = max(p, self.level * 0.75)   // fast attack, slow release
+            if self.isMemo, self.elapsed >= Self.memoCap { self.stop() }
         }
         t.resume()
         meterTimer = t

@@ -40,6 +40,14 @@ struct QSORecord: Identifiable, Codable, Sendable, Equatable {
     var name = ""                // worked operator's first name / nickname (QRZ fill)
     var dxcc: Int?               // ARRL DXCC entity code; nil = not resolved, 0 = none (/MM)
     var country = ""             // DXCC entity name
+    // Added in 1.1 (tolerant decoding below). `state` is the worked station's ADIF
+    // STATE (US state for WAS; other entities' primary subdivision as given), from the
+    // editor, an ADIF import or QRZ. `memoFile` links a voice memo (a file under
+    // Recordings) to a QSO stub logged with it. `lotwConfirmed` is LoTW QSL status as
+    // imported from an ADIF (LOTW_QSL_RCVD) — the only confirmation source on device.
+    var state = ""
+    var memoFile: String?
+    var lotwConfirmed = false
 
     /// Worked-station grids split for VUCC (comma/slash/space separated).
     var gridList: [String] {
@@ -48,6 +56,24 @@ struct QSORecord: Identifiable, Codable, Sendable, Equatable {
 
     var effectiveUplinkMode: String { uplinkMode ?? mode }
     var effectiveDownlinkMode: String { downlinkMode ?? mode }
+
+    /// A voice-memo stub the operator hasn't completed yet (no callsign). Stubs are
+    /// kept out of uploads and award totals until a call is entered.
+    var isStub: Bool { call.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// Which upload flags an edit from `old` to this record invalidates, so the QSO is
+    /// sent again. LoTW signs only the contact fields (call, time, band/frequency, mode,
+    /// satellite); Cloudlog gets the whole ADIF record, so any exported field counts.
+    func uploadFlagsInvalidated(from old: QSORecord) -> UploadFlags {
+        let lotwChanged = call != old.call || utc != old.utc || mode != old.mode || sat != old.sat
+            || ulHz != old.ulHz || dlHz != old.dlHz
+        if lotwChanged { return [.lotw, .cloudlog] }
+        let adifChanged = rstSent != old.rstSent || rstRcvd != old.rstRcvd || grid != old.grid
+            || myGrid != old.myGrid || myCall != old.myCall || name != old.name || dxcc != old.dxcc
+            || country != old.country || state != old.state || notes != old.notes
+            || uplinkMode != old.uplinkMode || downlinkMode != old.downlinkMode
+        return adifChanged ? [.cloudlog] : []
+    }
 }
 
 /// A recorded pass audio clip, listed on the Log screen (Phase 4 populates it).
@@ -57,6 +83,7 @@ struct RecordingEntry: Identifiable, Codable, Sendable, Equatable {
     var start: Date
     var duration: TimeInterval = 0
     var filename = ""            // file under Application Support/Recordings
+    var isMemo: Bool?            // a voice memo rather than pass audio (nil in older saves)
 }
 
 /// A decoded SSTV image, listed on the Log screen (Phase 5b populates it).
@@ -103,6 +130,9 @@ struct LoTWStation: Codable, Sendable, Equatable {
     var subdivField = ""         // e.g. "CA_PROVINCE"
     var subdiv = ""              // subdivision code/value
     var iota = ""
+    // Secondary subdivision other than the US county (today only JA_CITY_GUN_KU).
+    var subdiv2Field = ""
+    var subdiv2 = ""
 }
 
 /// Cloudlog / Wavelog JSON-API target (self-hosted). API key lives in the Keychain.
@@ -148,7 +178,7 @@ private extension KeyedDecodingContainer {
 }
 
 extension LoTWStation {
-    enum CK: String, CodingKey { case call, dxcc, grid, cqz, ituz, usState, usCounty, subdivField, subdiv, iota }
+    enum CK: String, CodingKey { case call, dxcc, grid, cqz, ituz, usState, usCounty, subdivField, subdiv, iota, subdiv2Field, subdiv2 }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
         var s = LoTWStation()
@@ -162,6 +192,8 @@ extension LoTWStation {
         s.subdivField = c.value(String.self, .subdivField, s.subdivField)
         s.subdiv = c.value(String.self, .subdiv, s.subdiv)
         s.iota = c.value(String.self, .iota, s.iota)
+        s.subdiv2Field = c.value(String.self, .subdiv2Field, s.subdiv2Field)
+        s.subdiv2 = c.value(String.self, .subdiv2, s.subdiv2)
         self = s
     }
 }
@@ -183,6 +215,7 @@ extension QSORecord {
     enum CK: String, CodingKey {
         case id, utc, call, sat, mode, dlHz, ulHz, myGrid, myCall, rstSent, rstRcvd, grid, notes, uploaded
         case uplinkMode, downlinkMode, name, dxcc, country
+        case state, memoFile, lotwConfirmed
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CK.self)
@@ -205,6 +238,9 @@ extension QSORecord {
         q.name = c.value(String.self, .name, q.name)
         q.dxcc = (try? c.decodeIfPresent(Int.self, forKey: .dxcc)) ?? nil
         q.country = c.value(String.self, .country, q.country)
+        q.state = c.value(String.self, .state, q.state)
+        q.memoFile = (try? c.decodeIfPresent(String.self, forKey: .memoFile)) ?? nil
+        q.lotwConfirmed = c.value(Bool.self, .lotwConfirmed, q.lotwConfirmed)
         self = q
     }
 }

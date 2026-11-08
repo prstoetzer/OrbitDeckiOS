@@ -66,6 +66,8 @@ enum ADIF {
         if !q.name.isEmpty { r += field("NAME", q.name) }
         if let dxcc = q.dxcc { r += field("DXCC", String(dxcc)) }
         if !q.country.isEmpty { r += field("COUNTRY", q.country) }
+        if !q.state.isEmpty { r += field("STATE", q.state) }
+        if q.lotwConfirmed { r += field("LOTW_QSL_RCVD", "Y") }
         // ADIF has no per-leg mode fields, so cross-mode legs go in app-defined
         // fields (MODE above stays the primary). Only explicitly set legs are written.
         if let up = q.uplinkMode, !up.isEmpty { r += field(Self.appUplinkMode, up) }
@@ -177,6 +179,9 @@ enum ADIF {
         q.name = f["name"] ?? ""
         q.dxcc = f["dxcc"].flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
         q.country = f["country"] ?? ""
+        q.state = (f["state"] ?? "").trimmingCharacters(in: .whitespaces).uppercased()
+        // Y = confirmed, V = verified (used for an award) — both count as confirmed.
+        q.lotwConfirmed = ["Y", "V"].contains((f["lotw_qsl_rcvd"] ?? "").trimmingCharacters(in: .whitespaces).uppercased())
         q.uplinkMode = f[appUplinkMode.lowercased()].flatMap { $0.isEmpty ? nil : $0.uppercased() }
         q.downlinkMode = f[appDownlinkMode.lowercased()].flatMap { $0.isEmpty ? nil : $0.uppercased() }
         return q
