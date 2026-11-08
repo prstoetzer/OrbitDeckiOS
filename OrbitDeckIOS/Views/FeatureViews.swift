@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import Network
 
 // MARK: - Shared celestial plot
 
@@ -2769,6 +2770,7 @@ struct OrbitalHistoryView: View {
 struct SpaceWeatherView: View {
     @EnvironmentObject private var store: OrbitStore
     @State private var isLoading = false
+    @State private var trend = SpaceWeatherTrend.load()
 
     var body: some View {
         Form {
@@ -2776,12 +2778,12 @@ struct SpaceWeatherView: View {
                 Button("Refresh") { refresh() }.disabled(isLoading)
                 if isLoading { ProgressView() }
                 if let snapshot = store.spaceWeather {
-                    LabeledContent("F10.7 solar flux", value: snapshot.flux.map { String(format: "%.1f sfu — %@", $0, snapshot.fluxLabel) } ?? "—")
-                    LabeledContent("Sunspot number", value: snapshot.sunspotNumber.map { String(format: "%.0f", $0) } ?? "—")
-                    if let mean = snapshot.flux90Day { LabeledContent("F10.7 90-day mean", value: String(format: "%.1f sfu", mean)) }
-                    LabeledContent("Planetary Kp", value: snapshot.kp.map { String(format: "%.2f — %@", $0, snapshot.kpLabel) } ?? "—")
+                    trendRow("F10.7 solar flux", value: snapshot.flux.map { String(format: "%.1f sfu — %@", $0, snapshot.fluxLabel) }, metric: "flux", format: "%+.0f")
+                    trendRow("Sunspot number", value: snapshot.sunspotNumber.map { String(format: "%.0f", $0) }, metric: "ssn", format: "%+.0f")
+                    if let mean = snapshot.flux90Day { trendRow("F10.7 90-day mean", value: String(format: "%.1f sfu", mean), metric: "flux90", format: "%+.1f") }
+                    trendRow("Planetary Kp", value: snapshot.kp.map { String(format: "%.2f — %@", $0, snapshot.kpLabel) }, metric: "kp", format: "%.2g", arrows: true)
                     LabeledContent("Aurora likelihood", value: auroraLikelihood(kp: snapshot.kp))
-                    LabeledContent((snapshot.aIndexSource?.contains("planetary A") ?? false) ? "Planetary A" : "A / ap equivalent", value: snapshot.aIndex.map { String(format: "%.0f", $0) } ?? "—")
+                    trendRow((snapshot.aIndexSource?.contains("planetary A") ?? false) ? "Planetary A" : "A / ap equivalent", value: snapshot.aIndex.map { String(format: "%.0f", $0) }, metric: "a", format: "%+.0f")
                     if let source = snapshot.aIndexSource { LabeledContent("A-index source", value: source) }
                     LabeledContent("Fetched", value: ODFormat.utc.string(from: snapshot.fetchedAt))
                 }
@@ -2797,10 +2799,37 @@ struct SpaceWeatherView: View {
             }
         }
         .task {
+            recordTrend()
             isLoading = (store.spaceWeather == nil)
             await store.refreshSpaceWeatherIfNeeded()
             isLoading = false
         }
+        .onChange(of: store.spaceWeather?.fetchedAt) { _, _ in recordTrend() }
+    }
+
+    /// Index value with its change since the previous distinct sample: green for a
+    /// rise in flux/sunspots, but red for a rise in Kp/A (a disturbed field is bad).
+    @ViewBuilder
+    private func trendRow(_ title: String, value: String?, metric: String, format: String, arrows: Bool = false) -> some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Text(value ?? "—")
+                if value != nil, let d = trend.delta(metric), abs(d) > 0.001 {
+                    let geomagnetic = metric == "kp" || metric == "a"
+                    let good = geomagnetic ? d < 0 : d > 0
+                    Text(arrows ? "\(d > 0 ? "↑" : "↓")\(String(format: format, abs(d)))" : String(format: format, d))
+                        .font(.caption.monospacedDigit().bold())
+                        .foregroundStyle(good ? ODTheme.good : Color.red)
+                        .accessibilityLabel("\(d > 0 ? "up" : "down") \(String(format: "%.2g", abs(d))) since the previous reading")
+                }
+            }
+        }
+    }
+
+    private func recordTrend() {
+        guard let snapshot = store.spaceWeather else { return }
+        var t = trend
+        if t.record(snapshot) { t.save(); trend = t }
     }
 
     /// Kp-derived aurora visibility outlook (matches the desktop's guidance bands).
@@ -4381,6 +4410,9 @@ struct AmsatStatusInteractiveView: View {
     @State private var recentReports: [AmsatReportRecord] = []
     @State private var confirmPost = false
     @State private var isSending = false
+    /// AMSAT mode name the operator tapped on the board; wins over the first
+    /// catalog match when the report tab resolves the newly selected satellite.
+    @State private var preferredApiName: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -4402,18 +4434,45 @@ struct AmsatStatusInteractiveView: View {
     private var boardView: some View {
         Form {
             Section("Community status board") {
-                Picker("Window", selection: $hours) { Text("6 h").tag(6); Text("24 h").tag(24); Text("48 h").tag(48) }.pickerStyle(.segmented)
+                Picker("Window", selection: $hours) {
+                    ForEach([3, 6, 12, 24, 48, 72], id: \.self) { Text("\($0) h").tag($0) }
+                }.pickerStyle(.segmented)
                 Button("Refresh") { refreshBoard() }.disabled(isLoading)
                 if isLoading { ProgressView() }
                 if !message.isEmpty { Text(message).font(.caption).foregroundStyle(ODTheme.muted) }
             }
-            Section("Reported satellites") {
+            Section {
                 ForEach(board) { row in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack { Text(row.displayName).font(.headline); Spacer(); Text("\(row.heard)/\(row.reports) heard").font(.caption.monospaced()).foregroundStyle(ODTheme.accent) }
-                        if !row.lastReport.isEmpty { Text("Last: \(row.lastReport)").font(.caption).foregroundStyle(ODTheme.muted) }
+                    let selected = isSelected(row)
+                    Button { adopt(row) } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                if selected { Image(systemName: "scope").foregroundStyle(ODTheme.accent) }
+                                Text(row.displayName).font(.headline).foregroundStyle(.primary)
+                                Spacer()
+                                Text("\(row.heard)/\(row.reports) heard").font(.caption.monospaced()).foregroundStyle(ODTheme.accent)
+                            }
+                            HStack(spacing: 6) {
+                                if let heard = row.lastHeard {
+                                    Circle().fill(ODTheme.good).frame(width: 7, height: 7)
+                                    Text("Heard \(AmsatStatusService.ageText(heard))").foregroundStyle(ODTheme.good)
+                                } else if !row.lastReport.isEmpty {
+                                    Text("Last: \(row.lastReport)").foregroundStyle(ODTheme.muted)
+                                }
+                                Spacer()
+                                if let grids = row.gridCount { Text("\(grids) grid\(grids == 1 ? "" : "s")").foregroundStyle(ODTheme.muted) }
+                            }
+                            .font(.caption.monospacedDigit())
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Selects this satellite in OrbitDeck")
                 }
+            } header: {
+                Text("Reported satellites")
+            } footer: {
+                Text("Tap a satellite to select it in OrbitDeck. Grid counts are distinct 4-character reporter grids (AMSAT returns at most the 500 newest reports).")
             }
         }
     }
@@ -4459,10 +4518,42 @@ struct AmsatStatusInteractiveView: View {
         isLoading = true; message = ""
         let h = hours
         Task {
-            do { board = try await AmsatStatusService.fetchSummary(hours: h) }
-            catch { message = error.localizedDescription }
+            do {
+                var rows = try await AmsatStatusService.fetchSummary(hours: h)
+                guard h == hours else { return }   // window changed mid-fetch
+                board = rows
+                isLoading = false
+                // Grid counts are a second (larger) request; fill them in when it lands.
+                if let grids = try? await AmsatStatusService.fetchGridCounts(hours: h), h == hours {
+                    for i in rows.indices { rows[i].gridCount = grids[rows[i].apiName] ?? 0 }
+                    board = rows
+                }
+            } catch { message = error.localizedDescription }
             isLoading = false
         }
+    }
+
+    private func catalogIndex(for row: AmsatStatusSummaryRecord) -> Int? {
+        SatelliteNameMatch.matchIndex(apiName: row.apiName, in: store.satellites.map(\.name))
+    }
+
+    private func isSelected(_ row: AmsatStatusSummaryRecord) -> Bool {
+        guard let sel = store.selectedSatellite else { return false }
+        return SatelliteNameMatch.matchIndex(apiName: row.apiName, in: [sel.name]) != nil
+    }
+
+    /// Select ("adopt") the catalog satellite behind a board row and preload its
+    /// AMSAT mode name for the report tab.
+    private func adopt(_ row: AmsatStatusSummaryRecord) {
+        guard let index = catalogIndex(for: row) else {
+            message = "\(row.displayName) isn't in the satellite catalog."
+            return
+        }
+        let sat = store.satellites[index]
+        preferredApiName = row.apiName
+        if store.selectedSatellite?.id == sat.id { apiName = row.apiName }
+        store.select(sat.id)
+        message = "Selected \(sat.name)."
     }
 
     private func resolveSelectedSatellite() async {
@@ -4476,7 +4567,8 @@ struct AmsatStatusInteractiveView: View {
             do {
                 let matches = try await AmsatStatusService.catalogMatches(commonName: sat.name)
                 apiMatches = matches
-                if let first = matches.first { apiName = first }
+                if let preferred = preferredApiName, matches.contains(preferred) { apiName = preferred }
+                else if let first = matches.first { apiName = first }
                 else if apiName.isEmpty { apiName = sat.name }
                 if message.hasPrefix("AMSAT catalog match failed") { message = "" }
                 return
@@ -4506,5 +4598,1312 @@ struct AmsatStatusInteractiveView: View {
             } catch { message = error.localizedDescription }
             isSending = false
         }
+    }
+}
+
+// MARK: - Nearby & DX hub
+
+// Terrestrial live feeds that complement satellite work: APRS-IS stations heard
+// around the observer, DX-cluster spots, ADS-B aircraft from the operator's own
+// LAN receiver, and a minimal telnet terminal. All are foreground-only: they
+// connect while this screen is open and the app is active, keep bounded buffers,
+// and reconnect with a backoff after a drop. The sockets live on dedicated queues
+// in nonisolated objects; UI state is updated on the main actor.
+
+/// Line-oriented TCP client shared by APRS-IS, the DX cluster and the telnet
+/// terminal. Lines are batched (~150 ms) before being handed to the main actor so a
+/// busy feed can't flood the UI. With `telnet` set it also strips/refuses Telnet
+/// option negotiation and flushes an unterminated prompt ("login: ") after a pause.
+/// All state below is confined to `queue`.
+final class NearbyLineClient: @unchecked Sendable {
+    enum Event: Sendable { case ready, lines([String]), closed(String) }
+
+    private let queue: DispatchQueue
+    private let idleTimeout: TimeInterval?
+    private let telnet: Bool
+    private let handler: @MainActor @Sendable (Event) -> Void
+
+    private var conn: NWConnection?
+    private var isReady = false
+    private var generation = 0
+    private var buffer: [UInt8] = []
+    private var pending: [String] = []
+    private var flushScheduled = false
+    private var lastRx = Date()
+    private var iacState = 0
+    private var iacCommand: UInt8 = 0
+    private var ansiState = 0
+    private var promptWork: DispatchWorkItem?
+
+    private static let maxLineBytes = 4096
+    private static let maxPendingLines = 1000
+
+    init(label: String, idleTimeout: TimeInterval? = nil, telnet: Bool = false,
+         handler: @escaping @MainActor @Sendable (Event) -> Void) {
+        queue = DispatchQueue(label: "org.orbitdeck.nearby.\(label)")
+        self.idleTimeout = idleTimeout
+        self.telnet = telnet
+        self.handler = handler
+    }
+
+    func connect(host: String, port: UInt16) { queue.async { self.open(host: host, port: port) } }
+
+    func send(_ text: String) {
+        queue.async {
+            guard self.isReady, let conn = self.conn else { return }
+            conn.send(content: Data(text.utf8), completion: .contentProcessed { _ in })
+        }
+    }
+
+    /// Caller-initiated close: no `.closed` event is emitted.
+    func close() { queue.async { self.teardown() } }
+
+    private func teardown() {
+        generation += 1
+        conn?.cancel(); conn = nil; isReady = false
+        buffer.removeAll(); pending.removeAll(); flushScheduled = false
+        iacState = 0; ansiState = 0
+        promptWork?.cancel(); promptWork = nil
+    }
+
+    private func fail(_ reason: String) {
+        deliverPending()
+        teardown()
+        emit(.closed(reason))
+    }
+
+    private func emit(_ event: Event) {
+        let h = handler
+        DispatchQueue.main.async { MainActor.assumeIsolated { h(event) } }
+    }
+
+    private func open(host: String, port: UInt16) {
+        teardown()
+        let gen = generation
+        guard !host.isEmpty, let p = NWEndpoint.Port(rawValue: port) else { emit(.closed("Invalid host or port")); return }
+        let tcp = NWProtocolTCP.Options()
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 60
+        tcp.connectionTimeout = 15
+        let c = NWConnection(host: NWEndpoint.Host(host), port: p, using: NWParameters(tls: nil, tcp: tcp))
+        conn = c
+        c.stateUpdateHandler = { [weak self] state in
+            guard let self, gen == self.generation else { return }
+            switch state {
+            case .ready:
+                self.isReady = true
+                self.lastRx = Date()
+                self.emit(.ready)
+                self.receive(c, gen)
+                self.scheduleWatchdog(gen)
+            case .failed(let error), .waiting(let error):
+                self.fail(error.localizedDescription)
+            default:
+                break
+            }
+        }
+        c.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 20) { [weak self] in
+            guard let self, gen == self.generation, !self.isReady else { return }
+            self.fail("Connection timed out")
+        }
+    }
+
+    private func receive(_ c: NWConnection, _ gen: Int) {
+        c.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, complete, error in
+            guard let self, gen == self.generation else { return }
+            if let data, !data.isEmpty {
+                self.lastRx = Date()
+                self.ingest(data, c)
+            }
+            if let error { self.fail(error.localizedDescription) }
+            else if complete { self.fail("Closed by the server") }
+            else { self.receive(c, gen) }
+        }
+    }
+
+    private func scheduleWatchdog(_ gen: Int) {
+        guard let idle = idleTimeout else { return }
+        queue.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, gen == self.generation else { return }
+            if Date().timeIntervalSince(self.lastRx) > idle { self.fail("No data for \(Int(idle)) s") }
+            else { self.scheduleWatchdog(gen) }
+        }
+    }
+
+    private func ingest(_ data: Data, _ c: NWConnection) {
+        var reply: [UInt8] = []
+        for b in data {
+            switch iacState {
+            case 1:   // after IAC
+                switch b {
+                case 255: appendByte(255); iacState = 0
+                case 251...254: iacCommand = b; iacState = 2
+                case 250: iacState = 3
+                default: iacState = 0
+                }
+            case 2:   // option byte: refuse everything (WONT for DO, DONT for WILL)
+                if telnet {
+                    if iacCommand == 253 { reply += [255, 252, b] }
+                    else if iacCommand == 251 { reply += [255, 254, b] }
+                }
+                iacState = 0
+            case 3:   // subnegotiation, until IAC SE
+                if b == 255 { iacState = 4 }
+            case 4:
+                iacState = b == 240 ? 0 : 3
+            default:
+                if b == 255 && telnet { iacState = 1 } else { appendByte(b) }
+            }
+        }
+        if !reply.isEmpty { c.send(content: Data(reply), completion: .contentProcessed { _ in }) }
+        scheduleFlush()
+        if telnet && !buffer.isEmpty {
+            promptWork?.cancel()
+            let gen = generation
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, gen == self.generation, !self.buffer.isEmpty else { return }
+                self.endLine()
+                self.deliverPending()
+            }
+            promptWork = work
+            queue.asyncAfter(deadline: .now() + 0.4, execute: work)
+        }
+    }
+
+    private func appendByte(_ b: UInt8) {
+        // Drop ANSI/VT100 escape sequences (ESC [ … final byte) and other controls.
+        switch ansiState {
+        case 1: ansiState = b == 0x5B ? 2 : 0; return
+        case 2: if (0x40...0x7E).contains(b) { ansiState = 0 }; return
+        default: break
+        }
+        switch b {
+        case 0x1B: ansiState = 1
+        case 0x0A: endLine()
+        case 0x09: buffer.append(0x20)
+        case 0..<0x20, 0x7F: break
+        default:
+            buffer.append(b)
+            if buffer.count >= Self.maxLineBytes { endLine() }
+        }
+    }
+
+    private func endLine() {
+        pending.append(String(decoding: buffer, as: UTF8.self))
+        buffer.removeAll(keepingCapacity: true)
+        if pending.count > Self.maxPendingLines { pending.removeFirst(pending.count - Self.maxPendingLines) }
+    }
+
+    private func scheduleFlush() {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        let gen = generation
+        queue.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, gen == self.generation else { return }
+            self.deliverPending()
+        }
+    }
+
+    private func deliverPending() {
+        flushScheduled = false
+        guard !pending.isEmpty else { return }
+        let lines = pending
+        pending.removeAll()
+        emit(.lines(lines))
+    }
+}
+
+/// Plain HTTP GET for LAN receivers. `http://` goes over a raw Network.framework
+/// socket (HTTP/1.0, `Connection: close`) because App Transport Security blocks
+/// cleartext URLSession loads to a host name such as `adsb.local`; `https://` uses
+/// URLSession with the browser User-Agent.
+enum NearbyHTTP {
+    static func get(_ url: URL, maxBytes: Int = 4_000_000) async throws -> Data {
+        if url.scheme?.lowercased() == "http" { return try await RawGet().run(url, maxBytes: maxBytes) }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue(ActivationService.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json, */*", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw NSError(domain: "NearbyHTTP", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey: "The receiver returned HTTP \(http.statusCode)."])
+        }
+        return data
+    }
+
+    private final class RawGet: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "org.orbitdeck.nearby.http")
+        private var conn: NWConnection?
+        private var received = Data()
+        private var cont: CheckedContinuation<Data, Error>?
+
+        func run(_ url: URL, maxBytes: Int) async throws -> Data {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+                queue.async {
+                    self.cont = cont
+                    self.start(url, maxBytes: maxBytes)
+                }
+            }
+        }
+
+        private func finish(_ result: Result<Data, Error>) {
+            guard let c = cont else { return }
+            cont = nil
+            conn?.cancel(); conn = nil
+            c.resume(with: result)
+        }
+
+        private func start(_ url: URL, maxBytes: Int) {
+            guard let host = url.host, !host.isEmpty else { finish(.failure(URLError(.badURL))); return }
+            let portNumber = url.port ?? 80
+            guard let port = NWEndpoint.Port(rawValue: UInt16(clamping: portNumber)) else { finish(.failure(URLError(.badURL))); return }
+            let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            var path = comps?.percentEncodedPath ?? "/"
+            if path.isEmpty { path = "/" }
+            if let q = comps?.percentEncodedQuery { path += "?\(q)" }
+            let hostHeader = portNumber == 80 ? host : "\(host):\(portNumber)"
+            let request = "GET \(path) HTTP/1.0\r\nHost: \(hostHeader)\r\nUser-Agent: \(ActivationService.browserUserAgent)\r\n"
+                + "Accept: application/json, */*\r\nConnection: close\r\n\r\n"
+            let c = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+            conn = c
+            c.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    c.send(content: Data(request.utf8), completion: .contentProcessed { _ in })
+                    self.receive(c, maxBytes: maxBytes)
+                case .failed(let error), .waiting(let error):
+                    self.finish(.failure(error))
+                default: break
+                }
+            }
+            c.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + 12) { [weak self] in self?.finish(.failure(URLError(.timedOut))) }
+        }
+
+        private func receive(_ c: NWConnection, maxBytes: Int) {
+            c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, complete, error in
+                guard let self else { return }
+                if let data { self.received.append(data) }
+                if self.received.count > maxBytes {
+                    self.finish(.failure(NSError(domain: "NearbyHTTP", code: 2, userInfo: [NSLocalizedDescriptionKey: "Response too large."])))
+                } else if complete {
+                    self.finish(Result { try Self.body(of: self.received) })
+                } else if let error {
+                    self.finish(.failure(error))
+                } else {
+                    self.receive(c, maxBytes: maxBytes)
+                }
+            }
+        }
+
+        private static func body(of response: Data) throws -> Data {
+            guard let split = response.range(of: Data("\r\n\r\n".utf8)) else {
+                throw NSError(domain: "NearbyHTTP", code: 3, userInfo: [NSLocalizedDescriptionKey: "Malformed HTTP response."])
+            }
+            let header = String(decoding: response[..<split.lowerBound], as: UTF8.self)
+            let lines = header.components(separatedBy: "\r\n")
+            let status = lines.first.map { $0.split(separator: " ") }.flatMap { $0.count > 1 ? Int($0[1]) : nil } ?? 0
+            guard (200..<300).contains(status) else {
+                let location = lines.first { $0.lowercased().hasPrefix("location:") }
+                    .map { " → " + $0.dropFirst(9).trimmingCharacters(in: .whitespaces) } ?? ""
+                throw NSError(domain: "NearbyHTTP", code: status,
+                              userInfo: [NSLocalizedDescriptionKey: "The receiver returned HTTP \(status)\(location)."])
+            }
+            var body = Data(response[split.upperBound...])
+            if lines.contains(where: { $0.lowercased().hasPrefix("transfer-encoding:") && $0.lowercased().contains("chunked") }) {
+                body = dechunk(body)
+            }
+            return body
+        }
+
+        private static func dechunk(_ data: Data) -> Data {
+            var out = Data()
+            var i = data.startIndex
+            let crlf = Data("\r\n".utf8)
+            while i < data.endIndex, let lineEnd = data.range(of: crlf, in: i..<data.endIndex) {
+                let sizeText = String(decoding: data[i..<lineEnd.lowerBound], as: UTF8.self)
+                    .split(separator: ";").first.map(String.init) ?? ""
+                guard let size = Int(sizeText.trimmingCharacters(in: .whitespaces), radix: 16), size > 0 else { break }
+                let start = lineEnd.upperBound
+                let end = data.index(start, offsetBy: size, limitedBy: data.endIndex) ?? data.endIndex
+                out.append(data[start..<end])
+                i = data.index(end, offsetBy: 2, limitedBy: data.endIndex) ?? data.endIndex
+            }
+            return out
+        }
+    }
+}
+
+enum NearbyGeo {
+    /// Great-circle distance (km) and initial bearing (degrees true).
+    static func distanceBearing(_ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double) -> (km: Double, bearing: Double) {
+        let r = Double.pi / 180
+        let p1 = lat1 * r, p2 = lat2 * r, dl = (lon2 - lon1) * r
+        let a = sin((p2 - p1) / 2) * sin((p2 - p1) / 2) + cos(p1) * cos(p2) * sin(dl / 2) * sin(dl / 2)
+        let km = 6371.0 * 2 * atan2(a.squareRoot(), (1 - a).squareRoot())
+        let y = sin(dl) * cos(p2), x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl)
+        return (km, (atan2(y, x) / r + 360).truncatingRemainder(dividingBy: 360))
+    }
+
+    static func age(_ date: Date, now: Date = .now) -> String {
+        let s = max(0, Int(now.timeIntervalSince(date)))
+        if s < 60 { return "\(s) s" }
+        if s < 3600 { return "\(s / 60) min" }
+        return "\(s / 3600) h"
+    }
+}
+
+enum NearbyConnState: Equatable {
+    case idle, connecting, connected
+    case retrying(reason: String, seconds: Int)
+    case failed(String)
+
+    var label: String {
+        switch self {
+        case .idle: "Not connected"
+        case .connecting: "Connecting…"
+        case .connected: "Connected"
+        case .retrying(let reason, let seconds): "\(reason) — reconnecting in \(seconds) s"
+        case .failed(let message): message
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .connected: ODTheme.good
+        case .connecting, .retrying: ODTheme.warning
+        case .idle: ODTheme.muted
+        case .failed: Color.red
+        }
+    }
+}
+
+/// Shared connect / pause / reconnect policy for the TCP feeds. Subclasses supply
+/// the endpoint and handle lines.
+@MainActor
+class NearbyTCPFeed: ObservableObject {
+    @Published var state: NearbyConnState = .idle
+    private(set) var wanted = false
+    private var paused = false
+    private var retryCount = 0
+    private var connectionID = 0
+    private var client: NearbyLineClient?
+    private let label: String
+    private let idleTimeout: TimeInterval?
+    private let telnet: Bool
+
+    init(label: String, idleTimeout: TimeInterval?, telnet: Bool) {
+        self.label = label
+        self.idleTimeout = idleTimeout
+        self.telnet = telnet
+    }
+
+    /// Endpoint for the next attempt; return nil after setting `state = .failed(…)`.
+    func endpoint() -> (host: String, port: UInt16)? { nil }
+    func didConnect() {}
+    func didReceive(_ lines: [String]) {}
+
+    var isActive: Bool { wanted }
+
+    func start() {
+        wanted = true; paused = false; retryCount = 0
+        open()
+    }
+
+    func stop() {
+        wanted = false; paused = false
+        closeClient()
+        state = .idle
+    }
+
+    /// App backgrounded: drop the socket but remember to come back.
+    func pause() {
+        guard wanted, !paused else { return }
+        paused = true
+        closeClient()
+        state = .idle
+    }
+
+    func resume() {
+        guard wanted, paused else { return }
+        paused = false; retryCount = 0
+        open()
+    }
+
+    func sendRaw(_ text: String) { client?.send(text) }
+
+    private func closeClient() {
+        connectionID += 1
+        client?.close(); client = nil
+    }
+
+    private func open() {
+        closeClient()
+        guard let ep = endpoint() else { wanted = false; return }
+        let id = connectionID
+        let c = NearbyLineClient(label: label, idleTimeout: idleTimeout, telnet: telnet) { [weak self] event in
+            self?.handle(event, id: id)
+        }
+        client = c
+        state = .connecting
+        c.connect(host: ep.host, port: ep.port)
+    }
+
+    private func handle(_ event: NearbyLineClient.Event, id: Int) {
+        guard id == connectionID, wanted, !paused else { return }
+        switch event {
+        case .ready:
+            retryCount = 0
+            state = .connected
+            didConnect()
+        case .lines(let lines):
+            didReceive(lines)
+        case .closed(let reason):
+            client = nil
+            let delays = [5, 10, 30, 60]
+            let delay = delays[min(retryCount, delays.count - 1)]
+            retryCount += 1
+            state = .retrying(reason: reason, seconds: delay)
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(delay)) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.wanted, !self.paused, self.connectionID == id, self.client == nil else { return }
+                    self.open()
+                }
+            }
+        }
+    }
+}
+
+// MARK: APRS-IS
+
+struct APRSISStation: Identifiable {
+    let id: String
+    var latitude: Double
+    var longitude: Double
+    var symbolTable: Character?
+    var symbolCode: Character?
+    var comment: String
+    var lastHeard: Date
+    var packets: Int
+    var distanceKm: Double
+    var bearing: Double
+    var isObject: Bool
+}
+
+struct APRSISMessage: Identifiable {
+    let id = UUID()
+    let from: String
+    let to: String
+    let text: String
+    let date: Date
+    let toMe: Bool
+}
+
+/// Receive-only APRS-IS session (passcode -1: nothing sent can be gated to RF or
+/// the network) with a server-side `r/lat/lon/range` filter around the observer.
+@MainActor
+final class APRSISFeed: NearbyTCPFeed {
+    static let host = "rotate.aprs2.net"
+    static let port: UInt16 = 14580
+    static let maxStations = 300
+    static let maxMessages = 100
+
+    @Published private(set) var stations: [String: APRSISStation] = [:]
+    @Published private(set) var messages: [APRSISMessage] = []
+    @Published private(set) var packetCount = 0
+    @Published private(set) var serverInfo = ""
+
+    var callsign = ""
+    var latitude = 0.0
+    var longitude = 0.0
+    var rangeKm = 100
+
+    init() { super.init(label: "aprsis", idleTimeout: 120, telnet: false) }
+
+    /// APRS-IS login callsign: letters, digits and one -SSID (no /P suffixes).
+    var loginCall: String {
+        let base = callsign.uppercased().split(separator: "/").max { $0.count < $1.count }.map(String.init) ?? ""
+        return String(base.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }.prefix(9))
+    }
+
+    override func endpoint() -> (host: String, port: UInt16)? {
+        guard loginCall.count >= 3 else { state = .failed("Set your callsign in Settings first."); return nil }
+        return (Self.host, Self.port)
+    }
+
+    override func didConnect() {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1"
+        sendRaw(String(format: "user %@ pass -1 vers OrbitDeck %@ filter r/%.3f/%.3f/%d\r\n",
+                       loginCall, version, latitude, longitude, max(1, rangeKm)))
+    }
+
+    func clear() { stations = [:]; messages = []; packetCount = 0 }
+
+    override func didReceive(_ lines: [String]) {
+        var updated = stations
+        var newMessages: [APRSISMessage] = []
+        for line in lines {
+            if line.hasPrefix("#") {
+                if line.contains("logresp") { serverInfo = String(line.dropFirst(2)) }
+                continue
+            }
+            ingest(line, into: &updated, messages: &newMessages, depth: 0)
+        }
+        if updated.count > Self.maxStations {
+            let keep = updated.values.sorted { $0.lastHeard > $1.lastHeard }.prefix(Self.maxStations)
+            updated = Dictionary(uniqueKeysWithValues: keep.map { ($0.id, $0) })
+        }
+        stations = updated
+        if !newMessages.isEmpty { messages = Array((newMessages.reversed() + messages).prefix(Self.maxMessages)) }
+    }
+
+    private func ingest(_ line: String, into stations: inout [String: APRSISStation],
+                        messages: inout [APRSISMessage], depth: Int) {
+        guard let colon = line.firstIndex(of: ":") else { return }
+        let header = line[..<colon]
+        let info = String(line[line.index(after: colon)...])
+        guard let gt = header.firstIndex(of: ">") else { return }
+        let source = String(header[..<gt]).uppercased()
+        let destination = header[header.index(after: gt)...].split(separator: ",").first.map(String.init) ?? ""
+        guard !source.isEmpty, let dti = info.first else { return }
+        packetCount += 1
+        // Third-party traffic carries a complete inner TNC2 packet.
+        if dti == "}" {
+            if depth == 0 { ingest(String(info.dropFirst()), into: &stations, messages: &messages, depth: 1) }
+            return
+        }
+        var name = source
+        var isObject = false
+        let packet: APRSPacket
+        if dti == ";", info.count >= 19 {
+            // Object: ;NAME_____*DDHHMMz<position> ('_' instead of '*' = killed).
+            let chars = Array(info)
+            name = String(chars[1..<10]).trimmingCharacters(in: .whitespaces).uppercased()
+            isObject = true
+            if chars[10] == "_" { stations[name] = nil; return }
+            packet = APRS.parse("!" + String(chars[18...]))
+        } else {
+            packet = APRS.parse(info, destination: destination)
+        }
+        switch packet.kind {
+        case .message:
+            let me = loginCall.split(separator: "-").first.map(String.init) ?? loginCall
+            let to = packet.addressee.trimmingCharacters(in: .whitespaces).uppercased()
+            messages.append(APRSISMessage(from: source, to: to, text: packet.text, date: .now,
+                                          toMe: !me.isEmpty && (to == loginCall || to.split(separator: "-").first.map(String.init) == me)))
+        default:
+            guard let lat = packet.latitude, let lon = packet.longitude, !name.isEmpty else {
+                if packet.kind == .status, var s = stations[name] { s.comment = packet.comment; s.lastHeard = .now; stations[name] = s }
+                return
+            }
+            let geo = NearbyGeo.distanceBearing(latitude, longitude, lat, lon)
+            var s = stations[name] ?? APRSISStation(id: name, latitude: lat, longitude: lon, symbolTable: nil, symbolCode: nil,
+                                                    comment: "", lastHeard: .now, packets: 0, distanceKm: geo.km,
+                                                    bearing: geo.bearing, isObject: isObject)
+            s.latitude = lat; s.longitude = lon
+            s.symbolTable = packet.symbolTable ?? s.symbolTable
+            s.symbolCode = packet.symbolCode ?? s.symbolCode
+            let comment = packet.comment.trimmingCharacters(in: .whitespaces)
+            if !comment.isEmpty { s.comment = String(comment.prefix(120)) }
+            s.lastHeard = .now; s.packets += 1
+            s.distanceKm = geo.km; s.bearing = geo.bearing
+            stations[name] = s
+        }
+    }
+}
+
+// MARK: DX cluster
+
+struct DXClusterSpot: Identifiable {
+    let id: String
+    let frequencyKHz: Double
+    let dxCall: String
+    let spotter: String
+    let comment: String
+    let timeText: String
+    let date: Date?
+    let locator: String
+
+    var isVHFPlus: Bool { frequencyKHz >= 50_000 }
+
+    /// Heuristic: a satellite spot either names a bird in the comment or sits in a
+    /// satellite sub-band (2 m 145.8–146, 70 cm 435–438, QO-100 NB 10489.5–10490).
+    var isSatellite: Bool {
+        let f = frequencyKHz
+        if (145_800...146_000).contains(f) || (435_000...438_000).contains(f) || (10_489_500...10_490_000).contains(f) { return true }
+        let text = " " + comment.uppercased() + " "
+        let keys = [" SAT", "SAT ", "AO-", "SO-", "RS-", "IO-", "FO-", "PO-", "HO-", "LO-", "JO-", "CAS-", "XW-",
+                    "QO-100", "QO100", "ISS", "LEO", "GREENCUBE", "LILACSAT", "TEVEL"]
+        return keys.contains { text.contains($0) }
+    }
+}
+
+enum DXClusterFilter: Int, CaseIterable, Identifiable {
+    case all, vhf, satellite
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .vhf: "VHF+"
+        case .satellite: "Satellite"
+        }
+    }
+}
+
+/// DX-cluster telnet session (DXSpider, CC Cluster, AR-Cluster): logs in with the
+/// operator's callsign at the call/login prompt, backfills with `sh/dx 30`, and
+/// parses both live "DX de" lines and `sh/dx` rows into spots.
+@MainActor
+final class DXClusterFeed: NearbyTCPFeed {
+    static let defaultHost = "dxc.ve7cc.net"
+    static let defaultPort = 23
+    static let maxSpots = 300
+    static let maxConsole = 300
+
+    @Published private(set) var spots: [DXClusterSpot] = []
+    @Published private(set) var console: [String] = []
+
+    var host = DXClusterFeed.defaultHost
+    var port = DXClusterFeed.defaultPort
+    var callsign = ""
+    private var loggedIn = false
+    private var loginToken = 0
+
+    init() { super.init(label: "dxcluster", idleTimeout: nil, telnet: true) }
+
+    override func endpoint() -> (host: String, port: UInt16)? {
+        guard !callsign.trimmingCharacters(in: .whitespaces).isEmpty else {
+            state = .failed("Set your callsign in Settings first."); return nil
+        }
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty, (1...65535).contains(port) else { state = .failed("Enter a cluster host and port."); return nil }
+        return (h, UInt16(port))
+    }
+
+    override func didConnect() {
+        loggedIn = false
+        loginToken += 1
+        let token = loginToken
+        // Fallback for nodes whose prompt we don't recognize.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.loginToken == token, !self.loggedIn, self.state == .connected else { return }
+                self.login()
+            }
+        }
+    }
+
+    func command(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return }
+        appendConsole(["> " + t])
+        sendRaw(t + "\r\n")
+    }
+
+    private func login() {
+        loggedIn = true
+        sendRaw(callsign.uppercased().trimmingCharacters(in: .whitespaces) + "\r\n")
+        let token = loginToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.loginToken == token, self.state == .connected else { return }
+                self.sendRaw("sh/dx 30\r\n")
+            }
+        }
+    }
+
+    private func appendConsole(_ lines: [String]) {
+        console.append(contentsOf: lines)
+        if console.count > Self.maxConsole { console.removeFirst(console.count - Self.maxConsole) }
+    }
+
+    override func didReceive(_ lines: [String]) {
+        appendConsole(lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        var fresh: [DXClusterSpot] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !loggedIn {
+                let lower = trimmed.lowercased()
+                if (lower.hasSuffix(":") || lower.hasSuffix(">")) && (lower.contains("call") || lower.contains("login")) { login() }
+            }
+            if let spot = Self.parse(line) { fresh.append(spot) }
+        }
+        guard !fresh.isEmpty else { return }
+        var seen = Set<String>()
+        spots = (fresh.reversed() + spots).filter { seen.insert($0.id).inserted }
+            .sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+        if spots.count > Self.maxSpots { spots.removeLast(spots.count - Self.maxSpots) }
+    }
+
+    private static let liveRegex = try! NSRegularExpression(
+        pattern: #"^DX de ([A-Z0-9/#\-]+)[:>]?\s+([0-9]+\.?[0-9]*)\s+([A-Z0-9/]+)\s+(.*?)\s*([0-2][0-9][0-5][0-9])Z(?:\s+([A-R]{2}[0-9]{2}\S*))?\s*$"#,
+        options: [.caseInsensitive])
+    private static let showRegex = try! NSRegularExpression(
+        pattern: #"^\s*([0-9]+\.?[0-9]*)\s+([A-Z0-9/]+)\s+([0-9]{1,2}-[A-Za-z]{3}-[0-9]{4})\s+([0-2][0-9][0-5][0-9])Z\s*(.*?)\s*<([A-Z0-9/#\-]+)>\s*$"#,
+        options: [.caseInsensitive])
+
+    static func parse(_ line: String) -> DXClusterSpot? {
+        let ns = line as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        func group(_ m: NSTextCheckingResult, _ i: Int) -> String {
+            let r = m.range(at: i)
+            return r.location == NSNotFound ? "" : ns.substring(with: r)
+        }
+        if line.hasPrefix("DX de"), let m = liveRegex.firstMatch(in: line, range: range), let f = Double(group(m, 2)) {
+            let dx = group(m, 3).uppercased(), time = group(m, 5)
+            return DXClusterSpot(id: "\(dx)|\(Int(f.rounded()))|\(time)", frequencyKHz: f, dxCall: dx,
+                                 spotter: group(m, 1).uppercased(), comment: group(m, 4), timeText: time,
+                                 date: utcToday(time), locator: group(m, 6).uppercased())
+        }
+        if let m = showRegex.firstMatch(in: line, range: range), let f = Double(group(m, 1)) {
+            let dx = group(m, 2).uppercased(), time = group(m, 4)
+            return DXClusterSpot(id: "\(dx)|\(Int(f.rounded()))|\(time)", frequencyKHz: f, dxCall: dx,
+                                 spotter: group(m, 6).uppercased(), comment: group(m, 5), timeText: time,
+                                 date: dated(group(m, 3), time), locator: "")
+        }
+        return nil
+    }
+
+    private static func utcToday(_ hhmm: String) -> Date? {
+        guard hhmm.count == 4, let h = Int(hhmm.prefix(2)), let m = Int(hhmm.suffix(2)) else { return nil }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard var d = cal.date(bySettingHour: h, minute: m, second: 0, of: .now) else { return nil }
+        if d > Date().addingTimeInterval(600) { d = d.addingTimeInterval(-86400) }
+        return d
+    }
+
+    private static let showFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "d-MMM-yyyy HHmm"
+        return f
+    }()
+
+    private static func dated(_ day: String, _ hhmm: String) -> Date? { showFormatter.date(from: "\(day) \(hhmm)") }
+}
+
+// MARK: Telnet terminal
+
+struct TelnetLine: Identifiable {
+    let id: Int
+    let text: String
+    let sent: Bool
+}
+
+/// Minimal line-mode telnet terminal: no VT100 emulation (escapes are stripped),
+/// options refused, bounded scrollback.
+@MainActor
+final class TelnetSession: NearbyTCPFeed {
+    static let maxLines = 1000
+    @Published private(set) var lines: [TelnetLine] = []
+    var host = ""
+    var port = 23
+    private var nextID = 0
+
+    init() { super.init(label: "telnet", idleTimeout: nil, telnet: true) }
+
+    override func endpoint() -> (host: String, port: UInt16)? {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty, (1...65535).contains(port) else { state = .failed("Enter a host and port."); return nil }
+        append(["*** Connecting to \(h):\(port)"], sent: true)
+        return (h, UInt16(port))
+    }
+
+    override func didConnect() { append(["*** Connected"], sent: true) }
+    override func didReceive(_ incoming: [String]) { append(incoming, sent: false) }
+
+    func send(_ text: String) {
+        append([text], sent: true)
+        sendRaw(text + "\r\n")
+    }
+
+    func clear() { lines = [] }
+
+    private func append(_ texts: [String], sent: Bool) {
+        for t in texts { lines.append(TelnetLine(id: nextID, text: t, sent: sent)); nextID += 1 }
+        if lines.count > Self.maxLines { lines.removeFirst(lines.count - Self.maxLines) }
+    }
+}
+
+// MARK: ADS-B
+
+struct ADSBAircraft: Identifiable, Sendable {
+    let id: String
+    let ident: String
+    let altitudeFeet: Int?
+    let onGround: Bool
+    let trackDeg: Double?
+    let groundSpeedKt: Double?
+    let squawk: String
+    let distanceKm: Double
+    let bearing: Double
+    let elevationDeg: Double?
+}
+
+extension NearbyHTTP {
+    /// Parse a dump1090 / readsb / tar1090 `aircraft.json` (both the modern
+    /// `alt_baro`/`gs` and the legacy `altitude`/`speed` field names). Aircraft
+    /// without a position fresher than 60 s are skipped.
+    static func fetchAircraft(_ url: URL, latitude: Double, longitude: Double, altitudeMeters: Double,
+                              limit: Int = 250) async throws -> [ADSBAircraft] {
+        let data = try await get(url)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = root["aircraft"] as? [[String: Any]] else {
+            throw NSError(domain: "NearbyHTTP", code: 4, userInfo: [NSLocalizedDescriptionKey: "Not a dump1090/readsb aircraft.json."])
+        }
+        func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+        var out: [ADSBAircraft] = []
+        for a in list {
+            guard let lat = num(a["lat"]), let lon = num(a["lon"]) else { continue }
+            if let seen = num(a["seen_pos"]), seen > 60 { continue }
+            let hex = (a["hex"] as? String ?? "").uppercased()
+            let flight = (a["flight"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+            let altRaw = a["alt_baro"] ?? a["altitude"] ?? a["alt_geom"]
+            let ground = (altRaw as? String)?.lowercased() == "ground"
+            let alt = num(altRaw).map { Int($0) }
+            let geo = NearbyGeo.distanceBearing(latitude, longitude, lat, lon)
+            var elevation: Double?
+            if let alt, geo.km > 0.05 {
+                // Height above the observer, less Earth curvature, over ground range.
+                let h = Double(alt) * 0.0003048 - altitudeMeters / 1000 - geo.km * geo.km / (2 * 6371)
+                elevation = atan2(h, geo.km) * 180 / .pi
+            }
+            out.append(ADSBAircraft(id: hex.isEmpty ? UUID().uuidString : hex, ident: flight.isEmpty ? hex : flight,
+                                    altitudeFeet: ground ? 0 : alt, onGround: ground,
+                                    trackDeg: num(a["track"]) ?? num(a["true_heading"]),
+                                    groundSpeedKt: num(a["gs"]) ?? num(a["speed"]),
+                                    squawk: a["squawk"] as? String ?? "",
+                                    distanceKm: geo.km, bearing: geo.bearing, elevationDeg: elevation))
+        }
+        return Array(out.sorted { $0.distanceKm < $1.distanceKm }.prefix(limit))
+    }
+}
+
+/// Polls the operator's own ADS-B receiver every 5 s while the screen is visible.
+@MainActor
+final class ADSBFeed: ObservableObject {
+    @Published private(set) var aircraft: [ADSBAircraft] = []
+    @Published private(set) var status = "Not polling"
+    @Published private(set) var isPolling = false
+    @Published private(set) var lastUpdate: Date?
+    var urlText = ""
+    var latitude = 0.0, longitude = 0.0, altitudeMeters = 0.0
+    private var timer: Timer?
+    private var inFlight = false
+    private var paused = false
+
+    func start() {
+        guard let url = URL(string: urlText.trimmingCharacters(in: .whitespaces)),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https", url.host != nil else {
+            status = "Enter your receiver's aircraft.json URL."; return
+        }
+        isPolling = true; paused = false
+        status = "Fetching…"
+        startTimer()
+        fetch(url)
+    }
+
+    func stop() {
+        isPolling = false; paused = false
+        timer?.invalidate(); timer = nil
+        status = "Not polling"
+    }
+
+    func pause() {
+        guard isPolling else { return }
+        paused = true
+        timer?.invalidate(); timer = nil
+    }
+
+    func resume() {
+        guard isPolling, paused else { return }
+        paused = false
+        start()
+    }
+
+    private func startTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isPolling, let url = URL(string: self.urlText.trimmingCharacters(in: .whitespaces)) else { return }
+                self.fetch(url)
+            }
+        }
+    }
+
+    private func fetch(_ url: URL) {
+        guard !inFlight else { return }
+        inFlight = true
+        let lat = latitude, lon = longitude, alt = altitudeMeters
+        Task {
+            defer { inFlight = false }
+            do {
+                let list = try await NearbyHTTP.fetchAircraft(url, latitude: lat, longitude: lon, altitudeMeters: alt)
+                guard isPolling else { return }
+                aircraft = list
+                lastUpdate = .now
+                status = "\(list.count) aircraft with position"
+            } catch {
+                guard isPolling else { return }
+                status = error.localizedDescription
+            }
+        }
+    }
+}
+
+// MARK: Hub view
+
+struct NearbyDXView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var aprs = APRSISFeed()
+    @StateObject private var cluster = DXClusterFeed()
+    @StateObject private var telnet = TelnetSession()
+    @StateObject private var adsb = ADSBFeed()
+    @AppStorage("OrbitDeckIOS.nearby.tab") private var tab = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Feed", selection: $tab) {
+                Text("APRS").tag(0); Text("DX Cluster").tag(1); Text("ADS-B").tag(2); Text("Telnet").tag(3)
+            }
+            .pickerStyle(.segmented)
+            .padding()
+            switch tab {
+            case 1: NearbyClusterPanel(feed: cluster)
+            case 2: NearbyADSBPanel(feed: adsb)
+            case 3: NearbyTelnetPanel(session: telnet)
+            default: NearbyAPRSPanel(feed: aprs)
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                aprs.pause(); cluster.pause(); telnet.pause(); adsb.pause()
+            } else if phase == .active {
+                aprs.resume(); cluster.resume(); telnet.resume(); adsb.resume()
+            }
+        }
+        .onDisappear { aprs.stop(); cluster.stop(); telnet.stop(); adsb.stop() }
+    }
+}
+
+private struct NearbyStatusRow: View {
+    let state: NearbyConnState
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().fill(state.color).frame(width: 9, height: 9)
+            Text(state.label).font(.caption).foregroundStyle(state == .connected ? Color.primary : ODTheme.muted)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct NearbyAPRSPanel: View {
+    @EnvironmentObject private var store: OrbitStore
+    @ObservedObject var feed: APRSISFeed
+    @AppStorage("OrbitDeckIOS.nearby.aprsRangeKm") private var rangeKm = 100
+    @AppStorage("OrbitDeckIOS.nearby.aprsSortByDistance") private var sortByDistance = true
+
+    private var sorted: [APRSISStation] {
+        feed.stations.values.sorted { sortByDistance ? $0.distanceKm < $1.distanceKm : $0.lastHeard > $1.lastHeard }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Login", value: feed.loginCall.isEmpty ? "Set callsign in Settings" : "\(feed.loginCall) (receive-only)")
+                LabeledContent("Center", value: store.operatorGrid6)
+                Stepper("Range \(ODFormat.km(Double(rangeKm), decimals: 0))", value: $rangeKm, in: 10...500, step: 10)
+                    .disabled(feed.isActive)
+                HStack {
+                    if feed.isActive {
+                        Button("Disconnect") { feed.stop() }
+                    } else {
+                        Button("Connect") { connect() }.buttonStyle(.borderedProminent)
+                    }
+                    Spacer()
+                    Button("Clear") { feed.clear() }.disabled(feed.stations.isEmpty && feed.messages.isEmpty)
+                }
+                NearbyStatusRow(state: feed.state)
+                if !feed.serverInfo.isEmpty { Text(feed.serverInfo).font(.caption2.monospaced()).foregroundStyle(ODTheme.muted) }
+            } header: {
+                Text("APRS-IS")
+            } footer: {
+                Text("Receive-only (passcode -1) connection to \(APRSISFeed.host):\(APRSISFeed.port) with a range filter around your station. Fixed stations beacon every 10–30 minutes, so the list fills over time.")
+            }
+            Section("Stations (\(feed.stations.count)) · \(feed.packetCount) packets") {
+                Picker("Sort", selection: $sortByDistance) { Text("Nearest").tag(true); Text("Latest").tag(false) }
+                    .pickerStyle(.segmented)
+                if feed.stations.isEmpty {
+                    Text(feed.state == .connected ? "Waiting for nearby stations…" : "Connect to list stations heard nearby.")
+                        .foregroundStyle(ODTheme.muted)
+                }
+                ForEach(sorted) { s in
+                    let symbol = APRSSymbol(table: s.symbolTable, code: s.symbolCode)
+                    HStack(spacing: 10) {
+                        Image(systemName: symbol.systemImage)
+                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                            .frame(width: 24, height: 24).background(s.isObject ? ODTheme.warning : ODTheme.accent, in: Circle())
+                            .accessibilityLabel(symbol.name)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(s.id).font(.subheadline.monospaced().bold())
+                            if !s.comment.isEmpty { Text(s.comment).font(.caption).foregroundStyle(ODTheme.muted).lineLimit(2) }
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(ODFormat.km(s.distanceKm, decimals: 1)) \(ODFormat.compass(s.bearing))").font(.caption.monospacedDigit())
+                            Text("\(ODFormat.angle(s.bearing, decimals: 0)) · \(NearbyGeo.age(s.lastHeard)) ago")
+                                .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                        }
+                    }
+                }
+            }
+            if !feed.messages.isEmpty {
+                Section("Messages heard (\(feed.messages.count))") {
+                    ForEach(feed.messages) { m in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text("\(m.from) → \(m.to)").font(.caption.monospaced().bold())
+                                    .foregroundStyle(m.toMe ? ODTheme.good : .primary)
+                                Spacer()
+                                Text(ODFormat.utcShort.string(from: m.date)).font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                            }
+                            Text(m.text).font(.caption)
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { if !feed.isActive { feed.callsign = store.preferences.callsign ?? "" } }
+    }
+
+    private func connect() {
+        let o = store.preferences.observer
+        feed.callsign = store.preferences.callsign ?? ""
+        feed.latitude = o.latitude; feed.longitude = o.longitude
+        feed.rangeKm = rangeKm
+        feed.clear()
+        feed.start()
+    }
+}
+
+private struct NearbyClusterPanel: View {
+    @EnvironmentObject private var store: OrbitStore
+    @ObservedObject var feed: DXClusterFeed
+    @AppStorage("OrbitDeckIOS.nearby.clusterHost") private var host = DXClusterFeed.defaultHost
+    @AppStorage("OrbitDeckIOS.nearby.clusterPort") private var port = DXClusterFeed.defaultPort
+    @AppStorage("OrbitDeckIOS.nearby.clusterFilter") private var filterRaw = DXClusterFilter.all.rawValue
+    @State private var commandText = ""
+    @State private var showConsole = false
+
+    private var filter: DXClusterFilter { DXClusterFilter(rawValue: filterRaw) ?? .all }
+    private var shown: [DXClusterSpot] {
+        switch filter {
+        case .all: feed.spots
+        case .vhf: feed.spots.filter(\.isVHFPlus)
+        case .satellite: feed.spots.filter(\.isSatellite)
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Host", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL).textFieldStyle(.odField).disabled(feed.isActive)
+                TextField("Port", value: $port, format: .number.grouping(.never)).keyboardType(.numberPad)
+                    .textFieldStyle(.odField).disabled(feed.isActive)
+                HStack {
+                    if feed.isActive {
+                        Button("Disconnect") { feed.stop() }
+                    } else {
+                        Button("Connect") {
+                            feed.host = host; feed.port = port
+                            feed.callsign = store.preferences.callsign ?? ""
+                            feed.start()
+                        }.buttonStyle(.borderedProminent)
+                    }
+                    Spacer()
+                    Button("Default node") { host = DXClusterFeed.defaultHost; port = DXClusterFeed.defaultPort }
+                        .disabled(feed.isActive)
+                }
+                NearbyStatusRow(state: feed.state)
+            } header: {
+                Text("DX cluster (telnet)")
+            } footer: {
+                Text("Logs in with your callsign from Settings. Commands such as set/ft8 or sh/dx 50 can be sent below.")
+            }
+            Section {
+                HStack {
+                    TextField("Cluster command", text: $commandText).textInputAutocapitalization(.never)
+                        .autocorrectionDisabled().textFieldStyle(.odField).onSubmit(sendCommand)
+                    Button("Send", action: sendCommand).disabled(feed.state != .connected || commandText.isEmpty)
+                }
+                DisclosureGroup("Console (\(feed.console.count) lines)", isExpanded: $showConsole) {
+                    ForEach(Array(feed.console.suffix(60).enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.caption2.monospaced()).foregroundStyle(line.hasPrefix("> ") ? ODTheme.accent : ODTheme.muted)
+                    }
+                }
+            }
+            Section("Spots (\(shown.count))") {
+                Picker("Filter", selection: $filterRaw) {
+                    ForEach(DXClusterFilter.allCases) { Text($0.title).tag($0.rawValue) }
+                }.pickerStyle(.segmented)
+                if shown.isEmpty {
+                    Text(feed.spots.isEmpty ? "No spots yet." : "No spots match this filter.").foregroundStyle(ODTheme.muted)
+                }
+                ForEach(shown) { spot in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(String(format: "%.1f", spot.frequencyKHz)).font(.subheadline.monospacedDigit())
+                                .foregroundStyle(spot.isSatellite ? ODTheme.good : (spot.isVHFPlus ? ODTheme.accent : .primary))
+                            Text(spot.dxCall).font(.subheadline.monospaced().bold())
+                            Spacer()
+                            Text("\(spot.timeText)Z").font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                        }
+                        HStack {
+                            Text("de \(spot.spotter)").font(.caption.monospaced()).foregroundStyle(ODTheme.muted)
+                            if !spot.comment.isEmpty { Text(spot.comment).font(.caption).lineLimit(1) }
+                            if !spot.locator.isEmpty { Spacer(); Text(spot.locator).font(.caption2.monospaced()).foregroundStyle(ODTheme.muted) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func sendCommand() {
+        guard feed.state == .connected else { return }
+        feed.command(commandText)
+        commandText = ""
+    }
+}
+
+private struct NearbyADSBPanel: View {
+    @EnvironmentObject private var store: OrbitStore
+    @ObservedObject var feed: ADSBFeed
+    @AppStorage("OrbitDeckIOS.nearby.adsbURL") private var urlText = ""
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("http://192.168.1.20/tar1090/data/aircraft.json", text: $urlText)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    .textFieldStyle(.odField).disabled(feed.isPolling)
+                HStack {
+                    if feed.isPolling {
+                        Button("Stop") { feed.stop() }
+                    } else {
+                        Button("Start") {
+                            let o = store.preferences.observer
+                            feed.urlText = urlText
+                            feed.latitude = o.latitude; feed.longitude = o.longitude; feed.altitudeMeters = o.altitudeMeters
+                            feed.start()
+                        }.buttonStyle(.borderedProminent).disabled(urlText.isEmpty)
+                    }
+                    Spacer()
+                    if let t = feed.lastUpdate { Text(ODFormat.utcShort.string(from: t)).font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted) }
+                }
+                Text(feed.status).font(.caption).foregroundStyle(ODTheme.muted)
+            } header: {
+                Text("ADS-B receiver")
+            } footer: {
+                Text("Point this at your own dump1090, readsb or tar1090 receiver's aircraft.json on your network (typically …/data/aircraft.json). Refreshed every 5 seconds while this screen is open; no outside service or API key is used.")
+            }
+            Section("Aircraft by distance (\(feed.aircraft.count))") {
+                ForEach(feed.aircraft) { a in
+                    HStack(spacing: 10) {
+                        Image(systemName: "airplane")
+                            .rotationEffect(.degrees((a.trackDeg ?? 90) - 90))
+                            .foregroundStyle(a.onGround ? ODTheme.muted : ODTheme.accent)
+                            .frame(width: 22)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(a.ident).font(.subheadline.monospaced().bold())
+                            Text(altitudeText(a) + (a.trackDeg.map { " · hdg \(Int($0.rounded()))°" } ?? "")
+                                 + (a.groundSpeedKt.map { " · \(Int($0.rounded())) kt" } ?? ""))
+                                .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(ODFormat.km(a.distanceKm, decimals: 1)) \(ODFormat.compass(a.bearing))").font(.caption.monospacedDigit())
+                            Text("az \(ODFormat.angle(a.bearing, decimals: 0))" + (a.elevationDeg.map { " el \(ODFormat.angle($0))" } ?? ""))
+                                .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func altitudeText(_ a: ADSBAircraft) -> String {
+        if a.onGround { return "ground" }
+        guard let ft = a.altitudeFeet else { return "alt —" }
+        return ODFormat.usesCustomary ? "\(ft) ft" : "\(Int((Double(ft) * 0.3048).rounded())) m"
+    }
+}
+
+private struct NearbyTelnetPanel: View {
+    @ObservedObject var session: TelnetSession
+    @AppStorage("OrbitDeckIOS.nearby.telnetHost") private var host = ""
+    @AppStorage("OrbitDeckIOS.nearby.telnetPort") private var port = 23
+    @State private var input = ""
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack {
+                TextField("Host", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL).textFieldStyle(.odField).disabled(session.isActive)
+                TextField("Port", value: $port, format: .number.grouping(.never)).keyboardType(.numberPad)
+                    .textFieldStyle(.odField).frame(width: 80).disabled(session.isActive)
+                if session.isActive {
+                    Button("Close") { session.stop() }
+                } else {
+                    Button("Open") { session.host = host; session.port = port; session.start() }
+                        .buttonStyle(.borderedProminent).disabled(host.isEmpty)
+                }
+            }
+            HStack {
+                NearbyStatusRow(state: session.state)
+                Spacer()
+                Button("Clear") { session.clear() }.font(.caption)
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(session.lines) { line in
+                            Text(line.text.isEmpty ? " " : line.text)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(line.sent ? ODTheme.accent : .primary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id(line.id)
+                        }
+                    }
+                    .padding(6)
+                }
+                .background(ODTheme.panel, in: RoundedRectangle(cornerRadius: 8))
+                .onChange(of: session.lines.last?.id) { _, last in
+                    if let last { proxy.scrollTo(last, anchor: .bottom) }
+                }
+            }
+            HStack {
+                TextField("Send a line", text: $input).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .textFieldStyle(.odField).onSubmit(send)
+                Button("Send", action: send).disabled(session.state != .connected)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+
+    private func send() {
+        guard session.state == .connected else { return }
+        session.send(input)
+        input = ""
     }
 }

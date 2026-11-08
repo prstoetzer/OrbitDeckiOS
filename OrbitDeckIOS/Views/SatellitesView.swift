@@ -28,6 +28,8 @@ struct SatellitesView: View {
     @State private var visibleNow: [VisibleSat] = []
     @State private var visibleScanning = false
     @State private var visibleScannedAt: Date?
+    /// NORAD → newest AMSAT "Heard" report (last 24 h), from the cached summary.
+    @State private var heardByNorad: [UInt: Date] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -111,6 +113,7 @@ struct SatellitesView: View {
                 // `.task(id:)` does not reliably re-fire when `mode` (local Picker
                 // state) changes, so scan explicitly when switching to "What's up".
                 .onChange(of: mode) { _, _ in if mode == .visible { Task { await scanVisible() } } }
+                .task(id: store.satellites.count) { await loadHeardMarks() }
         }
         .sheet(isPresented: $showingOnlineSearch) {
             CelesTrakSearchSheet()
@@ -202,6 +205,7 @@ struct SatellitesView: View {
                                 .font(.caption2.bold())
                                 .foregroundStyle(ODTheme.warning)
                         }
+                        heardMark(satellite.id)
                     }
                     HStack(spacing: 8) {
                         Text(verbatim: "NORAD \(satellite.id)")
@@ -268,7 +272,10 @@ struct SatellitesView: View {
                     .foregroundStyle(store.selectedSatellite?.id == entry.satellite.id ? ODTheme.accent : ODTheme.good)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(entry.satellite.name).foregroundStyle(.primary)
+                    HStack(spacing: 6) {
+                        Text(entry.satellite.name).foregroundStyle(.primary)
+                        heardMark(entry.satellite.id)
+                    }
                     Text(verbatim: "NORAD \(entry.satellite.id)")
                         .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
                 }
@@ -291,6 +298,39 @@ struct SatellitesView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// Small green dot + age when the AMSAT status board has a "Heard" report.
+    @ViewBuilder private func heardMark(_ norad: UInt) -> some View {
+        if let heard = heardByNorad[norad] {
+            HStack(spacing: 3) {
+                Circle().fill(ODTheme.good).frame(width: 6, height: 6)
+                Text(AmsatStatusService.ageText(heard))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(ODTheme.good)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Heard on AMSAT status \(AmsatStatusService.ageText(heard))")
+        }
+    }
+
+    /// Map the cached AMSAT heard list (refreshed at most every 10 min) onto the
+    /// catalog. Name matching runs off the main actor — the catalog can be large.
+    @MainActor
+    private func loadHeardMarks() async {
+        let heard = await AmsatStatusService.recentlyHeard()
+        guard !heard.isEmpty else { heardByNorad = [:]; return }
+        let catalog = store.satellites.map { ($0.id, $0.name) }
+        heardByNorad = await Task.detached(priority: .utility) { () -> [UInt: Date] in
+            let names = catalog.map(\.1)
+            var out: [UInt: Date] = [:]
+            for (apiName, date) in heard {
+                guard let i = SatelliteNameMatch.matchIndex(apiName: apiName, in: names) else { continue }
+                let id = catalog[i].0
+                if date > out[id] ?? .distantPast { out[id] = date }
+            }
+            return out
+        }.value
     }
 
     private var filteredVisible: [VisibleSat] {
