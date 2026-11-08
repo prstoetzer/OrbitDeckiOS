@@ -3286,6 +3286,10 @@ struct ActivationService {
                     throw NSError(domain: "Activation", code: 20, userInfo: [NSLocalizedDescriptionKey:
                         "hams.at returned no parseable activations. First bytes: \(snippet)"])
                 }
+                // Keep the raw feed so the list still shows (with its age) when offline.
+                try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(),
+                                                         withIntermediateDirectories: true)
+                try? data.write(to: cacheURL, options: .atomic)
                 return rows
             } catch {
                 lastError = error
@@ -3417,6 +3421,39 @@ struct ActivationService {
         return (try? GPService.parse(data: data)) ?? []
     }
 
+    // MARK: Offline cache of the last successful fetch
+
+    /// The raw Atom feed from the last successful fetch (Caches; rebuilt on demand).
+    static var cacheURL: URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("OrbitDeck", isDirectory: true)
+            .appendingPathComponent("hamsat_upcoming_alerts.xml")
+    }
+
+    /// Rows parsed from the cached feed plus when it was fetched, dropping
+    /// activations that started more than an hour ago. nil when nothing is cached.
+    static func cachedFeed(now: Date = Date()) -> (rows: [ActivationRecord], fetched: Date)? {
+        guard let data = try? Data(contentsOf: cacheURL) else { return nil }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: cacheURL.path)
+        let fetched = attributes?[.modificationDate] as? Date ?? .distantPast
+        let rows = parse(String(decoding: data, as: UTF8.self)).filter { row in
+            guard let start = listedDate(row) else { return true }
+            return start > now.addingTimeInterval(-3600)
+        }
+        return (rows, fetched)
+    }
+
+    /// The advertised start (UTC) of an activation, when the feed's date/time parse.
+    static func startDate(_ a: ActivationRecord) -> Date? { listedDate(a) }
+
+    /// A reminder key that stays the same across feed refreshes (the row `id`
+    /// carries the feed position, which shifts as alerts come and go).
+    static func reminderKey(_ a: ActivationRecord) -> String? {
+        if a.id.hasPrefix(UserActivation.idPrefix) { return a.id }
+        guard let start = listedDate(a) else { return nil }
+        return "hamsat|\(a.callsign.uppercased())|\(normalizedName(a.satellite))|\(Int(start.timeIntervalSince1970))"
+    }
+
     private static func listedDate(_ a: ActivationRecord) -> Date? {
         // Extract the date and clock by regex so suffixes like "(UTC)" on the
         // feed's "Start time" value don't defeat parsing (the old string-strip
@@ -3466,6 +3503,104 @@ struct ActivationService {
             .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&#39;", with: "'")
             .replacingOccurrences(of: "&amp;", with: "&")
+    }
+}
+
+// MARK: - User-entered activations (skeds) and reminders
+
+/// An activation or sked the operator entered by hand. Stored locally (own
+/// UserDefaults key, tolerant decoding) and merged into the hams.at list.
+struct UserActivation: Identifiable, Codable, Equatable, Sendable {
+    static let idPrefix = "user:"
+
+    var id = UUID()
+    var callsign = ""
+    var satellite = ""
+    var grid = ""
+    var start = Date()
+    var mode = ""
+    var frequency = ""
+    var notes = ""
+
+    init(id: UUID = UUID(), callsign: String = "", satellite: String = "", grid: String = "",
+         start: Date = Date(), mode: String = "", frequency: String = "", notes: String = "") {
+        self.id = id; self.callsign = callsign; self.satellite = satellite; self.grid = grid
+        self.start = start; self.mode = mode; self.frequency = frequency; self.notes = notes
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, callsign, satellite, grid, start, mode, frequency, notes }
+
+    // Tolerant: a missing or malformed field falls back to its default, so adding
+    // fields later never drops the operator's saved skeds.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = ((try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? nil) ?? UUID()
+        callsign = ((try? c.decodeIfPresent(String.self, forKey: .callsign)) ?? nil) ?? ""
+        satellite = ((try? c.decodeIfPresent(String.self, forKey: .satellite)) ?? nil) ?? ""
+        grid = ((try? c.decodeIfPresent(String.self, forKey: .grid)) ?? nil) ?? ""
+        start = ((try? c.decodeIfPresent(Date.self, forKey: .start)) ?? nil) ?? Date()
+        mode = ((try? c.decodeIfPresent(String.self, forKey: .mode)) ?? nil) ?? ""
+        frequency = ((try? c.decodeIfPresent(String.self, forKey: .frequency)) ?? nil) ?? ""
+        notes = ((try? c.decodeIfPresent(String.self, forKey: .notes)) ?? nil) ?? ""
+    }
+
+    /// Shaped like a feed row (date "yyyy-MM-dd", start "HH:mm:ss (UTC)") so the
+    /// "Can I work it?" and operating-detail paths treat both the same.
+    var record: ActivationRecord {
+        let call = callsign.uppercased()
+        return ActivationRecord(id: Self.idPrefix + id.uuidString,
+                                title: "\(call) on \(satellite) from \(grid.uppercased())",
+                                date: Self.dayFormatter.string(from: start), callsign: call,
+                                satellite: satellite, grid: grid.uppercased(),
+                                start: "\(Self.timeFormatter.string(from: start)) (UTC)", end: "",
+                                maximumElevation: "", frequency: frequency, mode: mode, comment: notes)
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyy-MM-dd"; return f
+    }()
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "HH:mm:ss"; return f
+    }()
+}
+
+/// A T-60/T-30/T-10 reminder choice for one activation. Carries a snapshot of
+/// what the notification says, so feed rows can be reminded even offline.
+struct ActivationReminder: Codable, Equatable, Sendable {
+    var key: String
+    var callsign: String
+    var satellite: String
+    var grid: String
+    var start: Date
+}
+
+/// Local persistence for user activations and reminder choices, each in its own
+/// UserDefaults key (never inside StorePreferences).
+enum ActivationSkedStore {
+    static let userKey = "orbitdeck.activations.user"
+    static let remindersKey = "orbitdeck.activations.reminders"
+
+    static func loadUser() -> [UserActivation] {
+        guard let data = UserDefaults.standard.data(forKey: userKey),
+              let list = try? JSONDecoder().decode([UserActivation].self, from: data) else { return [] }
+        return list.sorted { $0.start < $1.start }
+    }
+
+    static func saveUser(_ list: [UserActivation]) {
+        if let data = try? JSONEncoder().encode(list) { UserDefaults.standard.set(data, forKey: userKey) }
+    }
+
+    /// Saved reminders, minus any whose activation started more than an hour ago.
+    static func loadReminders(now: Date = Date()) -> [ActivationReminder] {
+        guard let data = UserDefaults.standard.data(forKey: remindersKey),
+              let list = try? JSONDecoder().decode([ActivationReminder].self, from: data) else { return [] }
+        return list.filter { $0.start > now.addingTimeInterval(-3600) }
+    }
+
+    static func saveReminders(_ list: [ActivationReminder]) {
+        if let data = try? JSONEncoder().encode(list) { UserDefaults.standard.set(data, forKey: remindersKey) }
     }
 }
 

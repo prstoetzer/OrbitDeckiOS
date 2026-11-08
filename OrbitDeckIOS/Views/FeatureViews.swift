@@ -822,6 +822,95 @@ private enum PlanningMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+// MARK: - Weather card and cloud badges (Open-Meteo)
+
+/// Compact local-weather readout for planning screens: temperature, cloud cover,
+/// wind and precipitation at the observer, in the app's metric/US setting.
+struct WeatherCard: View {
+    @EnvironmentObject private var store: OrbitStore
+    @ObservedObject private var weather = WeatherModel.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let s = weather.usable(for: store.preferences.observer) {
+                HStack(spacing: 14) {
+                    metric("thermometer.medium", Self.temperature(s.temperatureC))
+                    metric("cloud", s.cloudCoverPercent.map { String(format: "%.0f%%", $0) } ?? "—")
+                    metric("wind", Self.wind(s.windSpeedKmh, s.windDirectionDeg))
+                    metric("drop", Self.precipitation(s.precipitationMm))
+                }
+                .font(.subheadline.monospacedDigit())
+                let minutes = max(0, Int(Date().timeIntervalSince(s.fetched) / 60))
+                Text(weather.isStale() ? "Offline — forecast from \(minutes < 120 ? "\(minutes) min" : "\(minutes / 60) h") ago"
+                                       : "Updated \(minutes) min ago")
+                    .font(.caption2).foregroundStyle(weather.isStale() ? ODTheme.warning : ODTheme.muted)
+            } else if weather.isLoading {
+                ProgressView("Loading local weather…")
+            } else {
+                Text(weather.lastError.map { "Weather unavailable: \($0)" } ?? "Weather unavailable.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+            OpenMeteoAttribution()
+        }
+        .task(id: "\(store.preferences.observer.latitude),\(store.preferences.observer.longitude)") {
+            await weather.refreshIfNeeded(for: store.preferences.observer)
+        }
+    }
+
+    private func metric(_ symbol: String, _ value: String) -> some View {
+        Label(value, systemImage: symbol).labelStyle(.titleAndIcon)
+    }
+
+    static func temperature(_ c: Double?) -> String {
+        guard let c else { return "—" }
+        return ODFormat.usesCustomary ? String(format: "%.0f °F", c * 9 / 5 + 32) : String(format: "%.0f °C", c)
+    }
+
+    static func wind(_ kmh: Double?, _ direction: Double?) -> String {
+        guard let kmh else { return "—" }
+        let speed = ODFormat.usesCustomary ? String(format: "%.0f mph", kmh * UnitConversion.miPerKm)
+                                           : String(format: "%.0f km/h", kmh)
+        guard let direction else { return speed }
+        let points = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        let index = Int(((direction.truncatingRemainder(dividingBy: 360) + 360 + 22.5) / 45).rounded(.down)) % 8
+        return "\(speed) \(points[index])"
+    }
+
+    static func precipitation(_ mm: Double?) -> String {
+        guard let mm else { return "—" }
+        return ODFormat.usesCustomary ? String(format: "%.2f in", mm / 25.4) : String(format: "%.1f mm", mm)
+    }
+}
+
+/// Required credit for Open-Meteo data (CC BY 4.0).
+struct OpenMeteoAttribution: View {
+    var body: some View {
+        Link("Weather data by Open-Meteo.com (CC BY 4.0)", destination: URL(string: "https://open-meteo.com/")!)
+            .font(.caption2)
+    }
+}
+
+/// Forecast cloud cover at a moment, as a small colored capsule. Shows nothing
+/// beyond the 48 h forecast or when no forecast is available.
+struct CloudBadge: View {
+    @EnvironmentObject private var store: OrbitStore
+    @ObservedObject private var weather = WeatherModel.shared
+    let date: Date
+
+    var body: some View {
+        if let cover = weather.usable(for: store.preferences.observer)?.cloudCover(at: date) {
+            let color = cover < 30 ? ODTheme.good : cover < 70 ? ODTheme.warning : ODTheme.muted
+            Label(String(format: "%.0f%%", cover), systemImage: cover < 30 ? "moon.stars" : cover < 70 ? "cloud" : "smoke")
+                .font(.caption.bold().monospacedDigit())
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(color.opacity(0.18))
+                .foregroundStyle(color)
+                .clipShape(Capsule())
+                .accessibilityLabel(String(format: "Forecast cloud cover %.0f percent", cover))
+        }
+    }
+}
+
 struct PlanningView: View {
     @EnvironmentObject private var store: OrbitStore
     @State private var mode: PlanningMode = .work
@@ -868,6 +957,7 @@ struct PlanningView: View {
                     if isLoading { ProgressView("Computing…") }
                     if let error { Text(error).foregroundStyle(ODTheme.warning) }
                 }
+                Section("Local weather") { WeatherCard() }
                 content
                 if canExportPlanningResult {
                     Section("Share / export") {
@@ -963,11 +1053,15 @@ struct PlanningView: View {
                 Button("Find next 7 days") { computeVisible() }.disabled(isLoading || store.selectedSatellite == nil)
                 ForEach(visibleResults) { row in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(ODFormat.utc.string(from: row.pass.aos)).font(.headline.monospaced())
+                        HStack {
+                            Text(ODFormat.utc.string(from: row.pass.aos)).font(.headline.monospaced())
+                            Spacer()
+                            CloudBadge(date: row.pass.tca)
+                        }
                         Text(String(format: "max %.0f° • est mag %.1f • best Sun %+.0f°", row.pass.maxElevation, row.bestEstimatedMagnitude, row.bestSunElevation)).font(.caption.monospaced())
                     }
                 }
-                Text("Visible means satellite sunlit, observer Sun ≤ −6°, and satellite ≥10°. Magnitude is a planning estimate; real spacecraft can flare or tumble.").font(.caption).foregroundStyle(ODTheme.muted)
+                Text("Visible means satellite sunlit, observer Sun ≤ −6°, and satellite ≥10°. Magnitude is a planning estimate; real spacecraft can flare or tumble. The badge is forecast cloud cover at maximum elevation (next 48 h).").font(.caption).foregroundStyle(ODTheme.muted)
             }
         case .satSat:
             Section("Satellite-to-satellite line of sight") {
@@ -1958,6 +2052,7 @@ struct TransitsView: View {
                                         Text("near").font(.caption).foregroundStyle(ODTheme.muted)
                                     }
                                     Spacer()
+                                    CloudBadge(date: event.date)
                                     Text(String(format: "%.2f°", event.separationDegrees))
                                         .monospacedDigit().foregroundStyle(ODTheme.accent)
                                 }
@@ -1971,12 +2066,14 @@ struct TransitsView: View {
                 }
 
                 Section {
-                    Text("A disk transit is a closest approach inside the Sun or Moon's apparent radius (~0.25°). Wider settings also show near-misses useful for positioning a camera. Only encounters with the satellite and selected body above the horizon are included.")
+                    Text("A disk transit is a closest approach inside the Sun or Moon's apparent radius (~0.25°). Wider settings also show near-misses useful for positioning a camera. Only encounters with the satellite and selected body above the horizon are included. The badge is forecast cloud cover at your site (next 48 h).")
                         .font(.caption).foregroundStyle(ODTheme.muted)
+                    OpenMeteoAttribution()
                 }
             }
         }
         .task(id: store.selectedSatellite?.id) { compute() }
+        .task { await WeatherModel.shared.refreshIfNeeded(for: store.preferences.observer) }
         .onChange(of: bodyChoice) { _, _ in compute() }
         .onChange(of: separation) { _, _ in compute() }
         .onChange(of: days) { _, _ in compute() }
@@ -3093,6 +3190,10 @@ struct DataFeedsView: View {
     @State private var activationDetail: ActivationDetailResult?
     @State private var activationDetailLoadingID: String?
     @State private var showingPostActivation = false
+    @State private var userActivations: [UserActivation] = []
+    @State private var reminders: [ActivationReminder] = []
+    @State private var editingSked: UserActivation?
+    @State private var reminderMessage = ""
     @State private var qrzCall = ""
     @State private var qrzResult: QRZRecord?
     @State private var qrzMessage = ""
@@ -3125,17 +3226,46 @@ struct DataFeedsView: View {
                 Text("Publish an upcoming activation alert with your hams.at API key. The key is stored in the iOS Keychain.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
+            Section("My activations & skeds") {
+                Button {
+                    editingSked = UserActivation(callsign: "", satellite: store.selectedSatellite?.name ?? "",
+                                                 start: Date().addingTimeInterval(3600))
+                } label: {
+                    Label("Add an activation or sked…", systemImage: "plus.circle")
+                }
+                Text("Your own entries are stored on this device and listed with the hams.at feed. Tap the bell on any row for reminders \(PassAlarmService.activationLeadMinutes.map { "\($0)" }.joined(separator: "/")) minutes before it starts.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+                if !reminderMessage.isEmpty { Text(reminderMessage).font(.caption).foregroundStyle(ODTheme.muted) }
+            }
             Section("Scheduled") {
-                if activations.isEmpty && !isLoadingActivations { Text("No activation rows loaded.").foregroundStyle(ODTheme.muted) }
-                ForEach(activations) { a in
+                if mergedActivations.isEmpty && !isLoadingActivations { Text("No activation rows loaded.").foregroundStyle(ODTheme.muted) }
+                ForEach(mergedActivations) { a in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text(a.callsign.isEmpty ? a.title : a.callsign).font(.headline)
+                            if isUser(a) {
+                                Text("MY SKED")
+                                    .font(.caption2.bold())
+                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(ODTheme.accent.opacity(0.2))
+                                    .foregroundStyle(ODTheme.accent)
+                                    .clipShape(Capsule())
+                            }
                             Spacer()
                             Text(a.satellite).foregroundStyle(ODTheme.accent)
+                            reminderBell(a)
                         }
                         Text([a.date, stripUTC(a.start), a.grid, a.mode, a.frequency].filter { !$0.isEmpty }.joined(separator: " • "))
                             .font(.caption).foregroundStyle(ODTheme.muted)
+                        if isUser(a) && !a.comment.isEmpty {
+                            Text(a.comment).font(.caption)
+                        }
+                        if isUser(a), let sked = userSked(a) {
+                            HStack {
+                                Button("Edit") { editingSked = sked }.buttonStyle(.bordered)
+                                Button("Delete", role: .destructive) { deleteSked(sked) }.buttonStyle(.bordered)
+                            }
+                        }
                         HStack {
                             Button("Can I work it?") { check(a) }.buttonStyle(.bordered)
                             Button("Operating detail") { openDetail(a) }.buttonStyle(.bordered)
@@ -3158,7 +3288,25 @@ struct DataFeedsView: View {
                 }
             }
         }
-        .task { if activations.isEmpty { fetchActivations() } }
+        .task {
+            userActivations = ActivationSkedStore.loadUser()
+            reminders = ActivationSkedStore.loadReminders()
+            if activations.isEmpty { fetchActivations() }
+            // Top up the rolling reminder window (soonest first, within the 64 limit).
+            if !reminders.isEmpty {
+                let result = await PassAlarmService.rescheduleActivationReminders(requestPermission: false)
+                reminders = ActivationSkedStore.loadReminders()
+                if result.deferred > 0 {
+                    reminderMessage = "\(result.deferred) later reminder(s) will be scheduled when room frees up (iOS allows 64 pending notifications)."
+                }
+            }
+        }
+        .sheet(item: $editingSked) { sked in
+            UserActivationEditor(sked: sked, isNew: !userActivations.contains { $0.id == sked.id }) { saved in
+                saveSked(saved)
+            }
+            .environmentObject(store)
+        }
         .sheet(item: $activationDetail) { detail in
             ActivationOperatingDetailView(detail: detail, home: store.preferences.observer, store: store)
         }
@@ -3199,8 +3347,117 @@ struct DataFeedsView: View {
             do {
                 activations = try await ActivationService.fetch()
                 activationMessage = activations.isEmpty ? "No upcoming activations were returned." : "\(activations.count) upcoming activation(s)."
-            } catch { activationMessage = error.localizedDescription }
+            } catch {
+                // Offline (or hams.at unreachable): fall back to the last fetched feed.
+                if let cached = ActivationService.cachedFeed() {
+                    activations = cached.rows
+                    let minutes = max(0, Int(Date().timeIntervalSince(cached.fetched) / 60))
+                    let age = minutes < 60 ? "\(minutes) min" : minutes < 2880 ? "\(minutes / 60) h" : "\(minutes / 1440) days"
+                    activationMessage = "Offline — showing the hams.at feed saved \(age) ago (\(cached.rows.count) activation(s)). \(error.localizedDescription)"
+                } else {
+                    activationMessage = error.localizedDescription
+                }
+            }
             isLoadingActivations = false
+        }
+    }
+
+    // MARK: User skeds and reminders
+
+    /// Feed rows plus the operator's own entries, soonest first (unparseable last).
+    private var mergedActivations: [ActivationRecord] {
+        let now = Date()
+        let mine = userActivations.filter { $0.start > now.addingTimeInterval(-3600) }.map(\.record)
+        return (activations + mine).enumerated().sorted { lhs, rhs in
+            let a = ActivationService.startDate(lhs.element), b = ActivationService.startDate(rhs.element)
+            switch (a, b) {
+            case let (x?, y?): return x == y ? lhs.offset < rhs.offset : x < y
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+    }
+
+    private func isUser(_ a: ActivationRecord) -> Bool { a.id.hasPrefix(UserActivation.idPrefix) }
+
+    private func userSked(_ a: ActivationRecord) -> UserActivation? {
+        userActivations.first { UserActivation.idPrefix + $0.id.uuidString == a.id }
+    }
+
+    @ViewBuilder private func reminderBell(_ a: ActivationRecord) -> some View {
+        if let key = ActivationService.reminderKey(a), let start = ActivationService.startDate(a) {
+            let on = reminders.contains { $0.key == key }
+            Button {
+                toggleReminder(a, key: key, start: start)
+            } label: {
+                Image(systemName: on ? "bell.fill" : "bell")
+                    .foregroundStyle(on ? ODTheme.accent : ODTheme.muted)
+            }
+            .buttonStyle(.borderless)
+            .disabled(!on && start.addingTimeInterval(-Double(PassAlarmService.activationLeadMinutes.min() ?? 0) * 60) <= Date())
+            .accessibilityLabel(on ? "Cancel reminders" : "Remind me before this activation")
+        }
+    }
+
+    private func toggleReminder(_ a: ActivationRecord, key: String, start: Date) {
+        var list = ActivationSkedStore.loadReminders()
+        if let index = list.firstIndex(where: { $0.key == key }) {
+            list.remove(at: index)
+        } else {
+            list.append(ActivationReminder(key: key, callsign: a.callsign, satellite: a.satellite,
+                                           grid: a.grid, start: start))
+        }
+        ActivationSkedStore.saveReminders(list)
+        reminders = list
+        applyReminders()
+    }
+
+    private func applyReminders() {
+        Task {
+            let result = await PassAlarmService.rescheduleActivationReminders()
+            reminders = ActivationSkedStore.loadReminders()
+            if !reminders.isEmpty && result.scheduled == 0 && result.deferred == 0 {
+                reminderMessage = "No reminders are pending — allow notifications for OrbitDeck in iOS Settings, or the start is too close."
+            } else if result.deferred > 0 {
+                reminderMessage = "\(result.scheduled) reminder notification(s) pending; \(result.deferred) later one(s) will be added when room frees up (iOS allows 64)."
+            } else {
+                reminderMessage = reminders.isEmpty ? "" : "\(result.scheduled) reminder notification(s) pending."
+            }
+        }
+    }
+
+    private func saveSked(_ sked: UserActivation) {
+        let oldKey = UserActivation.idPrefix + sked.id.uuidString
+        if let index = userActivations.firstIndex(where: { $0.id == sked.id }) {
+            userActivations[index] = sked
+        } else {
+            userActivations.append(sked)
+        }
+        userActivations.sort { $0.start < $1.start }
+        ActivationSkedStore.saveUser(userActivations)
+        // Keep an existing reminder's snapshot (time, call, satellite) in step with the edit.
+        var list = ActivationSkedStore.loadReminders()
+        if let index = list.firstIndex(where: { $0.key == oldKey }) {
+            let r = sked.record
+            list[index] = ActivationReminder(key: oldKey, callsign: r.callsign, satellite: r.satellite,
+                                             grid: r.grid, start: sked.start)
+            ActivationSkedStore.saveReminders(list)
+            reminders = list
+            applyReminders()
+        }
+    }
+
+    private func deleteSked(_ sked: UserActivation) {
+        userActivations.removeAll { $0.id == sked.id }
+        ActivationSkedStore.saveUser(userActivations)
+        let key = UserActivation.idPrefix + sked.id.uuidString
+        var list = ActivationSkedStore.loadReminders()
+        if list.contains(where: { $0.key == key }) {
+            list.removeAll { $0.key == key }
+            ActivationSkedStore.saveReminders(list)
+            reminders = list
+            applyReminders()
         }
     }
 
@@ -3283,6 +3540,87 @@ struct DataFeedsView: View {
     }
 }
 
+
+/// Add or edit one of the operator's own activations/skeds (stored on-device only).
+struct UserActivationEditor: View {
+    @EnvironmentObject private var store: OrbitStore
+    @Environment(\.dismiss) private var dismiss
+    @State var sked: UserActivation
+    let isNew: Bool
+    let onSave: (UserActivation) -> Void
+
+    init(sked: UserActivation, isNew: Bool, onSave: @escaping (UserActivation) -> Void) {
+        _sked = State(initialValue: sked)
+        self.isNew = isNew
+        self.onSave = onSave
+    }
+
+    private var canSave: Bool {
+        !sked.callsign.trimmingCharacters(in: .whitespaces).isEmpty
+        && !sked.satellite.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var favoriteNames: [String] {
+        store.satellites.filter { store.preferences.favorites.contains($0.id) }.map(\.name).sorted()
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Activation") {
+                    TextField("Callsign", text: $sked.callsign)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .textFieldStyle(.odField)
+                    HStack {
+                        TextField("Satellite", text: $sked.satellite)
+                            .autocorrectionDisabled()
+                            .textFieldStyle(.odField)
+                        if !favoriteNames.isEmpty {
+                            Menu {
+                                ForEach(favoriteNames, id: \.self) { name in Button(name) { sked.satellite = name } }
+                            } label: { Image(systemName: "star.circle") }
+                            .accessibilityLabel("Choose a favorite satellite")
+                        }
+                    }
+                    TextField("Grid(s), e.g. EM73 or DM79/DM89", text: $sked.grid)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .textFieldStyle(.odField)
+                    DatePicker("Start (UTC)", selection: $sked.start)
+                        .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
+                }
+                Section("Optional") {
+                    TextField("Mode (SSB, CW, FM, FT4…)", text: $sked.mode)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .textFieldStyle(.odField)
+                    TextField("Frequency", text: $sked.frequency)
+                        .textFieldStyle(.odField)
+                    TextField("Notes", text: $sked.notes, axis: .vertical)
+                        .lineLimit(2...5)
+                        .textFieldStyle(.odField)
+                }
+                Section {
+                    Text("Times are entered in UTC. The grid is used for “Can I work it?” and operating detail.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
+            }
+            .navigationTitle(isNew ? "New activation" : "Edit activation")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        var s = sked
+                        s.callsign = s.callsign.trimmingCharacters(in: .whitespaces).uppercased()
+                        s.satellite = s.satellite.trimmingCharacters(in: .whitespaces)
+                        s.grid = s.grid.trimmingCharacters(in: .whitespaces).uppercased()
+                        onSave(s)
+                        dismiss()
+                    }.disabled(!canSave)
+                }
+            }
+        }
+    }
+}
 
 /// Form for publishing your own upcoming activation alert to hams.at
 /// (`POST /api/alerts`). Prefills from your station and the selected satellite;
