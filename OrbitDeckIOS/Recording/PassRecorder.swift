@@ -58,6 +58,14 @@ final class PassRecorder: ObservableObject {
     private var filename = ""
     private var meterTimer: DispatchSourceTimer?
 
+    /// Set synchronously by stop() and cleared once the clip is finalized. `isRecording`
+    /// is cleared asynchronously (after the write queue drains), so without this a second
+    /// tap, an error or the memo cap racing a tap would run stop() twice.
+    private var stopping = false
+    /// Whether this session holds an `AudioActivity` reference; begin/end are balanced
+    /// exactly once per session so other audio users' counts are never disturbed.
+    private var activityHeld = false
+
     private let peakLock = NSLock()
     private var peak: Float = 0
 
@@ -74,7 +82,7 @@ final class PassRecorder: ObservableObject {
     }
 
     func start(source: AudioSource, satellite: String) {
-        guard !isRecording else { return }
+        guard !isRecording, !stopping else { return }
         // Recording shares the AudioHub capture, so it can run alongside a decoder or the
         // monitor — no exclusive claim.
         errorText = ""
@@ -104,15 +112,16 @@ final class PassRecorder: ObservableObject {
         recordRate = source.sampleRate
 
         isRecording = true
-        AudioActivity.begin()
+        if !activityHeld { AudioActivity.begin(); activityHeld = true }
         startMeter()
     }
 
     func stop() {
-        guard isRecording else { return }
+        guard isRecording, !stopping else { return }
+        stopping = true
         source?.stop()
         source = nil
-        AudioActivity.end()
+        if activityHeld { AudioActivity.end(); activityHeld = false }
         meterTimer?.cancel(); meterTimer = nil
         let duration = elapsed
         let sat = self.sat, filename = self.filename, start = startDate ?? Date()
@@ -126,6 +135,7 @@ final class PassRecorder: ObservableObject {
                 atPath: QSOStore.recordingsDir.appendingPathComponent(filename).path)
             DispatchQueue.main.async {
                 self?.isRecording = false
+                self?.stopping = false
                 self?.level = 0
                 if duration >= 0.5, exists {
                     let entry = RecordingEntry(sat: sat, start: start, duration: duration, filename: filename,

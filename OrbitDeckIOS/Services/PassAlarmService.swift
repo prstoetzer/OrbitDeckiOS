@@ -33,8 +33,18 @@ enum PassAlarmService {
 
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
         let id = identifier(satellite: satellite, pass: pass)
-        try await center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
-        // Pass alarms take priority: re-budget activation reminders around the new one.
+        // Pass alarms take priority: free the activation reminders' slots first so the
+        // alarm can't be dropped by a full 64-request queue, then re-budget the reminders
+        // around it (whether or not the add succeeded).
+        let pending = await center.pendingNotificationRequests()
+        center.removePendingNotificationRequests(
+            withIdentifiers: pending.map(\.identifier).filter { $0.hasPrefix(activationPrefix) })
+        do {
+            try await center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+        } catch {
+            await rescheduleActivationReminders(requestPermission: false)
+            throw error
+        }
         await rescheduleActivationReminders(requestPermission: false)
 #else
         throw PassAlarmError.denied
@@ -70,11 +80,14 @@ enum PassAlarmService {
     static let activationLeadMinutes = [60, 30, 10]
     /// iOS keeps at most 64 pending local notifications per app.
     static let pendingLimit = 64
+    /// Slots activation reminders never take, so a new pass alarm always has room.
+    static let passAlarmReserve = 8
     private static let activationPrefix = "orbitdeck.activation."
 
     /// Rebuild every activation reminder from the saved choices
     /// (`ActivationSkedStore.remindersKey`). Pass alarms and other notifications keep
-    /// their slots; activation reminders fill what remains of the 64-request budget,
+    /// their slots; activation reminders fill what remains of the 64-request budget
+    /// (less `passAlarmReserve`, kept free for pass alarms),
     /// soonest first, and later ones are picked up on a later reschedule (the
     /// Activations screen and every new pass alarm call this). Returns how many
     /// reminder notifications are pending and how many didn't fit.
@@ -109,7 +122,7 @@ enum PassAlarmService {
         }
         candidates.sort { $0.fire < $1.fire }
         let others = pending.count - stale.count
-        let budget = max(0, pendingLimit - others)
+        let budget = max(0, pendingLimit - passAlarmReserve - others)
         let chosen = candidates.prefix(budget)
         for c in chosen {
             let r = c.reminder

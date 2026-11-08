@@ -712,7 +712,13 @@ final class OrbitStore: ObservableObject {
         }
     }
 
+    /// Whether a preferences blob already existed when the store was created — i.e. this
+    /// is an upgrade or a later launch, not a fresh install. Captured before anything is
+    /// saved this launch (RootView uses it to skip the first-run readiness sheet).
+    private(set) static var hadPreferencesAtLaunch = false
+
     private func loadPreferences() {
+        Self.hadPreferencesAtLaunch = defaults.data(forKey: prefsKey) != nil
         guard let data = defaults.data(forKey: prefsKey),
               let decoded = try? JSONDecoder().decode(StorePreferences.self, from: data) else {
             return
@@ -724,7 +730,7 @@ final class OrbitStore: ObservableObject {
     }
 
     private func savePreferences() {
-        guard let data = try? JSONEncoder().encode(preferences) else { return }
+        guard !FactoryResetService.didReset, let data = try? JSONEncoder().encode(preferences) else { return }
         defaults.set(data, forKey: prefsKey)
     }
 
@@ -1145,10 +1151,18 @@ final class LiveActivityController: ObservableObject {
         }
     }
 
+    /// Factory reset: stop refreshing and end any running activity (the cleared defaults
+    /// read as "enabled", so the loop would otherwise start a new one).
+    func stopForFactoryReset() {
+        loop?.cancel(); loop = nil
+        state = nil; lastKey = ""
+        Task { await Self.apply(nil, canStart: false) }
+    }
+
     /// Recompute when the inputs change, the shown pass reaches AOS or LOS, or
     /// every 10 minutes; then start, update or end the activity to match.
     func refresh(now: Date = .now) async {
-        guard let store, let autoSwitch else { return }
+        guard let store, let autoSwitch, !FactoryResetService.didReset else { return }
         guard Self.isEnabled, ActivityAuthorizationInfo().areActivitiesEnabled else {
             state = nil; lastKey = ""
             await Self.apply(nil, canStart: false)

@@ -589,12 +589,17 @@ enum NotesStore {
                                                 options: [.skipsHiddenFiles])) ?? []
         return urls.filter { ["txt", "md", "text"].contains($0.pathExtension.lowercased()) }.map { url in
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return NoteFile(url: url, title: url.deletingPathExtension().lastPathComponent, modified: modified, text: read(url))
+            return NoteFile(url: url, title: url.deletingPathExtension().lastPathComponent, modified: modified, text: (try? read(url)) ?? "")
         }.sorted { $0.modified > $1.modified }
     }
 
-    static func read(_ url: URL) -> String {
-        (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    /// Reads a note as UTF-8, falling back to the encoding Foundation detects.
+    /// Throws when the file can't be decoded so callers never mistake an
+    /// unreadable note for an empty one (and overwrite it on save).
+    static func read(_ url: URL) throws -> String {
+        if let utf8 = try? String(contentsOf: url, encoding: .utf8) { return utf8 }
+        var detected = String.Encoding.utf8
+        return try String(contentsOf: url, usedEncoding: &detected)
     }
 
     static func write(_ text: String, to url: URL) throws {

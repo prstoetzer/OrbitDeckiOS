@@ -417,7 +417,25 @@ struct GraphCalcView: View {
     @State private var importedPoints: [(x: Double, y: Double)] = []
     @State private var importing = false
     @State private var importStatus = ""
+    /// Sampled traces and the analysis (zeros, integrals, intersections), recomputed only
+    /// when the functions, window or integral bounds change — not on every body pass
+    /// (a trace drag re-renders the view many times a second).
+    @State private var cache = GraphCache()
     private let engine=GraphCalculatorEngine()
+
+    private struct GraphInputs: Equatable {
+        var f1: String, f2: String, lo: Double, hi: Double, intA: String, intB: String
+    }
+    private struct GraphCache {
+        var inputs: GraphInputs?
+        var a: [GraphPoint] = []
+        var b: [GraphPoint] = []
+        var roots: [Double] = []
+        var area = 0.0
+        var intersections: [Double] = []
+        var definite: Double?
+    }
+    private var inputs: GraphInputs { GraphInputs(f1: f1, f2: f2, lo: lo, hi: hi, intA: intA, intB: intB) }
     private var lo: Double { Double(xmin) ?? -180 }
     private var hi: Double { max(lo + 0.001, Double(xmax) ?? 180) }
     private var hasF2: Bool { !f2.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -476,12 +494,29 @@ struct GraphCalcView: View {
             }
             .padding()
         }
+        .task(id: inputs) {
+            // Debounce typing; the first computation runs immediately.
+            if cache.inputs != nil {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if Task.isCancelled { return }
+            }
+            recompute()
+        }
+    }
+
+    private func recompute() {
+        var c = GraphCache(inputs: inputs)
+        c.a = engine.sample(f1, xmin: lo, xmax: hi)
+        c.b = hasF2 ? engine.sample(f2, xmin: lo, xmax: hi) : []
+        c.roots = zeros(of: c.a)
+        c.area = integral(of: c.a)
+        c.intersections = hasF2 ? intersections() : []
+        c.definite = simpson(f1, Double(intA) ?? .nan, Double(intB) ?? .nan)
+        cache = c
     }
 
     @ViewBuilder private var graph: some View {
-        let a = engine.sample(f1, xmin: lo, xmax: hi)
-        let b = f2.trimmingCharacters(in: .whitespaces).isEmpty ? [] : engine.sample(f2, xmin: lo, xmax: hi)
-        let roots = zeros(of: a)
+        let a = cache.a, b = cache.b, roots = cache.roots
         Chart {
             ForEach(a) { p in if let y = p.y { LineMark(x: .value("x", p.x), y: .value("y", y)).foregroundStyle(ODTheme.good) } }
             ForEach(b) { p in if let y = p.y { LineMark(x: .value("x", p.x), y: .value("y2", y)).foregroundStyle(ODTheme.accent) } }
@@ -557,9 +592,7 @@ struct GraphCalcView: View {
     }
 
     @ViewBuilder private var analysis: some View {
-        let a = engine.sample(f1, xmin: lo, xmax: hi)
-        let roots = zeros(of: a)
-        let area = integral(of: a)
+        let roots = cache.roots, area = cache.area
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(roots.isEmpty ? "No zeros of y₁ in view" : "Zeros of y₁: " + roots.prefix(6).map { String(format: "%.6g", $0) }.joined(separator: ", ") + (roots.count > 6 ? "…" : ""))
@@ -567,7 +600,7 @@ struct GraphCalcView: View {
                 Text(String(format: "∫y₁ dx (view) ≈ %.4g", area))
             }
             if hasF2 {
-                let xs = intersections()
+                let xs = cache.intersections
                 Text(xs.isEmpty ? "No intersections of y₁ and y₂ in view"
                      : "y₁ = y₂ at " + xs.prefix(6).map { String(format: "(%.6g, %.6g)", $0, yAt(f1, $0) ?? .nan) }.joined(separator: ", ") + (xs.count > 6 ? "…" : ""))
             }
@@ -576,7 +609,7 @@ struct GraphCalcView: View {
                 TextField("a", text: $intA).textFieldStyle(.odField).keyboardType(.numbersAndPunctuation).frame(maxWidth: 90)
                 Text("to")
                 TextField("b", text: $intB).textFieldStyle(.odField).keyboardType(.numbersAndPunctuation).frame(maxWidth: 90)
-                if let s = simpson(f1, Double(intA) ?? .nan, Double(intB) ?? .nan) {
+                if let s = cache.definite {
                     Text(String(format: "= %.8g", s)).foregroundStyle(ODTheme.good)
                 } else {
                     Text("= —")
@@ -1273,9 +1306,16 @@ struct DebrisScreenView: View {
             status = "Screening \(records.count) objects…"
             let start = Date()
             do {
-                let screened = try await Task.detached(priority: .userInitiated) {
+                // The detached task doesn't inherit cancellation, so forward it: leaving the
+                // screen (job?.cancel()) stops the screening loop instead of letting it run on.
+                let worker = Task.detached(priority: .userInitiated) {
                     try FeatureEngine.screenDebrisGroup(primary: primary, debris: records, from: start, hours: h, thresholdKm: threshold)
-                }.value
+                }
+                let screened = try await withTaskCancellationHandler {
+                    try await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
                 if Task.isCancelled { status = "Canceled."; return }
                 result = screened
                 status = "\(screened.groupCount) objects in the group, \(screened.bandCount) in an overlapping altitude band, screened from \(ODFormat.utcShort.string(from: start))."
@@ -1390,13 +1430,23 @@ struct NoteEditorView: View {
     @State private var loaded = false
     @State private var saveTask: Task<Void, Never>?
     @State private var status = ""
+    /// Text as last read from or written to disk; saves are skipped when unchanged.
+    @State private var savedText = ""
+    /// Set when the file couldn't be read: editing and saving are disabled so the
+    /// original file is never overwritten with an empty buffer.
+    @State private var readError: String?
 
     var body: some View {
         VStack(spacing: 0) {
+            if let readError {
+                Text("This note couldn't be read, so editing is disabled to protect the file: \(readError)")
+                    .font(.caption).foregroundStyle(ODTheme.warning).padding(8)
+            }
             TextEditor(text: $text)
                 .font(.system(.body, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(8)
+                .disabled(readError != nil)
             if !status.isEmpty {
                 Text(status).font(.caption2).foregroundStyle(ODTheme.muted).padding(.bottom, 4)
             }
@@ -1408,10 +1458,17 @@ struct NoteEditorView: View {
             }
         }
         .onAppear {
-            if !loaded { text = NotesStore.read(url); loaded = true }
+            guard !loaded else { return }
+            do {
+                text = try NotesStore.read(url)
+                savedText = text
+                loaded = true
+            } catch {
+                readError = error.localizedDescription
+            }
         }
         .onChange(of: text) { _, _ in
-            guard loaded else { return }
+            guard loaded, readError == nil else { return }
             saveTask?.cancel()
             saveTask = Task {
                 try? await Task.sleep(nanoseconds: 600_000_000)
@@ -1422,7 +1479,8 @@ struct NoteEditorView: View {
     }
 
     private func save() {
-        do { try NotesStore.write(text, to: url); status = "Saved \(Date().formatted(date: .omitted, time: .shortened))" }
+        guard loaded, readError == nil, text != savedText else { return }
+        do { try NotesStore.write(text, to: url); savedText = text; status = "Saved \(Date().formatted(date: .omitted, time: .shortened))" }
         catch { status = error.localizedDescription }
     }
 }
@@ -1783,7 +1841,16 @@ enum FactoryResetService {
         var removeSecrets = false
     }
 
-    static func run(_ options: Options) {
+    /// Set once a reset has run: stores check it and stop persisting, so nothing still in
+    /// memory writes the erased data back before the app is relaunched.
+    @MainActor private(set) static var didReset = false
+
+    @MainActor static func run(_ options: Options) {
+        didReset = true
+        // Pass alarms and activation reminders (pending and already delivered).
+        let center = UNUserNotificationCenter.current()
+        center.removeAllPendingNotificationRequests()
+        center.removeAllDeliveredNotifications()
         let fm = FileManager.default
         if let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
         UserDefaults.standard.synchronize()
@@ -1823,6 +1890,8 @@ struct FactoryResetSection: View {
     @EnvironmentObject private var store: OrbitStore
     @EnvironmentObject private var rig: RigController
     @EnvironmentObject private var rotator: RotatorController
+    @EnvironmentObject private var qsoLog: QSOStore
+    @EnvironmentObject private var liveActivity: LiveActivityController
     @State private var options = FactoryResetService.Options()
     @State private var confirmStep = 0
     @State private var done = false
@@ -1879,9 +1948,13 @@ struct FactoryResetSection: View {
         confirmStep = 0
         rig.disconnect()
         rotator.disconnect()
+        // Stop background writers first: the QRZ fill would otherwise save a deleted log
+        // back, and the Live Activity loop would restart the activity.
+        qsoLog.prepareForFactoryReset(keepLog: options.keepLogAndMedia)
+        liveActivity.stopForFactoryReset()
         FactoryResetService.run(options)
-        // Put the live store back to defaults so nothing in memory (e.g. location
-        // following) writes the old settings back before the relaunch.
+        // Put the live store back to defaults (in memory only — saving is blocked by
+        // `didReset`) so nothing shows or writes the old settings before the relaunch.
         store.preferences = StorePreferences()
         done = true
     }

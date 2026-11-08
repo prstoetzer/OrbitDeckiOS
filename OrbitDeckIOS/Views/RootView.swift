@@ -349,8 +349,11 @@ struct RootView: View {
             if let destination { selection = destination; notifications.openDestination = nil }
         }
         // Station readiness checklist, once on first run (not during screenshot automation).
+        // Upgrading users (existing preferences) skip it; it stays in Settings and Help.
         .onAppear {
-            if !readinessShown && RootView.launchScreen == nil && !UserDefaults.standard.bool(forKey: "odDemo") {
+            if !readinessShown && OrbitStore.hadPreferencesAtLaunch {
+                readinessShown = true
+            } else if !readinessShown && RootView.launchScreen == nil && !UserDefaults.standard.bool(forKey: "odDemo") {
                 readinessShown = true
                 showReadiness = true
             }

@@ -1043,7 +1043,10 @@ struct FoxAnatomyLesson: View {
             TimelineView(.animation(paused: !spinning)) { context in
                 let elapsed = context.date.timeIntervalSince(start)
                 let theta = spinning ? frozenAngle + elapsed * 0.45 : frozenAngle
-                let index = (Int(elapsed / 4.5) + labelOffset) % callouts.count
+                // Clamp and wrap non-negatively: `start` is reset on Spin, and a timeline
+                // date just before it would otherwise give a negative index.
+                let step = Int(max(0, elapsed) / 4.5) + labelOffset
+                let index = ((step % callouts.count) + callouts.count) % callouts.count
                 let callout = callouts[index]
                 VStack(alignment: .leading, spacing: 6) {
                     Canvas { ctx, size in draw(&ctx, size: size, theta: theta, anchor: callout.anchor) }

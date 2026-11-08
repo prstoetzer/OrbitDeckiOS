@@ -2255,6 +2255,12 @@ enum OrbitBackupService {
         if let log = includeLog {
             root["qsoLog"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(log))
         }
+        // JSONSerialization raises an Objective-C exception (a crash, not a thrown error)
+        // on anything it can't encode, such as NaN or infinity; check first.
+        guard JSONSerialization.isValidJSONObject(root) else {
+            throw NSError(domain: "OrbitBackup", code: 1, userInfo: [NSLocalizedDescriptionKey:
+                "The backup couldn't be created: a setting holds a value that can't be saved as JSON."])
+        }
         return try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
     }
 
@@ -2273,7 +2279,11 @@ enum OrbitBackupService {
             return ["type": "data", "value": data.base64EncodedString()]
         case let number as NSNumber:
             if CFGetTypeID(number) == CFBooleanGetTypeID() { return ["type": "bool", "value": number.boolValue] }
-            if CFNumberIsFloatType(number) { return ["type": "double", "value": number.doubleValue] }
+            if CFNumberIsFloatType(number) {
+                // NaN/infinity have no JSON form; leave such a setting out of the backup.
+                guard number.doubleValue.isFinite else { return nil }
+                return ["type": "double", "value": number.doubleValue]
+            }
             return ["type": "int", "value": number.int64Value]
         case let string as String:
             return ["type": "string", "value": string]

@@ -32,6 +32,14 @@ final class QSOStore: ObservableObject {
         }
         // Keep the credential flag honest with what's actually on disk.
         config.hasLoTWCredential = LoTW.hasCredential()
+        // A station location set up before the entity picker existed may have a US state
+        // but no DXCC; it was always meant as the USA, so store that (the picker showed it
+        // as the USA, and the LoTW upload needs the entity, not just the display).
+        if config.station.dxcc.trimmingCharacters(in: .whitespaces).isEmpty,
+           !config.station.usState.trimmingCharacters(in: .whitespaces).isEmpty {
+            config.station.dxcc = "291"
+            persistConfig()
+        }
         qsos = load([QSORecord].self, "QSOLog.json") ?? []
         recordings = load([RecordingEntry].self, "Recordings.json") ?? []
         sstvImages = load([SSTVImageEntry].self, "SSTVImages.json") ?? []
@@ -40,6 +48,7 @@ final class QSOStore: ObservableObject {
     }
 
     func persistConfig() {
+        guard !FactoryResetService.didReset else { return }
         if let data = try? JSONEncoder().encode(config) {
             UserDefaults.standard.set(data, forKey: Self.configKey)
         }
@@ -126,14 +135,84 @@ final class QSOStore: ObservableObject {
     // Memo stubs without a call would be invalid ADIF records; they stay on device.
     func adifExport() -> String { ADIF.export(qsos.filter { !$0.isStub }) }
 
+    /// Outcome of an ADIF import: records added as new QSOs, existing QSOs updated
+    /// (LoTW confirmation or empty fields filled) and records that matched an existing
+    /// QSO with nothing new to add.
+    struct ImportResult: Equatable {
+        var added = 0
+        var updated = 0
+        var unchanged = 0
+    }
+
+    /// Import an ADIF file. A record that matches a QSO already in the log (same base
+    /// call, same satellite, same mode family, within ±2 min) is merged instead of
+    /// inserted — so importing a LoTW confirmations download marks the logged QSOs
+    /// confirmed rather than duplicating them. Unmatched records are added.
     @discardableResult
-    func adifImport(_ text: String) -> Int {
+    func adifImport(_ text: String) -> ImportResult {
         var parsed = ADIF.parse(text)
-        guard !parsed.isEmpty else { return 0 }
+        var result = ImportResult()
+        guard !parsed.isEmpty else { return result }
         for i in parsed.indices { Self.fillDXCC(&parsed[i]) }
-        qsos.insert(contentsOf: parsed, at: 0)
-        saveQSOs()
-        return parsed.count
+
+        // Index the existing log by base call so matching stays linear-ish for big files.
+        var byCall: [String: [Int]] = [:]
+        for (i, q) in qsos.enumerated() where !q.isStub {
+            byCall[DXCCLookup.baseCall(q.call), default: []].append(i)
+        }
+        var added: [QSORecord] = []
+        for record in parsed {
+            let call = DXCCLookup.baseCall(record.call)
+            let match = call.isEmpty ? nil : (byCall[call] ?? [])
+                .filter { Self.importMatches(qsos[$0], record) }
+                .min { abs(qsos[$0].utc.timeIntervalSince(record.utc)) < abs(qsos[$1].utc.timeIntervalSince(record.utc)) }
+            guard let i = match else { added.append(record); continue }
+            if Self.merge(record, into: &qsos[i]) { result.updated += 1 } else { result.unchanged += 1 }
+        }
+        result.added = added.count
+        if !added.isEmpty { qsos.insert(contentsOf: added, at: 0) }
+        if result.added > 0 || result.updated > 0 { saveQSOs() }
+        return result
+    }
+
+    /// Whether an imported record is the same contact as a logged QSO (base call is
+    /// compared by the caller).
+    private static func importMatches(_ q: QSORecord, _ r: QSORecord) -> Bool {
+        abs(q.utc.timeIntervalSince(r.utc)) <= 120
+            && normalizedSat(q.sat) == normalizedSat(r.sat)
+            && modeFamily(q.mode) == modeFamily(r.mode)
+    }
+
+    /// Satellite name in LoTW's naming (so "FOX-1B (AO-91)" matches "AO-91"), without
+    /// case, spaces or hyphens.
+    private static func normalizedSat(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return "" }
+        return LoTWSatName.resolve(trimmed).uppercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// LoTW's mode groups: phone, CW and data (everything else).
+    private static func modeFamily(_ mode: String) -> String {
+        let m = mode.uppercased()
+        if m == "CW" { return "CW" }
+        if ["SSB", "USB", "LSB", "FM", "FM-N", "FMN", "AM", "DV", "PHONE", "C4FM", "DSTAR"].contains(m) { return "PHONE" }
+        return "DATA"
+    }
+
+    /// Merge an imported record into a matching QSO: take the LoTW confirmation and
+    /// fill fields the log doesn't have yet. Never overwrites what the operator logged
+    /// and keeps the upload flags. Returns whether anything changed.
+    private static func merge(_ r: QSORecord, into q: inout QSORecord) -> Bool {
+        let before = q
+        if r.lotwConfirmed { q.lotwConfirmed = true }
+        if q.state.isEmpty { q.state = r.state }
+        if q.grid.isEmpty { q.grid = r.grid }
+        if q.name.isEmpty { q.name = r.name }
+        if q.dxcc == nil, let dxcc = r.dxcc {
+            q.dxcc = dxcc
+            if q.country.isEmpty { q.country = r.country }
+        }
+        return q != before
     }
 
     // MARK: DXCC entity
@@ -259,6 +338,16 @@ final class QSOStore: ObservableObject {
         if changed { saveQSOs() }
     }
 
+    /// Factory reset: stop the QRZ worker and, unless the log is kept, drop the log and
+    /// media indexes from memory so nothing on screen or in flight refers to deleted files.
+    func prepareForFactoryReset(keepLog: Bool) {
+        nameWorker?.cancel(); nameWorker = nil
+        nameQueue.removeAll()
+        config = LoggingConfig()
+        guard !keepLog else { return }
+        qsos = []; recordings = []; sstvImages = []; ft4Traffic = []
+    }
+
     // MARK: Uploads
 
     /// Sign + upload the not-yet-LoTW'd QSOs (or, with `ids`, exactly those QSOs,
@@ -332,6 +421,7 @@ final class QSOStore: ObservableObject {
         return try? JSONDecoder().decode(T.self, from: data)
     }
     private func save<T: Encodable>(_ value: T, _ name: String) {
+        guard !FactoryResetService.didReset else { return }
         let url = Self.appSupport.appendingPathComponent(name)
         if let data = try? JSONEncoder().encode(value) { try? data.write(to: url, options: .atomic) }
     }

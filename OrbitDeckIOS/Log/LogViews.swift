@@ -364,8 +364,10 @@ struct LogScreen: View {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { status = "Could not read the file."; return }
-        let n = qso.adifImport(text)
-        status = "Imported \(n) QSO(s)."
+        let r = qso.adifImport(text)
+        var parts = ["Added \(r.added) QSO(s)", "updated \(r.updated) already in the log"]
+        if r.unchanged > 0 { parts.append("\(r.unchanged) matched with nothing new") }
+        status = parts.joined(separator: ", ") + "."
     }
 
     /// Upload the pending QSOs, or re-send exactly `ids` when given.
@@ -1043,7 +1045,7 @@ struct AwardsScreen: View {
         var s = "Grids count each 4-character VUCC field (every grid of a rover or grid-line QSO). States come from each QSO's State field (editable, ADIF STATE or QRZ) — never guessed from a grid. DXCC uses the entity resolved from the call."
         s += a.hasConfirmations
             ? " Confirmed counts use the LoTW QSL status imported with your ADIF log."
-            : " Worked totals only: there's no LoTW confirmation data in this log (import an ADIF from LoTW with LOTW_QSL_RCVD to see confirmed counts)."
+            : " Worked totals only: there's no LoTW confirmation data in this log (import your QSL download from LoTW — matching QSOs already in the log are marked confirmed rather than added again)."
         if a.usWithoutState > 0 { s += " \(a.usWithoutState) US QSO(s) have no state yet." }
         s += " A working estimate for your own tracking, not an official award check."
         return s

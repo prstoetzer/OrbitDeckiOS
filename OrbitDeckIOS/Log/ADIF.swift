@@ -162,7 +162,9 @@ enum ADIF {
 
     private static func recordFrom(_ f: [String: String]) -> QSORecord {
         var q = QSORecord(utc: parseDateTime(date: f["qso_date"], time: f["time_on"]))
-        q.call = f["call"] ?? ""
+        // Calls are stored uppercase (as the editor saves them), so opening and saving an
+        // imported QSO unchanged doesn't look like a call edit and clear its upload flags.
+        q.call = (f["call"] ?? "").trimmingCharacters(in: .whitespaces).uppercased()
         // Collapse MFSK + SUBMODE (FT4/JS8) back to the stored standalone mode.
         let m = (f["mode"] ?? "SSB").uppercased()
         let sub = (f["submode"] ?? "").uppercased()
@@ -174,7 +176,7 @@ enum ADIF {
         q.rstRcvd = f["rst_rcvd"] ?? ""
         q.grid = f["vucc_grids"] ?? f["gridsquare"] ?? ""
         q.myGrid = f["my_gridsquare"] ?? ""
-        q.myCall = f["station_callsign"] ?? ""
+        q.myCall = (f["station_callsign"] ?? "").trimmingCharacters(in: .whitespaces).uppercased()
         q.notes = f["comment"] ?? ""
         q.name = f["name"] ?? ""
         q.dxcc = f["dxcc"].flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }

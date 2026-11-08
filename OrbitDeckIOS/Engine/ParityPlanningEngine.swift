@@ -359,9 +359,11 @@ enum OpenMeteoService {
 
     static func fetch(latitude: Double, longitude: Double) async throws -> WeatherSnapshot {
         var comps = URLComponents(string: endpoint)!
+        // Two decimals (~1 km) is plenty for a forecast and keeps the exact station
+        // location from leaving the device.
         comps.queryItems = [
-            URLQueryItem(name: "latitude", value: String(format: "%.4f", latitude)),
-            URLQueryItem(name: "longitude", value: String(format: "%.4f", longitude)),
+            URLQueryItem(name: "latitude", value: String(format: "%.2f", latitude)),
+            URLQueryItem(name: "longitude", value: String(format: "%.2f", longitude)),
             URLQueryItem(name: "current", value: "temperature_2m,cloud_cover,wind_speed_10m,wind_direction_10m,precipitation"),
             URLQueryItem(name: "hourly", value: "cloud_cover"),
             URLQueryItem(name: "forecast_hours", value: "48"),
