@@ -34,6 +34,8 @@ enum PassAlarmService {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
         let id = identifier(satellite: satellite, pass: pass)
         try await center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+        // Pass alarms take priority: re-budget activation reminders around the new one.
+        await rescheduleActivationReminders(requestPermission: false)
 #else
         throw PassAlarmError.denied
 #endif
@@ -60,5 +62,70 @@ enum PassAlarmService {
 
     private static func identifier(satellite: SatelliteRecord, pass: PredictedPass) -> String {
         "orbitdeck.pass.\(satellite.id).\(Int(pass.aos.timeIntervalSince1970))"
+    }
+
+    // MARK: Activation reminders
+
+    /// Lead times (minutes before the advertised start) for activation reminders.
+    static let activationLeadMinutes = [60, 30, 10]
+    /// iOS keeps at most 64 pending local notifications per app.
+    static let pendingLimit = 64
+    private static let activationPrefix = "orbitdeck.activation."
+
+    /// Rebuild every activation reminder from the saved choices
+    /// (`ActivationSkedStore.remindersKey`). Pass alarms and other notifications keep
+    /// their slots; activation reminders fill what remains of the 64-request budget,
+    /// soonest first, and later ones are picked up on a later reschedule (the
+    /// Activations screen and every new pass alarm call this). Returns how many
+    /// reminder notifications are pending and how many didn't fit.
+    @discardableResult
+    static func rescheduleActivationReminders(requestPermission: Bool = true,
+                                              now: Date = Date()) async -> (scheduled: Int, deferred: Int) {
+        let reminders = ActivationSkedStore.loadReminders(now: now)
+        ActivationSkedStore.saveReminders(reminders)   // drop expired choices
+#if canImport(UserNotifications)
+        let center = UNUserNotificationCenter.current()
+        let pending = await center.pendingNotificationRequests()
+        let stale = pending.map(\.identifier).filter { $0.hasPrefix(activationPrefix) }
+        center.removePendingNotificationRequests(withIdentifiers: stale)
+        guard !reminders.isEmpty else { return (0, 0) }
+        if requestPermission {
+            guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else { return (0, 0) }
+        } else {
+            let settings = await center.notificationSettings()
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
+            else { return (0, 0) }
+        }
+
+        struct Candidate { let id: String; let fire: Date; let lead: Int; let reminder: ActivationReminder }
+        var candidates: [Candidate] = []
+        for reminder in reminders {
+            for lead in activationLeadMinutes {
+                let fire = reminder.start.addingTimeInterval(-Double(lead) * 60)
+                guard fire.timeIntervalSince(now) > 1 else { continue }
+                candidates.append(Candidate(id: "\(activationPrefix)\(reminder.key).\(lead)", fire: fire,
+                                            lead: lead, reminder: reminder))
+            }
+        }
+        candidates.sort { $0.fire < $1.fire }
+        let others = pending.count - stale.count
+        let budget = max(0, pendingLimit - others)
+        let chosen = candidates.prefix(budget)
+        for c in chosen {
+            let r = c.reminder
+            let content = UNMutableNotificationContent()
+            let call = r.callsign.isEmpty ? "Activation" : r.callsign
+            content.title = "\(call) on \(r.satellite)"
+            content.body = "Starts in \(c.lead) min" + (r.grid.isEmpty ? "" : " from \(r.grid)")
+                + " (\(ODFormat.utcStamp(r.start)) UTC)."
+            content.sound = .default
+            content.userInfo = ["activation": r.key, "start": r.start.timeIntervalSince1970]
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: c.fire.timeIntervalSince(now), repeats: false)
+            try? await center.add(UNNotificationRequest(identifier: c.id, content: content, trigger: trigger))
+        }
+        return (chosen.count, candidates.count - chosen.count)
+#else
+        return (0, 0)
+#endif
     }
 }

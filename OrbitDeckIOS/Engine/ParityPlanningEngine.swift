@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import SatelliteKit
 
 
@@ -299,5 +300,149 @@ enum ParityPlanningEngine {
         if t <= 0 || t >= 1 { return true }
         let x=r1.x+t*dx, y=r1.y+t*dy, z=r1.z+t*dz
         return sqrt(x*x+y*y+z*z) > FeatureEngine.earthRadiusKm
+    }
+}
+
+// MARK: - Local weather and cloud cover (Open-Meteo)
+
+/// Current conditions plus an hourly cloud-cover forecast at the observer, from
+/// Open-Meteo (https://open-meteo.com, no key; data CC BY 4.0). Stored in metric
+/// and converted for display.
+struct WeatherSnapshot: Codable, Sendable {
+    var fetched: Date
+    var latitude: Double
+    var longitude: Double
+    var currentTime: Date
+    var temperatureC: Double?
+    var cloudCoverPercent: Double?
+    var windSpeedKmh: Double?
+    var windDirectionDeg: Double?
+    var precipitationMm: Double?
+    var hourlyTimes: [Date]
+    var hourlyCloudCover: [Double?]
+
+    /// Forecast cloud cover (%) at the hourly sample nearest `date` (Open-Meteo's
+    /// cloud cover is an instantaneous value), or nil outside the forecast range.
+    func cloudCover(at date: Date) -> Double? {
+        guard let first = hourlyTimes.first, let last = hourlyTimes.last,
+              date >= first.addingTimeInterval(-1800), date <= last.addingTimeInterval(1800) else { return nil }
+        var best: Int?
+        var bestGap = TimeInterval.infinity
+        for (i, t) in hourlyTimes.enumerated() {
+            let gap = abs(t.timeIntervalSince(date))
+            if gap < bestGap { bestGap = gap; best = i }
+        }
+        guard let best, best < hourlyCloudCover.count else { return nil }
+        return hourlyCloudCover[best]
+    }
+}
+
+enum OpenMeteoService {
+    static let endpoint = "https://api.open-meteo.com/v1/forecast"
+
+    private struct Response: Decodable {
+        struct Current: Decodable {
+            let time: Double
+            let temperature_2m: Double?
+            let cloud_cover: Double?
+            let wind_speed_10m: Double?
+            let wind_direction_10m: Double?
+            let precipitation: Double?
+        }
+        struct Hourly: Decodable {
+            let time: [Double]
+            let cloud_cover: [Double?]
+        }
+        let current: Current?
+        let hourly: Hourly?
+    }
+
+    static func fetch(latitude: Double, longitude: Double) async throws -> WeatherSnapshot {
+        var comps = URLComponents(string: endpoint)!
+        comps.queryItems = [
+            URLQueryItem(name: "latitude", value: String(format: "%.4f", latitude)),
+            URLQueryItem(name: "longitude", value: String(format: "%.4f", longitude)),
+            URLQueryItem(name: "current", value: "temperature_2m,cloud_cover,wind_speed_10m,wind_direction_10m,precipitation"),
+            URLQueryItem(name: "hourly", value: "cloud_cover"),
+            URLQueryItem(name: "forecast_hours", value: "48"),
+            URLQueryItem(name: "timeformat", value: "unixtime"),
+            URLQueryItem(name: "timezone", value: "GMT")
+        ]
+        var request = URLRequest(url: comps.url!); request.timeoutInterval = 20
+        request.setValue(ActivationService.browserUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw NSError(domain: "OpenMeteo", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey:
+                "Open-Meteo returned HTTP \(http.statusCode)."])
+        }
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        let c = decoded.current
+        return WeatherSnapshot(fetched: Date(), latitude: latitude, longitude: longitude,
+                               currentTime: Date(timeIntervalSince1970: c?.time ?? Date().timeIntervalSince1970),
+                               temperatureC: c?.temperature_2m, cloudCoverPercent: c?.cloud_cover,
+                               windSpeedKmh: c?.wind_speed_10m, windDirectionDeg: c?.wind_direction_10m,
+                               precipitationMm: c?.precipitation,
+                               hourlyTimes: (decoded.hourly?.time ?? []).map { Date(timeIntervalSince1970: $0) },
+                               hourlyCloudCover: decoded.hourly?.cloud_cover ?? [])
+    }
+}
+
+/// Shared, cached weather for the observer. Re-fetches at most every 30 minutes
+/// (or after moving more than ~5 km) and keeps the last result on disk, so the
+/// card and cloud badges still show — marked stale — when offline.
+@MainActor
+final class WeatherModel: ObservableObject {
+    static let shared = WeatherModel()
+    static let minRefreshInterval: TimeInterval = 30 * 60
+    /// A cached forecast older than this is no longer shown at all.
+    static let maxStaleAge: TimeInterval = 48 * 3600
+
+    @Published private(set) var snapshot: WeatherSnapshot?
+    @Published private(set) var lastError: String?
+    @Published private(set) var isLoading = false
+
+    private static var cacheURL: URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("OrbitDeck", isDirectory: true).appendingPathComponent("weather.json")
+    }
+
+    private init() {
+        if let data = try? Data(contentsOf: Self.cacheURL),
+           let cached = try? JSONDecoder().decode(WeatherSnapshot.self, from: data) {
+            snapshot = cached
+        }
+    }
+
+    /// The snapshot if it is usable for this observer (near it, and not too old).
+    func usable(for observer: ObserverSite, now: Date = Date()) -> WeatherSnapshot? {
+        guard let s = snapshot, Self.isNear(s, observer), now.timeIntervalSince(s.fetched) < Self.maxStaleAge else { return nil }
+        return s
+    }
+
+    func isStale(now: Date = Date()) -> Bool {
+        guard let s = snapshot else { return false }
+        return now.timeIntervalSince(s.fetched) > 2 * Self.minRefreshInterval
+    }
+
+    func refreshIfNeeded(for observer: ObserverSite, force: Bool = false) async {
+        guard !isLoading else { return }
+        if !force, let s = snapshot, Self.isNear(s, observer),
+           Date().timeIntervalSince(s.fetched) < Self.minRefreshInterval { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let fresh = try await OpenMeteoService.fetch(latitude: observer.latitude, longitude: observer.longitude)
+            snapshot = fresh
+            lastError = nil
+            try? FileManager.default.createDirectory(at: Self.cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if let data = try? JSONEncoder().encode(fresh) { try? data.write(to: Self.cacheURL, options: .atomic) }
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    private static func isNear(_ s: WeatherSnapshot, _ o: ObserverSite) -> Bool {
+        abs(s.latitude - o.latitude) < 0.05 && abs(s.longitude - o.longitude) < 0.05
     }
 }

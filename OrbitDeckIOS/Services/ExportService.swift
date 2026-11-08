@@ -2152,3 +2152,197 @@ struct OrbitExportService {
 
 }
 
+// MARK: - Settings backup & restore
+
+/// One group of UserDefaults keys in a settings backup.
+struct OrbitBackupCategory: Identifiable, Sendable {
+    let id: String
+    let title: String
+    let keys: [String]
+}
+
+/// What an imported backup would change, shown before anything is written.
+struct OrbitBackupPreview: Sendable {
+    struct Item: Identifiable, Sendable {
+        let id: String
+        let title: String
+        let keyCount: Int
+    }
+    let version: Int
+    let created: Date?
+    let appVersion: String
+    let items: [Item]
+    let qsoCount: Int?
+    let unknownKeys: [String]
+}
+
+enum OrbitBackupError: LocalizedError {
+    case notABackup
+    case newerVersion(Int)
+    case empty
+
+    var errorDescription: String? {
+        switch self {
+        case .notABackup: "That file is not an OrbitDeck settings backup."
+        case .newerVersion(let v): "This backup was made by a newer OrbitDeck (format \(v)). Update the app, then try again."
+        case .empty: "The backup contains no settings OrbitDeck recognizes."
+        }
+    }
+}
+
+/// A single versioned JSON bundle of the operator's settings. Each known
+/// UserDefaults key is stored with a small type tag (`json` blobs are embedded
+/// as readable JSON). Keychain secrets — passwords, API keys, tokens, the LoTW
+/// certificate — are never read, so they are never in a backup.
+///
+/// Format (version 1):
+/// `{ "format": "org.orbitdeck.backup", "version": 1, "created": ISO-8601,
+///    "app": "1.1 (2)", "settings": { "<key>": { "type": …, "value": … } },
+///    "qsoLog": [QSORecord…] (optional) }`
+/// Import ignores keys it doesn't know (it never writes arbitrary defaults) and
+/// leaves settings missing from the file untouched.
+enum OrbitBackupService {
+    static let formatID = "org.orbitdeck.backup"
+    static let currentVersion = 1
+
+    static let categories: [OrbitBackupCategory] = [
+        OrbitBackupCategory(id: "preferences",
+                            title: "Station, sites, favorites, min elevation, display options, manual & extra satellites, per-satellite calibrations",
+                            keys: ["OrbitDeckIOS.preferences.v1"]),
+        OrbitBackupCategory(id: "transponderCal", title: "Per-transponder calibration offsets",
+                            keys: ["orbitdeck.calibration.transponderOffsets"]),
+        OrbitBackupCategory(id: "cat", title: "Rig control (CAT) setup", keys: ["orbitdeck.rigConfig"]),
+        OrbitBackupCategory(id: "rotator", title: "Rotator setup", keys: ["orbitdeck.rotatorConfig"]),
+        OrbitBackupCategory(id: "autoSwitch", title: "Automatic satellite switching", keys: ["OrbitDeckIOS.autoSwitch"]),
+        OrbitBackupCategory(id: "digital", title: "FT4, packet, SSTV, PSKReporter and audio levels",
+                            keys: ["orbitdeck.ft4.dataMode", "orbitdeck.ft4.autoCalibrate", "orbitdeck.ft4.pounceTargets",
+                                   "orbitdeck.ft4.cqBlockList", "orbitdeck.ft4.hashedCalls", "orbitdeck.packet",
+                                   "orbitdeck.pskreporter.enabled",
+                                   "orbitdeck.sstv.chromaSmoothing", "orbitdeck.sstv.autoArm", "orbitdeck.sstv.autoMinElevation",
+                                   "orbitdeck.ft4.inputGain", "orbitdeck.ft4.outputGain",
+                                   "orbitdeck.sstv.inputGain", "orbitdeck.recorder.inputGain"]),
+        OrbitBackupCategory(id: "display", title: "Screens, feature visibility and Live Activity",
+                            keys: ["feature.recorder", "feature.sstv", "feature.ft4", "feature.remoteaudio", "feature.packet",
+                                   "liveActivityEnabled", "orbitdeck.keepScreenAwakeHome",
+                                   "homeTimelineHours", "homeTimelineEclipse", "homeCompassUp", "newLaunchWindowDays",
+                                   "orbitdeck.spacetrack.identity", "orbitdeck.debugLog.enabled"]),
+        OrbitBackupCategory(id: "logging", title: "Logging setup (LoTW station, Cloudlog URL, defaults)",
+                            keys: ["orbitdeck.loggingConfig"]),
+        OrbitBackupCategory(id: "activations", title: "My activations / skeds and their reminders",
+                            keys: [ActivationSkedStore.userKey, ActivationSkedStore.remindersKey])
+    ]
+
+    static var knownKeys: Set<String> { Set(categories.flatMap(\.keys)) }
+
+    // MARK: Export
+
+    static func makeBackup(includeLog: [QSORecord]?, defaults: UserDefaults = .standard) throws -> Data {
+        var settings: [String: Any] = [:]
+        for key in knownKeys {
+            guard let value = defaults.object(forKey: key), let tagged = tag(value) else { continue }
+            settings[key] = tagged
+        }
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        var root: [String: Any] = [
+            "format": formatID,
+            "version": currentVersion,
+            "created": ISO8601DateFormatter().string(from: Date()),
+            "app": "\(AppInfo.version) (\(build))",
+            "note": "Passwords, API keys and certificates are kept in the iOS Keychain and are not included.",
+            "settings": settings
+        ]
+        if let log = includeLog {
+            root["qsoLog"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(log))
+        }
+        return try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    static func suggestedFilename(_ date: Date = Date()) -> String {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "yyyyMMdd-HHmm"
+        return "OrbitDeck-backup-\(f.string(from: date))"
+    }
+
+    private static func tag(_ value: Any) -> [String: Any]? {
+        switch value {
+        case let data as Data:
+            if let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
+                return ["type": "json", "value": object]
+            }
+            return ["type": "data", "value": data.base64EncodedString()]
+        case let number as NSNumber:
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return ["type": "bool", "value": number.boolValue] }
+            if CFNumberIsFloatType(number) { return ["type": "double", "value": number.doubleValue] }
+            return ["type": "int", "value": number.int64Value]
+        case let string as String:
+            return ["type": "string", "value": string]
+        case let strings as [String]:
+            return ["type": "stringArray", "value": strings]
+        default:
+            return nil
+        }
+    }
+
+    private static func untag(_ tagged: Any) -> Any? {
+        guard let dict = tagged as? [String: Any], let type = dict["type"] as? String, let value = dict["value"] else { return nil }
+        switch type {
+        case "json": return try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])
+        case "data": return (value as? String).flatMap { Data(base64Encoded: $0) }
+        case "bool": return (value as? NSNumber)?.boolValue
+        case "double": return (value as? NSNumber)?.doubleValue
+        case "int": return (value as? NSNumber)?.intValue
+        case "string": return value as? String
+        case "stringArray": return value as? [String]
+        default: return nil
+        }
+    }
+
+    // MARK: Import
+
+    /// A parsed, validated backup ready to preview and apply.
+    struct Parsed: @unchecked Sendable {
+        let preview: OrbitBackupPreview
+        let values: [String: Any]
+        let qsoLog: [QSORecord]?
+    }
+
+    static func parse(_ data: Data) throws -> Parsed {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (root["format"] as? String) == formatID,
+              let version = (root["version"] as? NSNumber)?.intValue else { throw OrbitBackupError.notABackup }
+        guard version <= currentVersion else { throw OrbitBackupError.newerVersion(version) }
+        let settings = root["settings"] as? [String: Any] ?? [:]
+        let known = knownKeys
+        var values: [String: Any] = [:]
+        var unknown: [String] = []
+        for (key, tagged) in settings {
+            guard known.contains(key) else { unknown.append(key); continue }
+            if let value = untag(tagged) { values[key] = value }
+        }
+        var log: [QSORecord]?
+        if let rawLog = root["qsoLog"], let logData = try? JSONSerialization.data(withJSONObject: rawLog) {
+            log = try? JSONDecoder().decode([QSORecord].self, from: logData)
+        }
+        guard !values.isEmpty || log != nil else { throw OrbitBackupError.empty }
+        let items = categories.compactMap { category -> OrbitBackupPreview.Item? in
+            let count = category.keys.filter { values[$0] != nil }.count
+            return count == 0 ? nil : .init(id: category.id, title: category.title, keyCount: count)
+        }
+        let created = (root["created"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+        let preview = OrbitBackupPreview(version: version, created: created, appVersion: root["app"] as? String ?? "",
+                                         items: items, qsoCount: log?.count, unknownKeys: unknown.sorted())
+        return Parsed(preview: preview, values: values, qsoLog: log)
+    }
+
+    /// Write the backup's settings into UserDefaults (only keys the file has).
+    static func writeSettings(_ parsed: Parsed, defaults: UserDefaults = .standard) {
+        for (key, value) in parsed.values { defaults.set(value, forKey: key) }
+    }
+
+    /// Merge restored QSOs into the current log by record id (existing QSOs are kept).
+    static func mergedLog(current: [QSORecord], restored: [QSORecord]) -> [QSORecord] {
+        let have = Set(current.map(\.id))
+        return (current + restored.filter { !have.contains($0.id) }).sorted { $0.utc > $1.utc }
+    }
+}
+

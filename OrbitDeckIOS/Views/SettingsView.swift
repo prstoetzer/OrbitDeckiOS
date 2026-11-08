@@ -295,6 +295,8 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
+            BackupRestoreSection()
+
             Section("Pass prediction") {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -492,6 +494,175 @@ struct SettingsView: View {
         if lon > 180 { lon -= 360 }
         if lon < -180 { lon += 360 }
         return lon
+    }
+}
+
+// MARK: - Backup & restore
+
+/// The JSON settings bundle handed to the Files app by `fileExporter`.
+struct OrbitBackupDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var data: Data
+    init(data: Data) { self.data = data }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else { throw OrbitBackupError.notABackup }
+        self.data = data
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
+}
+
+/// Settings section: export every setting (optionally the QSO log) to one JSON
+/// file, or restore one after previewing what it replaces. Keychain secrets are
+/// never exported.
+struct BackupRestoreSection: View {
+    @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var rotator: RotatorController
+    @EnvironmentObject private var autoSwitch: AutoSwitchController
+    @EnvironmentObject private var packet: PacketEngine
+    @EnvironmentObject private var qsoLog: QSOStore
+    @EnvironmentObject private var ft4: FT4Engine
+    @EnvironmentObject private var sstv: SSTVDecoder
+    @EnvironmentObject private var recorder: PassRecorder
+    @State private var includeLog = false
+    @State private var exportDocument: OrbitBackupDocument?
+    @State private var showingExporter = false
+    @State private var showingImporter = false
+    @State private var pending: OrbitBackupService.Parsed?
+    @State private var message: String?
+
+    var body: some View {
+        Section("Backup & restore") {
+            Toggle("Include QSO log", isOn: $includeLog)
+            Button { prepareExport() } label: {
+                Label("Back up settings to Files…", systemImage: "square.and.arrow.up.on.square")
+            }
+            Button { showingImporter = true } label: {
+                Label("Restore from a backup…", systemImage: "square.and.arrow.down.on.square")
+            }
+            if let message { Text(message).font(.caption).foregroundStyle(ODTheme.muted) }
+            Text("Saves your station and sites, favorites, display options, manual satellites, calibrations, CAT, rotator, auto-switch, FT4/packet/SSTV and logging setup, and your own activation skeds in one JSON file. Passwords, API keys and the LoTW certificate stay in the iOS Keychain and are never included — re-enter them after restoring on a new device. The QSO log is optional (ADIF export is the usual way to move a log).")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+        }
+        .fileExporter(isPresented: $showingExporter, document: exportDocument, contentType: .json,
+                      defaultFilename: OrbitBackupService.suggestedFilename()) { result in
+            switch result {
+            case .success: message = "Backup saved."
+            case .failure(let error): message = error.localizedDescription
+            }
+        }
+        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.json]) { result in
+            switch result {
+            case .success(let url): readBackup(url)
+            case .failure(let error): message = error.localizedDescription
+            }
+        }
+        .sheet(isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } })) {
+            if let pending { restorePreview(pending) }
+        }
+    }
+
+    private func prepareExport() {
+        do {
+            let data = try OrbitBackupService.makeBackup(includeLog: includeLog ? qsoLog.qsos : nil)
+            exportDocument = OrbitBackupDocument(data: data)
+            showingExporter = true
+        } catch { message = error.localizedDescription }
+    }
+
+    private func readBackup(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            pending = try OrbitBackupService.parse(Data(contentsOf: url))
+        } catch { message = error.localizedDescription }
+    }
+
+    private func restorePreview(_ parsed: OrbitBackupService.Parsed) -> some View {
+        let p = parsed.preview
+        return NavigationStack {
+            Form {
+                Section("Backup") {
+                    if let created = p.created { LabeledContent("Created", value: ODFormat.utc.string(from: created)) }
+                    if !p.appVersion.isEmpty { LabeledContent("OrbitDeck", value: p.appVersion) }
+                    LabeledContent("Format", value: "v\(p.version)")
+                }
+                Section("Will replace") {
+                    ForEach(p.items) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.title)
+                            Text("\(item.keyCount) setting\(item.keyCount == 1 ? "" : "s")").font(.caption).foregroundStyle(ODTheme.muted)
+                        }
+                    }
+                    if let count = p.qsoCount {
+                        Text("QSO log: \(count) QSO\(count == 1 ? "" : "s") merged into your log (existing QSOs are kept)")
+                    }
+                    Text("Settings not in the backup are left as they are. Saved passwords and keys are not touched.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                    if !p.unknownKeys.isEmpty {
+                        Text("Ignored \(p.unknownKeys.count) unrecognized entr\(p.unknownKeys.count == 1 ? "y" : "ies").")
+                            .font(.caption).foregroundStyle(ODTheme.warning)
+                    }
+                }
+                Section {
+                    Button("Restore now", role: .destructive) { apply(parsed) }
+                }
+            }
+            .navigationTitle("Restore backup")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { pending = nil } } }
+        }
+    }
+
+    /// Write the keys, then reload the live objects that hold those settings in
+    /// memory (otherwise their next save would overwrite the restored values).
+    private func apply(_ parsed: OrbitBackupService.Parsed) {
+        OrbitBackupService.writeSettings(parsed)
+        let d = UserDefaults.standard
+        let keys = Set(parsed.values.keys)
+        func decode<T: Decodable>(_ type: T.Type, _ key: String) -> T? {
+            guard keys.contains(key), let data = d.data(forKey: key) else { return nil }
+            return try? JSONDecoder().decode(T.self, from: data)
+        }
+        var needsRelaunch = false
+        if let prefs = decode(StorePreferences.self, "OrbitDeckIOS.preferences.v1") { store.preferences = prefs }
+        if keys.contains("orbitdeck.calibration.transponderOffsets") { store.objectWillChange.send() }
+        if let cat = decode(CATConfig.self, "orbitdeck.rigConfig") {
+            if rig.connected { needsRelaunch = true } else { rig.config = cat }
+        }
+        if let rot = decode(RotatorConfig.self, "orbitdeck.rotatorConfig") {
+            if rotator.connected { needsRelaunch = true } else { rotator.config = rot }
+        }
+        if let auto = decode(AutoSwitchSettings.self, "OrbitDeckIOS.autoSwitch") { autoSwitch.settings = auto }
+        if let pkt = decode(PacketSettings.self, "orbitdeck.packet") { packet.settings = pkt }
+        if var logging = decode(LoggingConfig.self, "orbitdeck.loggingConfig") {
+            logging.hasLoTWCredential = LoTW.hasCredential()
+            qsoLog.config = logging
+            qsoLog.persistConfig()
+        }
+        if keys.contains("orbitdeck.ft4.pounceTargets") { ft4.pounceTargets = d.string(forKey: "orbitdeck.ft4.pounceTargets") ?? "" }
+        if keys.contains("orbitdeck.ft4.cqBlockList") { ft4.cqBlockList = d.stringArray(forKey: "orbitdeck.ft4.cqBlockList") ?? [] }
+        if keys.contains("orbitdeck.ft4.inputGain") { ft4.inputGain = AudioGainStore.load("orbitdeck.ft4.inputGain") }
+        if keys.contains("orbitdeck.ft4.outputGain") { ft4.outputGain = AudioGainStore.load("orbitdeck.ft4.outputGain") }
+        if keys.contains("orbitdeck.sstv.inputGain") { sstv.inputGain = AudioGainStore.load("orbitdeck.sstv.inputGain") }
+        if keys.contains("orbitdeck.recorder.inputGain") { recorder.inputGain = AudioGainStore.load("orbitdeck.recorder.inputGain") }
+        if let v = d.object(forKey: "orbitdeck.sstv.chromaSmoothing") as? Bool, v != sstv.chromaSmoothing { sstv.chromaSmoothing = v }
+        if keys.contains("orbitdeck.sstv.autoArm") { let v = d.bool(forKey: "orbitdeck.sstv.autoArm"); if v != sstv.autoArm { sstv.autoArm = v } }
+        if let v = d.object(forKey: "orbitdeck.sstv.autoMinElevation") as? Double, v != sstv.autoMinElevation { sstv.autoMinElevation = v }
+        if let restored = parsed.qsoLog {
+            let merged = OrbitBackupService.mergedLog(current: qsoLog.qsos, restored: restored)
+            qsoLog.qsos = merged
+            if let data = try? JSONEncoder().encode(merged) {
+                try? data.write(to: QSOStore.appSupport.appendingPathComponent("QSOLog.json"), options: .atomic)
+            }
+        }
+        if keys.contains(ActivationSkedStore.remindersKey) {
+            Task { await PassAlarmService.rescheduleActivationReminders(requestPermission: false) }
+        }
+        pending = nil
+        message = needsRelaunch
+            ? "Restored. CAT or rotator was connected — quit and relaunch OrbitDeck to apply its restored setup."
+            : "Restored \(parsed.values.count) setting(s)\(parsed.qsoLog.map { " and \($0.count) QSO(s)" } ?? ""). Quit and relaunch OrbitDeck if anything looks out of date."
     }
 }
 
