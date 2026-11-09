@@ -797,7 +797,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -863,7 +863,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -926,7 +926,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -1011,7 +1011,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -1102,7 +1102,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/OrbitDeckIOS/DigitalModes/ft8_lib";
@@ -1112,9 +1112,9 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "OrbitDeck connects to a Bluetooth Low Energy serial adapter to Doppler-tune your radio (CAT control). It is used only when you configure and connect a radio.";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "OrbitDeck adds satellite pass times to your calendar when you choose to.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "OrbitDeck connects to your radio, rotator, or a rigctld/rotctld server over your local Wi-Fi network to control it. It is used only when you configure and connect a network device.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "OrbitDeck connects to your radio, rotator, rigctld/rotctld server, ADS-B receiver or DX cluster on your local network, and can run rigctld/rotctld servers for other apps on your network. It is used only when you configure and connect one of these.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone) to record passes and decode SSTV and FT4. Audio is used only while you record or decode.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone) to record passes and decode SSTV, FT4 and packet, and records your spoken voice memos through the built-in microphone or a headset. Audio is used only while you record, decode or make a memo.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "OrbitDeck can save decoded SSTV images to your photo library when you choose to export them.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -1142,7 +1142,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = A4KV683T6U;
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/OrbitDeckIOS/DigitalModes/ft8_lib";
@@ -1152,9 +1152,9 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "OrbitDeck connects to a Bluetooth Low Energy serial adapter to Doppler-tune your radio (CAT control). It is used only when you configure and connect a radio.";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "OrbitDeck adds satellite pass times to your calendar when you choose to.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "OrbitDeck connects to your radio, rotator, or a rigctld/rotctld server over your local Wi-Fi network to control it. It is used only when you configure and connect a network device.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "OrbitDeck connects to your radio, rotator, rigctld/rotctld server, ADS-B receiver or DX cluster on your local network, and can run rigctld/rotctld servers for other apps on your network. It is used only when you configure and connect one of these.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone) to record passes and decode SSTV and FT4. Audio is used only while you record or decode.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone) to record passes and decode SSTV, FT4 and packet, and records your spoken voice memos through the built-in microphone or a headset. Audio is used only while you record, decode or make a memo.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "OrbitDeck can save decoded SSTV images to your photo library when you choose to export them.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
