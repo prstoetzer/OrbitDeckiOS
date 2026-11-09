@@ -673,6 +673,11 @@ enum HelpLibrary {
         Home is the live dashboard for the selected satellite: azimuth, elevation, range and Doppler, the next qualifying pass and your favorites' upcoming passes. Cards for rig control, rotator, logging and the audio features appear as you configure them.
         The satellite switcher in the toolbar changes the selected satellite everywhere. Settings → Display → Keep screen awake on Home lets you leave Home up as a live display during a pass.
         """),
+        .init(id: "liveactivity", title: "Next pass on the Lock Screen and Dynamic Island", area: "Home", body: """
+        Settings → Display → Next pass on Lock Screen and Dynamic Island shows a Live Activity counting down to the next AOS, then to LOS: the next satellite from your priority list with auto switching on, otherwise the next pass of any favorite.
+        It holds the next few passes, so while OrbitDeck is closed it moves on to the next pass by itself. iOS may also wake OrbitDeck in the background to refresh it, but when and how often is up to iOS (and needs Background App Refresh on in iOS Settings). When its passes run out it shows "Open OrbitDeck to refresh".
+        iOS ends Live Activities after about 8 hours and lets only an open app start one, so opening OrbitDeck starts a new one. On iOS 26 and later, Start next pass automatically while OrbitDeck is closed also schedules one for the following pass: iOS starts it 15 minutes before AOS (or the auto switch) with an alert, which doubles as a pass reminder.
+        """),
         .init(id: "passes", title: "Passes and tracking", area: "Passes", body: """
         Next Passes and Pass Detail list passes with polar plots and elevation profiles; Daily Schedule groups every favorite's passes by day; Sky Radar plots all favorites at once; Ground Track draws the sub-point path and true footprint.
         Set the minimum elevation in Settings → Pass prediction to filter marginal passes. Times are UTC by default; Settings → Display can switch to local time.

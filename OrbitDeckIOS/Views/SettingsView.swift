@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var gridMessage: String?
     @AppStorage("orbitdeck.keepScreenAwakeHome") private var keepScreenAwakeHome = false
     @AppStorage(LiveActivityController.enabledKey) private var liveActivityEnabled = true
+    @AppStorage(LiveActivityController.scheduleNextKey) private var liveActivityScheduleNext = false
     @EnvironmentObject private var liveActivity: LiveActivityController
     @AppStorage(FeatureVisibility.recorderKey) private var featureRecorder = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.sstvKey) private var featureSSTV = FeatureVisibility.auto
@@ -357,8 +358,15 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
                 Toggle("Next pass on Lock Screen and Dynamic Island", isOn: $liveActivityEnabled)
                     .onChange(of: liveActivityEnabled) { _, _ in Task { await liveActivity.refresh() } }
-                Text("A Live Activity counts down to the next AOS, then to LOS. With auto switching on it shows the next satellite from your priority list and when it switches in; otherwise the next pass of any favorite. It refreshes whenever OrbitDeck runs. iOS ends Live Activities after about 8 hours, and opening the app starts a new one.")
+                Text("A Live Activity counts down to the next AOS, then to LOS. With auto switching on it shows the next satellite from your priority list and when it switches in; otherwise the next pass of any favorite. It carries the next few passes and moves on to the next one by itself while OrbitDeck is closed; iOS may also let OrbitDeck refresh it in the background (when, and how often, is up to iOS, and needs Background App Refresh on). When its passes run out it asks you to open the app. iOS ends Live Activities after about 8 hours, and only an open app can start one.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
+                if LiveActivityController.supportsScheduledStart {
+                    Toggle("Start next pass automatically while OrbitDeck is closed", isOn: $liveActivityScheduleNext)
+                        .disabled(!liveActivityEnabled)
+                        .onChange(of: liveActivityScheduleNext) { _, _ in liveActivity.scheduleSettingChanged() }
+                    Text("Also schedules a Live Activity for the pass after the current one. iOS starts it by itself 15 minutes before AOS (or the auto switch) with an alert, so it doubles as a pass reminder even if OrbitDeck isn't running. One pass is scheduled at a time; opening the app plans the next.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
                 Toggle("Keep screen awake on Home", isOn: $keepScreenAwakeHome)
                 Text("Prevents auto-lock while the Home screen is showing, so you can leave it up as a live display during a pass. The rest of the app auto-locks normally.")
                     .font(.caption).foregroundStyle(ODTheme.muted)

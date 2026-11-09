@@ -18,6 +18,12 @@ struct OrbitDeckIOSApp: App {
     @StateObject private var liveActivity = LiveActivityController()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        // Background refresh for the next-pass Live Activity; must be registered
+        // before launch finishes, including a cold launch in the background.
+        LiveActivityController.registerBackgroundRefresh()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -55,8 +61,16 @@ struct OrbitDeckIOSApp: App {
                     liveActivity.attach(store: store, autoSwitch: autoSwitch)
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    // A Live Activity can only start in the foreground.
-                    if phase == .active { Task { await liveActivity.refresh() } }
+                    switch phase {
+                    case .active:
+                        // A Live Activity can only start (or be scheduled) in the foreground.
+                        liveActivity.didBecomeActive()
+                        Task { await liveActivity.refresh() }
+                    case .background:
+                        liveActivity.didEnterBackground()
+                    default:
+                        break
+                    }
                 }
         }
     }

@@ -2226,7 +2226,7 @@ enum OrbitBackupService {
         OrbitBackupCategory(id: "display", title: "Screens, feature visibility and Live Activity",
                             keys: ["feature.recorder", "feature.sstv", "feature.ft4", "feature.remoteaudio", "feature.packet",
                                    "feature.cw",
-                                   "liveActivityEnabled", "orbitdeck.keepScreenAwakeHome",
+                                   "liveActivityEnabled", "liveActivityScheduleNext", "orbitdeck.keepScreenAwakeHome",
                                    "homeTimelineHours", "homeTimelineEclipse", "homeCompassUp", "newLaunchWindowDays",
                                    "orbitdeck.spacetrack.identity", "orbitdeck.debugLog.enabled"]),
         OrbitBackupCategory(id: "logging", title: "Logging setup (LoTW station, Cloudlog URL, defaults)",

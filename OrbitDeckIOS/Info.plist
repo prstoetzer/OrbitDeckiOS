@@ -16,6 +16,13 @@
              Interrupting any of these loses the pass - the satellite is gone and won't be
              back for ~90 minutes. -->
 		<string>audio</string>
+		<!-- Background app refresh keeps the next-pass Live Activity current while the
+             app is closed (LiveActivityController, BGAppRefreshTask). -->
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.prstoetzer.OrbitDeckIOS.liveActivityRefresh</string>
 	</array>
 	<!-- Notes (Tools → Notes) are plain .txt files in Documents/Notes; these two keys
          make the Documents folder browsable and editable in the Files app. -->
