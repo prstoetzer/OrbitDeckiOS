@@ -48,20 +48,22 @@ struct SSTVMode: Identifiable, Hashable {
 
 enum SSTVModes {
     // Common scan/sync/porch constants (ms).
-    private static func martin(_ name: String, vis: Int, pixel: Double) -> SSTVMode {
+    /// `height` is 256 for M1/M2; M3/M4 are the same line timing with half the lines (128).
+    private static func martin(_ name: String, vis: Int, pixel: Double, height: Int = 256) -> SSTVMode {
         let scan = pixel * 320
-        return SSTVMode(name: name, vis: vis, width: 320, height: 256, colorSpace: .rgb, packing: .perLine, linesPerScan: 1, line: [
+        return SSTVMode(name: name, vis: vis, width: 320, height: height, colorSpace: .rgb, packing: .perLine, linesPerScan: 1, line: [
             .init(channel: .sync, ms: 4.862), .init(channel: .gap, ms: 0.572),
             .init(channel: .g, ms: scan), .init(channel: .gap, ms: 0.572),
             .init(channel: .b, ms: scan), .init(channel: .gap, ms: 0.572),
             .init(channel: .r, ms: scan), .init(channel: .gap, ms: 0.572)
         ])
     }
-    private static func scottie(_ name: String, vis: Int, pixel: Double) -> SSTVMode {
+    /// `height` is 256 for S1/S2/DX; S3/S4 are the same line timing with half the lines (128).
+    private static func scottie(_ name: String, vis: Int, pixel: Double, height: Int = 256) -> SSTVMode {
         let scan = pixel * 320
         // Simplified line-start-at-sync model (Scottie's sync sits between B and R;
         // decoders re-align on the sync each line).
-        return SSTVMode(name: name, vis: vis, width: 320, height: 256, colorSpace: .rgb, packing: .perLine, linesPerScan: 1, line: [
+        return SSTVMode(name: name, vis: vis, width: 320, height: height, colorSpace: .rgb, packing: .perLine, linesPerScan: 1, line: [
             .init(channel: .sync, ms: 9.0), .init(channel: .gap, ms: 1.5),
             .init(channel: .g, ms: scan), .init(channel: .gap, ms: 1.5),
             .init(channel: .b, ms: scan), .init(channel: .gap, ms: 1.5),
@@ -110,7 +112,14 @@ enum SSTVModes {
         pd("PD 160", vis: 0x62, width: 512, height: 400, scanMs: 195.584),
         pd("PD 180", vis: 0x60, width: 640, height: 496, scanMs: 183.040),
         pd("PD 240", vis: 0x61, width: 640, height: 496, scanMs: 244.480),
-        pd("PD 290", vis: 0x5E, width: 800, height: 616, scanMs: 228.800)
+        pd("PD 290", vis: 0x5E, width: 800, height: 616, scanMs: 228.800),
+        // Half-height variants: identical line timing to M1/M2/S1/S2, 128 lines. Listed
+        // after their full-height siblings so a VIS-less line-sync lock (same line period)
+        // still prefers the far more common 256-line mode.
+        martin("Martin M3", vis: 0x24, pixel: 0.4576, height: 128),
+        martin("Martin M4", vis: 0x20, pixel: 0.2288, height: 128),
+        scottie("Scottie S3", vis: 0x34, pixel: 0.4320, height: 128),
+        scottie("Scottie S4", vis: 0x30, pixel: 0.2752, height: 128)
     ]
 
     static func mode(forVIS vis: Int) -> SSTVMode? { all.first { $0.vis == vis } }

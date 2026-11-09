@@ -94,7 +94,16 @@ struct HomeFT4Card: View {
     /// message can't late-start or replace a burst already on the air.
     @State private var messageDraft = ""
     @FocusState private var messageFocused: Bool
+    /// Band Activity filter: "all", or "me" (calling me, my transmissions and my echoes).
+    @AppStorage(FT4Settings.decodeFilterKey) private var decodeFilter = "all"
+    /// Calls and 4-character grids already in the log (for the "new" shading), rebuilt
+    /// only when the log changes — not on every waterfall refresh.
+    @State private var workedCalls: Set<String> = []
+    @State private var workedGrids: Set<String> = []
     let satellite: SatelliteRecord
+
+    /// Why FT4 can't start on the current transponder (FM-only), or nil.
+    private var fmOnlyReason: String? { FT4Engine.fmOnlyReason(rig.transponder(for: satellite)) }
 
     private var visible: Bool {
         switch visibility { case .auto: audio.audioAvailable; case .always: true; case .off: false }
@@ -107,6 +116,11 @@ struct HomeFT4Card: View {
                 AudioHealthBanner(active: ft4.isRunning)
                 if !ft4.errorText.isEmpty {
                     Text(ft4.errorText).font(.caption).foregroundStyle(ODTheme.warning)
+                }
+                if let why = ft4.watchdogTripped { noticeBanner(why, systemImage: "timer") }
+                if let warn = ft4.rfPowerWarning { noticeBanner(warn, systemImage: "bolt.fill") }
+                if let why = fmOnlyReason, !ft4.isRunning {
+                    Text(why).font(.caption).foregroundStyle(ODTheme.warning)
                 }
                 // Satellite FT4 needs full duplex to hear your own downlink; split VFO
                 // is half duplex, so it can't start there.
@@ -121,7 +135,7 @@ struct HomeFT4Card: View {
                     Spacer()
                     Button(ft4.isRunning ? "Stop" : "Start") { toggleRun() }
                         .buttonStyle(.bordered)
-                        .disabled(halfDuplex)
+                        .disabled(!ft4.isRunning && (halfDuplex || fmOnlyReason != nil))
                 }
                 SatelliteStatusLine(satellite: satellite)
                 DopplerFrequencyLine(satellite: satellite, transponderOverride: rig.transponder(for: satellite))
@@ -153,8 +167,33 @@ struct HomeFT4Card: View {
                 }
                 .font(.subheadline).tint(ODTheme.accent)
             }
-            .onAppear { setupLogging() }
+            .onAppear { setupLogging(); rebuildWorked() }
+            .onChange(of: qso.qsos.count) { _, _ in rebuildWorked() }
         }
+    }
+
+    /// Calls and VUCC grids (first 4 characters) already in the log. Read-only.
+    private func rebuildWorked() {
+        var calls = Set<String>(), grids = Set<String>()
+        for q in qso.qsos {
+            let c = q.call.uppercased().trimmingCharacters(in: .whitespaces)
+            if !c.isEmpty { calls.insert(c) }
+            for g in q.grid.uppercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+                let g4 = String(g.prefix(4))
+                if FT4Engine.isGrid(g4) { grids.insert(g4) }
+            }
+        }
+        workedCalls = calls; workedGrids = grids
+    }
+
+    private func noticeBanner(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(ODTheme.warning.opacity(0.85))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     /// Log auto-sequenced QSOs with the current satellite/transponder context.
@@ -296,6 +335,17 @@ struct HomeFT4Card: View {
                         RoundedRectangle(cornerRadius: 6).fill(ODTheme.panel)
                             .overlay(Text("Waterfall").font(.caption2).foregroundStyle(ODTheme.muted))
                     }
+                    // Slot-start lines (drawn into the image) get their UTC time here.
+                    if ft4.waterfallSlotLines {
+                        ForEach(ft4.waterfallMarks) { m in
+                            Text(Self.utcShort.string(from: m.date))
+                                .font(.system(size: 8, weight: .semibold).monospacedDigit())
+                                .foregroundStyle(.white.opacity(0.85))
+                                .padding(.horizontal, 2)
+                                .background(Color.black.opacity(0.45))
+                                .offset(x: 2, y: max(0, min(118, 130 * m.position - 10)))
+                        }
+                    }
                     // TX frequency marker (0–3 kHz spans the full width).
                     let x = geo.size.width * CGFloat(min(1, max(0, ft4.txAudioFreq / 3000)))
                     Rectangle().fill(.orange).frame(width: 2, height: 130).offset(x: x - 1)
@@ -304,13 +354,40 @@ struct HomeFT4Card: View {
                 }
             }
             .frame(height: 130)
+            .contentShape(Rectangle())
+            // Long-press: decode the previous slot again, harder.
+            .onLongPressGesture(minimumDuration: 0.5) { if ft4.canDecodeDeep { ft4.decodeAgainDeep() } }
+            .accessibilityAction(named: "Decode again (deep)") { ft4.decodeAgainDeep() }
             HStack {
                 Text("0").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
                 Spacer(); Text("1.5 kHz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
                 Spacer(); Text("3 kHz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
             }
+            HStack(spacing: 8) {
+                Button {
+                    ft4.decodeAgainDeep()
+                } label: {
+                    if ft4.deepDecoding {
+                        HStack(spacing: 4) { ProgressView().controlSize(.mini); Text("Decoding…") }
+                    } else {
+                        Label("Decode again (deep)", systemImage: "magnifyingglass")
+                    }
+                }
+                .font(.caption2).buttonStyle(.bordered).controlSize(.small)
+                .disabled(!ft4.canDecodeDeep || ft4.deepDecoding)
+                Spacer(minLength: 0)
+                Text("or long-press the waterfall").font(.system(size: 9)).foregroundStyle(ODTheme.muted)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+            }
         }
     }
+
+    private static let utcShort: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; f.timeZone = TimeZone(identifier: "UTC"); return f
+    }()
+    private static let utcCompact: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HHmmss"; f.timeZone = TimeZone(identifier: "UTC"); return f
+    }()
 
     /// RX/TX audio level controls.
     private var audioControls: some View {
@@ -327,12 +404,24 @@ struct HomeFT4Card: View {
     private var decodeTable: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Title bar
-            HStack {
-                Label("Band Activity", systemImage: "waveform.badge.magnifyingglass")
-                    .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
-                Spacer()
-                legendDot(ODTheme.good, "CQ"); legendDot(ODTheme.accent, "you")
-                legendDot(.orange, "TX"); legendDot(.cyan, "self")
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Label("Band Activity", systemImage: "waveform.badge.magnifyingglass")
+                        .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
+                    Spacer()
+                    legendDot(ODTheme.good, "CQ"); legendDot(ODTheme.accent, "you")
+                    legendDot(.orange, "TX"); legendDot(.cyan, "self")
+                }
+                HStack(spacing: 8) {
+                    Picker("Show", selection: $decodeFilter) {
+                        Text("All").tag("all")
+                        Text("Me & my echoes").tag("me")
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    legendSwatch(Self.newCallShade, "new")
+                    legendSwatch(Self.newGridShade, "grid")
+                }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(Color.white.opacity(0.06))
@@ -340,7 +429,7 @@ struct HomeFT4Card: View {
             Divider().overlay(ODTheme.muted.opacity(0.3))
 
             ScrollView {
-                let items = Array(ft4.decodes.suffix(60))
+                let items = Array(filteredDecodes.suffix(60))
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { idx, d in
                         // Separate transmit periods with a faint rule (like WSJT-X).
@@ -371,6 +460,37 @@ struct HomeFT4Card: View {
         .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
     }
 
+    /// Decodes after the Band Activity filter. "Me" keeps messages to me, my own
+    /// transmissions and my signal heard back through the transponder.
+    private var filteredDecodes: [FT4DecodedMessage] {
+        guard decodeFilter == "me" else { return ft4.decodes }
+        return ft4.decodes.filter { $0.kind == .sent || ft4.isToMe($0.text) || ft4.isFromMe($0.text) }
+    }
+
+    static let newCallShade = Color.green.opacity(0.22)
+    static let newGridShade = Color.purple.opacity(0.35)
+
+    private func legendSwatch(_ c: Color, _ label: String) -> some View {
+        HStack(spacing: 2) {
+            RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 10, height: 8)
+            Text(label).font(.system(size: 9)).foregroundStyle(ODTheme.muted)
+        }
+        .fixedSize()
+    }
+
+    /// Whether a decode's sender (or grid) is one of the pounce targets.
+    private func isTarget(_ f: FT4Engine.FT4Fields?) -> Bool {
+        guard let f else { return false }
+        for t in ft4.pounceTokens {
+            if FT4Engine.isGrid(t) {
+                if FT4Engine.isGrid(f.extra), f.extra.uppercased().hasPrefix(String(t.prefix(4))) { return true }
+            } else if FT4Engine.callMatches(f.de, t) || (f.de.isEmpty && FT4Engine.callMatches(f.to, t)) {
+                return true
+            }
+        }
+        return false
+    }
+
     private func legendDot(_ c: Color, _ label: String) -> some View {
         HStack(spacing: 2) {
             Circle().fill(c).frame(width: 6, height: 6)
@@ -388,18 +508,36 @@ struct HomeFT4Card: View {
         else if toMe { color = ODTheme.accent }                // someone calling me
         else if isCQ { color = ODTheme.good }                  // CQ
         else { color = .white }
-        // WSJT-X row: time · dB · freq · message, monospaced and aligned.
-        let dt = d.kind == .sent ? " TX" : String(format: "%3d", d.snr)
-        return Button { if d.kind != .sent { ft4.work(d) } } label: {
-            HStack(spacing: 8) {
-                Text(Self.utc.string(from: d.slotDate)).foregroundStyle(color.opacity(0.7))
-                Text(dt).foregroundStyle(color.opacity(0.9))
-                Text(String(format: "%4d", Int(d.freqHz))).foregroundStyle(color.opacity(0.7))
-                Text(d.text).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.7)
-                Spacer(minLength: 0)
+        // "New" shading for received stations not yet in the log: a new grid (VUCC) wins
+        // over a new call. Our own messages and echoes are never shaded.
+        var shade: Color = .clear
+        if d.kind == .received, let f, !ft4.isFromMe(d.text) {
+            let sender = f.de.isEmpty || f.de == "<...>" ? "" : f.de.uppercased()
+            if FT4Engine.isGrid(f.extra), !workedGrids.contains(String(f.extra.uppercased().prefix(4))) {
+                shade = Self.newGridShade
+            } else if !sender.isEmpty, !workedCalls.contains(sender),
+                      !sender.split(separator: "/").contains(where: { workedCalls.contains(String($0)) }) {
+                shade = Self.newCallShade
             }
-            .font(.system(size: 13, weight: (toMe || isCQ) ? .semibold : .regular).monospaced())
+        }
+        let target = d.kind == .received && isTarget(f)
+        // WSJT-X row: time · dB · DT · freq · message, monospaced and aligned.
+        let db = d.kind == .sent ? " TX" : String(format: "%3d", d.snr)
+        let dt = d.kind == .sent ? "    " : String(format: "%4.1f", d.dt)
+        return Button { if d.kind != .sent { ft4.work(d) } } label: {
+            HStack(spacing: 5) {
+                Text(Self.utcCompact.string(from: d.slotDate)).foregroundStyle(color.opacity(0.7))
+                Text(db).foregroundStyle(color.opacity(0.9))
+                Text(dt).foregroundStyle(color.opacity(0.7))
+                Text(String(format: "%4d", Int(d.freqHz))).foregroundStyle(color.opacity(0.7))
+                Text(d.text).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.6)
+                Spacer(minLength: 0)
+                if target { rowTag("Target", .orange) }
+                if d.deep { rowTag("deep", .cyan) } else if d.subtracted { rowTag("sub", .gray) }
+            }
+            .font(.system(size: 12, weight: (toMe || isCQ) ? .semibold : .regular).monospaced())
             .padding(.vertical, 3)
+            .background(shade)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -418,6 +556,13 @@ struct HomeFT4Card: View {
         }
     }
 
+    private func rowTag(_ text: String, _ c: Color) -> some View {
+        Text(text).font(.system(size: 8, weight: .bold)).foregroundStyle(c)
+            .padding(.horizontal, 3).padding(.vertical, 1)
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(c.opacity(0.7), lineWidth: 1))
+            .fixedSize()
+    }
+
     /// The essentials, always visible: enable TX, auto-sequence, and the big Call CQ.
     private var txControlsPrimary: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -425,15 +570,23 @@ struct HomeFT4Card: View {
                 Toggle("Transmit", isOn: $ft4.txEnabled).fixedSize()
                 Toggle("Auto-seq", isOn: $ft4.autoSequence).fixedSize()
                 Spacer()
+                if ft4.isRunning {
+                    // Steady carrier at the TX audio frequency (≤ 10 s) to set drive/ALC.
+                    Button(ft4.isTuning ? "Stop" : "Tune") { ft4.toggleTune() }
+                        .buttonStyle(.bordered).tint(ft4.isTuning ? ODTheme.warning : nil)
+                        .disabled(fmOnlyReason != nil || (ft4.isTransmitting && !ft4.isTuning))
+                        .accessibilityHint("Transmits a steady tone for up to 10 seconds to set the drive level")
+                }
             }
             Button {
+                guard fmOnlyReason == nil else { return }
                 ft4.callCQ()
                 if !ft4.isRunning { toggleRun() }
             } label: {
                 Label("Call CQ", systemImage: "megaphone.fill").frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(qso.config.myCall.isEmpty)
+            .disabled(qso.config.myCall.isEmpty || fmOnlyReason != nil)
 
             if qso.config.myCall.isEmpty {
                 Text("Set your callsign in Log settings to transmit.")
@@ -485,6 +638,9 @@ struct HomeFT4Card: View {
             }
             FineSlider(value: $ft4.txAudioFreq, range: 300...2700, step: 10)
 
+            decoderSetup
+            Divider().opacity(0.4)
+
             Toggle("Doppler-correct TX audio", isOn: $ft4.audioDopplerTX)
                 .font(.caption)
             Text("On by default. Chirps the transmitted audio to cancel uplink-Doppler drift so your signal stays put across the burst. While FT4 runs the CAT dial is frozen for the whole slot, so this within-burst correction is what keeps you from smearing — turning it off makes others see you drift. Needs a configured transponder.")
@@ -514,6 +670,30 @@ struct HomeFT4Card: View {
             }
             Divider().opacity(0.4)
             cqBlockListEditor
+        }
+    }
+
+    /// Watchdog, waterfall and decoder options.
+    private var decoderSetup: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("TX watchdog", isOn: $ft4.watchdogEnabled).font(.caption)
+            if ft4.watchdogEnabled {
+                Stepper("Stop after \(ft4.watchdogMinutes) min without a reply",
+                        value: $ft4.watchdogMinutes, in: 2...15).font(.caption)
+            }
+            Text("Stops transmitting (CQ, auto-sequence or a repeated message) when nothing addressed to you has been decoded for that long.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+            HStack {
+                Text("Waterfall").font(.caption)
+                Spacer()
+                Picker("Waterfall history", selection: $ft4.waterfallSeconds) {
+                    Text("12 s").tag(12); Text("24 s").tag(24); Text("48 s").tag(48)
+                }
+                .pickerStyle(.segmented).fixedSize()
+            }
+            Toggle("Slot lines with UTC time", isOn: $ft4.waterfallSlotLines).font(.caption)
+            Toggle("Subtract decoded signals (find weaker ones)", isOn: $ft4.subtraction).font(.caption)
+            Toggle("Hide decodes with |DT| over 1.5 s", isOn: $ft4.dtFilter).font(.caption)
         }
     }
 
@@ -550,7 +730,9 @@ struct HomeFT4Card: View {
     }
 
     private func toggleRun() {
-        if ft4.isRunning {
+        if !ft4.isRunning, let why = fmOnlyReason {
+            ft4.errorText = why
+        } else if ft4.isRunning {
             ft4.stop()
             ft4.ownSignalCalibration = nil
             rig.setDigitalDataMode(false)     // restore the rig's plain SSB mode
