@@ -804,7 +804,7 @@ struct AcknowledgmentsView: View {
                     Text(e.use)
                     LabeledContent("License", value: e.license)
                     if let text = e.text {
-                        Text(text).font(.caption2.monospaced()).foregroundStyle(ODTheme.muted)
+                        ParagraphText(text: text, spacing: 8).font(.caption).foregroundStyle(ODTheme.muted)
                             .textSelection(.enabled)
                     }
                 }

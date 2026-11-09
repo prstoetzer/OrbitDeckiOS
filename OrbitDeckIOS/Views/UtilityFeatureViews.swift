@@ -1487,6 +1487,48 @@ struct NoteEditorView: View {
 
 // MARK: - Help
 
+/// Multi-paragraph body text with real paragraph spacing. Each line of `text` is a
+/// paragraph (blank lines are ignored); "1. …", "• …" and "- …" lines get a hanging
+/// indent so wrapped lines align under the text, not under the number.
+struct ParagraphText: View {
+    let text: String
+    var spacing: CGFloat = 10
+
+    private struct Line: Identifiable { let id: Int; let marker: String?; let body: String }
+
+    private var lines: [Line] {
+        text.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .enumerated()
+            .map { i, line in
+                if let r = line.range(of: #"^(\d+\.|•|-)\s+"#, options: .regularExpression) {
+                    return Line(id: i, marker: String(line[r]).trimmingCharacters(in: .whitespaces),
+                                body: String(line[r.upperBound...]))
+                }
+                return Line(id: i, marker: nil, body: line)
+            }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            ForEach(lines) { line in
+                if let marker = line.marker {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(marker == "-" ? "•" : marker).monospacedDigit()
+                            .frame(minWidth: 18, alignment: .trailing)
+                        Text(line.body)
+                    }
+                } else {
+                    Text(line.body)
+                }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// Searchable in-app help (HelpLibrary articles) with a link to the readiness checklist.
 struct HelpView: View {
     @State private var query = ""
@@ -1509,7 +1551,7 @@ struct HelpView: View {
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 12) {
                                     Text(article.title).font(.title3.bold())
-                                    Text(article.body).textSelection(.enabled)
+                                    ParagraphText(text: article.body).textSelection(.enabled)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding()
