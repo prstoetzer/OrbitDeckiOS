@@ -362,3 +362,245 @@ struct APRSSymbolTests {
         #expect(APRSSymbol(table: "/", code: "z").systemImage == "mappin.circle.fill")
     }
 }
+
+// Objects, items, weather, third-party traffic, the monitor path, filters, watch
+// list, pass log, message retry and the satgate (RF → APRS-IS) rules.
+
+struct APRSObjectWeatherTests {
+    @Test func objectsAndKilledObjects() {
+        let p = APRS.parse(";LEADER   *092345z4903.50N/07201.75W>088/036")
+        #expect(p.kind == .object && p.objectName == "LEADER" && !p.killed)
+        #expect(abs((p.latitude ?? 0) - 49.058333) < 0.001)
+        #expect(abs((p.longitude ?? 0) + 72.029167) < 0.001)
+        #expect(p.symbolCode == ">")
+        let killed = APRS.parse(";LEADER   _092345z4903.50N/07201.75W>")
+        #expect(killed.kind == .object && killed.killed)
+    }
+
+    @Test func itemsAndKilledItems() {
+        let p = APRS.parse(")AID #2!4903.50N/07201.75WA")
+        #expect(p.kind == .item && p.objectName == "AID #2" && !p.killed && p.symbolCode == "A")
+        let killed = APRS.parse(")AID #2_4903.50N/07201.75WA")
+        #expect(killed.kind == .item && killed.killed)
+        #expect(APRS.parse(")AB").kind == .other)
+    }
+
+    @Test func positionlessWeather() throws {
+        let p = APRS.parse("_10090556c220s004g005t077r000p000P000h50b09900wRSW")
+        #expect(p.kind == .weather)
+        let wx = try #require(p.weather)
+        #expect(wx.windDirection == 220 && wx.windSpeedMph == 4 && wx.gustMph == 5)
+        #expect(wx.temperatureF == 77 && wx.rain1h == 0 && wx.humidity == 50 && wx.pressureTenths == 9900)
+        #expect(wx.remainder == "wRSW")
+        #expect(wx.summary.contains("77 °F"))
+    }
+
+    @Test func weatherInAPosition() throws {
+        let p = APRS.parse("=4903.50N/07201.75W_220/004g005t-05h00b10132")
+        #expect(p.kind == .position && p.symbolCode == "_")
+        let wx = try #require(p.weather)
+        #expect(wx.windDirection == 220 && wx.windSpeedMph == 4 && wx.temperatureF == -5)
+        #expect(wx.humidity == 100 && wx.pressureTenths == 10132)
+        // Missing values ("...") stay nil.
+        let missing = APRS.parse("=4903.50N/07201.75W_.../...t050")
+        #expect(missing.weather?.windDirection == nil && missing.weather?.temperatureF == 50)
+    }
+
+    @Test func thirdPartyIsUnwrapped() {
+        let p = APRS.parse("}W1AW>APRS,TCPIP,N8HM*:=4903.50N/07201.75W-Hello")
+        #expect(p.kind == .position && p.thirdPartySource == "W1AW" && p.thirdPartyDestination == "APRS")
+        #expect(p.thirdPartyPath == ["TCPIP", "N8HM*"])
+        #expect(p.comment == "Hello")
+        // A nested third-party header isn't unwrapped twice.
+        #expect(APRS.parse("}W1AW>APRS:}K1ABC>APRS:>x").kind == .other)
+        let msg = APRS.parse("}W1AW>APRS,TCPIP:BLN1     :Net tonight")
+        #expect(msg.isBulletin)
+    }
+}
+
+struct PacketMonitorTests {
+    private func frame(_ info: String, from: String = "W1AW-7", repeated: Bool = true) -> AX25Frame {
+        AX25Frame(destination: AX25Address(call: "APZODK"), source: AX25Address(from)!,
+                  digipeaters: [AX25Address(call: "RS0ISS", repeated: repeated), AX25Address(call: "WIDE2", ssid: 1)],
+                  info: Array(info.utf8))
+    }
+
+    @Test func pathMarksTheRepeatingDigipeater() {
+        let f = frame("=4903.50N/07201.75W-")
+        #expect(f.pathText == ["RS0ISS*", "WIDE2-1"])
+        #expect(f.tnc2Header == "W1AW-7>APZODK,RS0ISS*,WIDE2-1")
+        #expect(PacketDigis.isSatellite("RS0ISS*") && PacketDigis.isSatellite("ARISS"))
+        #expect(!PacketDigis.isSatellite("WIDE2-1"))
+    }
+
+    @Test func filterMatching() {
+        let f = frame("=4903.50N/07201.75W-")
+        var e = PacketLogEntry(date: Date(), direction: .received, frame: f, aprs: APRS.parse(f.infoText), text: "Hello")
+        e.isBeacon = true
+        var filter = PacketMonitorFilter()
+        #expect(filter.matches(e) && filter.activeCount == 0)
+        filter.hideBeacons = true
+        #expect(!filter.matches(e))
+        filter = PacketMonitorFilter(); filter.call = "W1A"
+        #expect(filter.matches(e))
+        filter.call = "K1"
+        #expect(!filter.matches(e))
+        filter = PacketMonitorFilter(); filter.text = "hello"
+        #expect(filter.matches(e))
+        filter = PacketMonitorFilter(); filter.digipeatedOnly = true
+        let direct = frame("x", repeated: false)
+        #expect(!filter.matches(PacketLogEntry(date: Date(), direction: .received, frame: direct,
+                                               aprs: APRS.parse("x"), text: "x")))
+        filter.onlyMine = true
+        #expect(!filter.matches(e) && filter.activeCount == 2)
+    }
+
+    @Test func watchList() {
+        #expect(PacketWatch.parseList("w1aw, field day ,,") == ["W1AW", "FIELD DAY"])
+        #expect(PacketWatch.match(["W1AW"], source: "W1AW-7", text: "") == "W1AW")
+        #expect(PacketWatch.match(["W1AW-5"], source: "W1AW-7", text: "") == nil)
+        #expect(PacketWatch.match(["W1AW"], source: "K1ABC", text: "cq de w1aw") == "W1AW")
+        #expect(PacketWatch.match(["field day"], source: "K1ABC", text: "Field Day setup") == "FIELD DAY")
+        #expect(PacketWatch.match(["ISS"], source: "K1ABC", text: "ISS pass tonight") == "ISS")
+        #expect(PacketWatch.match(["ISS"], source: "K1ABC", text: "nothing") == nil)
+    }
+
+    @Test func messageRetryPolicy() {
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        var r = PacketMessageRetry(id: "12", logID: UUID(), frame: frame(":N8HM-6   :hi{12"), firstSent: t0)
+        #expect(r.action(now: t0.addingTimeInterval(10), satelliteUp: true, enabled: true) == .wait)
+        #expect(r.action(now: t0.addingTimeInterval(30), satelliteUp: false, enabled: true) == .wait)
+        #expect(r.action(now: t0.addingTimeInterval(30), satelliteUp: true, enabled: false) == .wait)
+        #expect(r.action(now: t0.addingTimeInterval(30), satelliteUp: true, enabled: true) == .resend)
+        r.didResend(at: t0.addingTimeInterval(30))
+        #expect(r.action(now: t0.addingTimeInterval(45), satelliteUp: true, enabled: true) == .wait)
+        #expect(r.action(now: t0.addingTimeInterval(60), satelliteUp: true, enabled: true) == .resend)
+        r.didResend(at: t0.addingTimeInterval(60))
+        // Two retries done: give up once the last one has had its 30 s.
+        #expect(r.action(now: t0.addingTimeInterval(80), satelliteUp: true, enabled: true) == .wait)
+        #expect(r.action(now: t0.addingTimeInterval(90), satelliteUp: true, enabled: true) == .giveUp)
+        let never = PacketMessageRetry(id: "1", logID: UUID(), frame: frame("x"), firstSent: t0)
+        #expect(never.action(now: t0.addingTimeInterval(16 * 60), satelliteUp: false, enabled: true) == .giveUp)
+    }
+}
+
+struct PacketSessionTests {
+    private func record(_ dir: PacketLogRecord.Direction, from: String, at t: Double, delay: Double? = nil,
+                        retry: Bool = false) -> PacketLogRecord {
+        let f = AX25Frame(destination: AX25Address(call: "APZODK"), source: AX25Address(from)!,
+                          digipeaters: [AX25Address(call: "RS0ISS", repeated: dir == .received)],
+                          info: Array("=hi".utf8))
+        var r = PacketLogRecord(date: Date(timeIntervalSince1970: 1_800_000_000 + t), direction: dir, frame: f)
+        r.digipeatDelay = delay
+        r.retry = retry
+        return r
+    }
+
+    @Test func statistics() {
+        let records = [
+            record(.received, from: "W1AW", at: 0),
+            record(.received, from: "K1ABC", at: 10),
+            record(.sent, from: "N8HM-6", at: 20, delay: 2),
+            record(.sent, from: "N8HM-6", at: 30, delay: 4),
+            record(.sent, from: "N8HM-6", at: 40),
+            record(.sent, from: "N8HM-6", at: 50, retry: true),
+            record(.received, from: "W1AW", at: 60),
+        ]
+        let s = PacketSessionStats.compute(records)
+        #expect(s.framesHeard == 3 && s.stationsHeard == 2)
+        #expect(s.sent == 3 && s.digipeated == 2 && s.successPercent == 67)
+        #expect(s.medianDelay == 3)
+        #expect(abs(s.framesPerMinute - 3) < 0.001)
+        #expect(PacketSessionStats.compute([]).successPercent == nil)
+    }
+
+    @Test func exportsAndPersistence() throws {
+        var session = PacketSession(start: Date(timeIntervalSince1970: 1_800_000_000),
+                                    end: Date(timeIntervalSince1970: 1_800_000_060),
+                                    satellite: "ISS", norad: 25544, myCall: "N8HM-6")
+        var r = record(.received, from: "W1AW", at: 0)
+        r.info = ">hi, \"there\""
+        session.records = [r]
+        let text = PacketSessionExport.tnc2(session)
+        #expect(text.contains("2027-01-15 08:00:00Z RX W1AW>APZODK,RS0ISS*:>hi, \"there\""))
+        #expect(text.hasPrefix("# OrbitDeck packet log — ISS (25544) — N8HM-6"))
+        let csv = PacketSessionExport.csv(session)
+        #expect(csv.contains("W1AW,APZODK,RS0ISS*,\">hi, \"\"there\"\"\",1,0,,0,0"))
+        #expect(PacketSessionExport.csvField("=SUM(A1)") == "'=SUM(A1)")
+        #expect(PacketSessionExport.csvField("plain") == "plain")
+        #expect(PacketSessionExport.fileStem(session) == "OrbitDeck-packet-ISS-20270115-0800")
+        // Round trip, and tolerant decoding of a record missing newer fields.
+        let back = try JSONDecoder().decode(PacketSession.self, from: JSONEncoder().encode(session))
+        #expect(back == session)
+        let old = try JSONDecoder().decode(PacketLogRecord.self,
+                                           from: Data(#"{"source":"W1AW","destination":"CQ","info":"hi"}"#.utf8))
+        #expect(old.source == "W1AW" && old.direction == .received && old.path.isEmpty && !old.retry)
+    }
+
+    @Test func settingsDecodeTolerantly() throws {
+        let s = try JSONDecoder().decode(PacketSettings.self, from: Data("{}".utf8))
+        #expect(s.transport == .builtInModem && s.kissPort == 8001 && s.minElevationDeg == 0)
+        #expect(!s.satgateEnabled && s.satgateHost == "rotate.aprs2.net" && s.satgatePort == 14580)
+        #expect(!s.alertToMe && !s.speakMessages && s.retryMessages && s.beaconContent == .position)
+        #expect(s.monitorFilter == PacketMonitorFilter())
+        var changed = s
+        changed.transport = .tcpKISS; changed.kissHost = "192.168.1.20"; changed.minElevationDeg = 10
+        changed.watchList = ["W1AW"]; changed.monitorFilter.hideBeacons = true; changed.beaconContent = .alternate
+        changed.profiles["25544"] = PacketSatelliteProfile(path: "ARISS", format: .aprs, minElevationDeg: 15)
+        let back = try JSONDecoder().decode(PacketSettings.self, from: JSONEncoder().encode(changed))
+        #expect(back == changed)
+        let filter = try JSONDecoder().decode(PacketMonitorFilter.self, from: Data(#"{"hideStatus":true}"#.utf8))
+        #expect(filter.hideStatus && !filter.showRaw)
+        let profile = try JSONDecoder().decode(PacketSatelliteProfile.self, from: Data(#"{"path":"ARISS"}"#.utf8))
+        #expect(profile.minElevationDeg == nil)
+    }
+}
+
+struct APRSISGateTests {
+    private func frame(_ info: String, from: String = "W1AW-7", digis: [AX25Address]? = nil) -> AX25Frame {
+        AX25Frame(destination: AX25Address(call: "APZODK"), source: AX25Address(from)!,
+                  digipeaters: digis ?? [AX25Address(call: "RS0ISS", repeated: true), AX25Address(call: "WIDE2", ssid: 1)],
+                  info: Array(info.utf8))
+    }
+    private let own: Set<String> = ["N8HM-6", "N8HM-10"]
+
+    @Test func appendsQARAndKeepsThePath() {
+        #expect(APRSISGate.line(for: frame("=4903.50N/07201.75W-"), igate: "N8HM-10", ownCalls: own)
+                == "W1AW-7>APZODK,RS0ISS*,WIDE2-1,qAR,N8HM-10:=4903.50N/07201.75W-")
+        // Cut at the first CR/LF.
+        #expect(APRSISGate.line(for: frame(">status\rjunk"), igate: "N8HM-10", ownCalls: own)?.hasSuffix(":>status") == true)
+    }
+
+    @Test func refusesWhatMustNotBeGated() {
+        #expect(APRSISGate.line(for: frame(">hi", from: "N8HM-6"), igate: "N8HM-10", ownCalls: own) == nil)
+        for word in ["NOGATE", "RFONLY", "TCPIP", "TCPXX"] {
+            let f = frame(">hi", digis: [AX25Address(call: word)])
+            #expect(APRSISGate.line(for: f, igate: "N8HM-10", ownCalls: own) == nil)
+        }
+        #expect(APRSISGate.line(for: frame("?APRS?"), igate: "N8HM-10", ownCalls: own) == nil)
+        #expect(APRSISGate.line(for: frame(""), igate: "N8HM-10", ownCalls: own) == nil)
+        var notUI = frame(">hi"); notUI.control = 0x00
+        #expect(APRSISGate.line(for: notUI, igate: "N8HM-10", ownCalls: own) == nil)
+        #expect(APRSISGate.line(for: frame(">hi"), igate: "", ownCalls: own) == nil)
+    }
+
+    @Test func thirdPartyTraffic() {
+        // Internet traffic sent to RF (TCPIP inside) is never gated back.
+        #expect(APRSISGate.line(for: frame("}K1ABC>APRS,TCPIP,W1AW*:>hi"), igate: "N8HM-10", ownCalls: own) == nil)
+        // RF third-party traffic: the inner packet is gated.
+        #expect(APRSISGate.line(for: frame("}K1ABC>APRS,WIDE1-1:>hi"), igate: "N8HM-10", ownCalls: own)
+                == "K1ABC>APRS,WIDE1-1,qAR,N8HM-10:>hi")
+        #expect(APRSISGate.line(for: frame("}garbage"), igate: "N8HM-10", ownCalls: own) == nil)
+    }
+
+    @Test func duplicatesWithin30SecondsAreDropped() {
+        var dupes = APRSISDupeFilter()
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let a = "W1AW-7>APZODK,RS0ISS*,qAR,N8HM-10:>hi"
+        let b = "W1AW-7>APZODK,WIDE2-1,qAR,N8HM-10:>hi"     // same packet, other path
+        #expect(!dupes.isDuplicate(a, at: t0))
+        #expect(dupes.isDuplicate(b, at: t0.addingTimeInterval(5)))
+        #expect(!dupes.isDuplicate("W1AW-7>APZODK,qAR,N8HM-10:>other", at: t0.addingTimeInterval(6)))
+        #expect(!dupes.isDuplicate(a, at: t0.addingTimeInterval(31)))
+    }
+}

@@ -794,6 +794,7 @@ enum OrbitSecret: String, CaseIterable {
     // Logging upload secrets.
     case lotwP12Passphrase = "lotw-p12-passphrase"   // passphrase for the imported LoTW .p12
     case cloudlogKey = "cloudlog-api-key"            // Cloudlog/Wavelog read-write API key
+    case aprsisPasscode = "aprsis-passcode"          // APRS-IS passcode for the packet satgate
 }
 
 enum OrbitSecretStore {

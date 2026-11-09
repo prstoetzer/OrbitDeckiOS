@@ -2501,14 +2501,23 @@ struct AX25Frame: Equatable, Sendable {
     /// TNC2 monitor format: `SRC>DST,DIGI1,DIGI2*:info`, the `*` on the last digipeater
     /// that has repeated the frame.
     var monitorText: String {
-        var path = [destination.description]
-        let lastRepeated = digipeaters.lastIndex { $0.repeated }
-        for (i, d) in digipeaters.enumerated() {
-            path.append(d.description + (i == lastRepeated ? "*" : ""))
-        }
         let printable = String(info.map { (0x20..<0x7F).contains($0) || $0 >= 0x80 ? Character(UnicodeScalar($0)) : "." })
         let text = String(data: Data(info), encoding: .utf8) ?? printable
-        return "\(source)>\(path.joined(separator: ",")):\(text.replacingOccurrences(of: "\r", with: " "))"
+        return "\(tnc2Header):\(text.replacingOccurrences(of: "\r", with: " "))"
+    }
+
+    /// The digipeater that repeated the frame last (where TNC2 puts the `*`).
+    var repeatingDigiIndex: Int? { digipeaters.lastIndex { $0.repeated } }
+
+    /// The via path as TNC2 writes it: `*` after the last digipeater that repeated it.
+    var pathText: [String] {
+        let last = repeatingDigiIndex
+        return digipeaters.enumerated().map { i, d in d.description + (i == last ? "*" : "") }
+    }
+
+    /// `SRC>DEST,DIGI1,DIGI2*`.
+    var tnc2Header: String {
+        "\(source)>" + ([destination.description] + pathText).joined(separator: ",")
     }
 
     /// True when a digipeater has repeated this frame (it came back through the bird).
@@ -2573,7 +2582,7 @@ enum KISS {
 
 /// A parsed APRS information field.
 struct APRSPacket: Equatable, Sendable {
-    enum Kind: String, Sendable { case position, message, ack, reject, status, micE, telemetry, other }
+    enum Kind: String, Sendable { case position, message, ack, reject, status, micE, telemetry, object, item, weather, other }
     var kind: Kind
     var latitude: Double?
     var longitude: Double?
@@ -2587,6 +2596,112 @@ struct APRSPacket: Equatable, Sendable {
     var altitudeFeet: Int?
     /// Maidenhead grid when the station sent one (`[FM18]` beacons).
     var grid: String?
+    /// `;` object or `)` item name.
+    var objectName: String?
+    /// The object or item was killed (`_` in place of `*` / `!`).
+    var killed = false
+    /// Positionless (`_`) weather, or the weather in a weather-station position.
+    var weather: APRSWeather?
+    /// Third-party traffic (`}`): the inner packet's source, destination and path.
+    /// The rest of this packet describes the inner packet.
+    var thirdPartySource: String?
+    var thirdPartyDestination: String?
+    var thirdPartyPath: [String] = []
+
+    /// A bulletin or announcement (`:BLNx     :`).
+    var isBulletin: Bool { kind == .message && addressee.uppercased().hasPrefix("BLN") }
+}
+
+/// An APRS weather report (APRS 1.0.1 ch. 12). Missing fields (`...` or spaces) are nil.
+struct APRSWeather: Equatable, Sendable {
+    var windDirection: Int?
+    var windSpeedMph: Int?
+    var gustMph: Int?
+    var temperatureF: Int?
+    /// Rain in hundredths of an inch: last hour, last 24 hours, since midnight.
+    var rain1h: Int?
+    var rain24h: Int?
+    var rainMidnight: Int?
+    /// Percent (h00 = 100 %).
+    var humidity: Int?
+    /// Barometric pressure in tenths of a millibar (hPa).
+    var pressureTenths: Int?
+    /// Solar radiation, W/m².
+    var luminosity: Int?
+    /// Text after the weather fields (weather-station software, comment).
+    var remainder = ""
+
+    var isEmpty: Bool {
+        [windDirection, windSpeedMph, gustMph, temperatureF, rain1h, rain24h, rainMidnight,
+         humidity, pressureTenths, luminosity].allSatisfy { $0 == nil }
+    }
+
+    /// Parse weather fields. Positions carry the wind as a leading `DDD/SSS`; the
+    /// positionless form uses `cDDD sSSS` (in positions `s` is snowfall, ignored).
+    nonisolated static func parse(_ text: String, positionless: Bool) -> APRSWeather? {
+        let c = Array(text)
+        var w = APRSWeather()
+        var i = 0
+        func number(_ s: ArraySlice<Character>) -> Int? {
+            let t = String(s).trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty, t.allSatisfy({ $0.isNumber || $0 == "-" }) else { return nil }
+            return Int(t)
+        }
+        if !positionless, c.count >= 7, c[3] == "/" {
+            let dirOK = c[0..<3].allSatisfy { $0.isNumber || $0 == "." || $0 == " " }
+            let spdOK = c[4..<7].allSatisfy { $0.isNumber || $0 == "." || $0 == " " }
+            guard dirOK && spdOK else { return nil }
+            w.windDirection = number(c[0..<3]); w.windSpeedMph = number(c[4..<7])
+            i = 7
+        }
+        let widths: [Character: Int] = ["c": 3, "s": 3, "g": 3, "t": 3, "r": 3, "p": 3, "P": 3,
+                                        "h": 2, "b": 5, "L": 3, "l": 3, "#": 3]
+        while i < c.count, let width = widths[c[i]], i + width < c.count {
+            let field = c[(i + 1)...(i + width)]
+            // A field must be digits, a sign, or the "missing" fillers.
+            guard field.allSatisfy({ $0.isNumber || $0 == "-" || $0 == "." || $0 == " " }) else { break }
+            let v = number(field)
+            switch c[i] {
+            case "c": w.windDirection = v
+            case "s": if positionless { w.windSpeedMph = v }
+            case "g": w.gustMph = v
+            case "t": w.temperatureF = v
+            case "r": w.rain1h = v
+            case "p": w.rain24h = v
+            case "P": w.rainMidnight = v
+            case "h": w.humidity = v.map { $0 == 0 ? 100 : $0 }
+            case "b": w.pressureTenths = v
+            case "L": w.luminosity = v
+            case "l": w.luminosity = v.map { $0 + 1000 }
+            default: break
+            }
+            i += width + 1
+        }
+        w.remainder = String(c[min(i, c.count)...]).trimmingCharacters(in: .whitespaces)
+        return w.isEmpty ? nil : w
+    }
+
+    /// "Wind 270° 5 mph G 12 · 72 °F (22.2 °C) · 45 % · 1013.2 hPa · rain 0.12 in/1 h".
+    var summary: String {
+        var parts: [String] = []
+        if windDirection != nil || windSpeedMph != nil {
+            var s = "Wind"
+            if let d = windDirection { s += " \(d)°" }
+            if let v = windSpeedMph { s += " \(v) mph" }
+            if let g = gustMph { s += " G \(g)" }
+            parts.append(s)
+        } else if let g = gustMph {
+            parts.append("Gust \(g) mph")
+        }
+        if let t = temperatureF { parts.append(String(format: "%d °F (%.1f °C)", t, (Double(t) - 32) * 5 / 9)) }
+        if let h = humidity { parts.append("\(h) %") }
+        if let p = pressureTenths { parts.append(String(format: "%.1f hPa", Double(p) / 10)) }
+        if let r = rain1h { parts.append(String(format: "rain %.2f in/1 h", Double(r) / 100)) }
+        else if let r = rain24h { parts.append(String(format: "rain %.2f in/24 h", Double(r) / 100)) }
+        else if let r = rainMidnight { parts.append(String(format: "rain %.2f in today", Double(r) / 100)) }
+        if let l = luminosity { parts.append("\(l) W/m²") }
+        return parts.joined(separator: " · ")
+    }
 }
 
 enum APRS {
@@ -2640,10 +2755,22 @@ enum APRS {
 
     /// Parse an information field. `destination` is needed for Mic-E (the latitude
     /// rides in the destination callsign).
-    nonisolated static func parse(_ info: String, destination: String = "") -> APRSPacket {
+    nonisolated static func parse(_ info: String, destination: String = "", depth: Int = 0) -> APRSPacket {
         guard let dti = info.first else { return APRSPacket(kind: .other) }
         let body = Array(info.dropFirst())
         switch dti {
+        case ";":
+            return parseObject(body) ?? APRSPacket(kind: .other, comment: info)
+        case ")":
+            return parseItem(body) ?? APRSPacket(kind: .other, comment: info)
+        case "_":
+            // Positionless weather: `_MMDDHHMM` timestamp, then the fields.
+            guard body.count > 8, let wx = APRSWeather.parse(String(body.dropFirst(8)), positionless: true) else {
+                return APRSPacket(kind: .other, comment: info)
+            }
+            return APRSPacket(kind: .weather, comment: wx.remainder, weather: wx)
+        case "}":
+            return parseThirdParty(String(body), depth: depth) ?? APRSPacket(kind: .other, comment: info)
         case "!", "=":
             return parsePosition(body) ?? APRSPacket(kind: .other, comment: info)
         case "/", "@":
@@ -2686,7 +2813,52 @@ enum APRS {
         return Int(digits)
     }
 
+    /// Object: `NAME_____*DDHHMMz<position>` (9-character name; `_` instead of `*` = killed).
+    private nonisolated static func parseObject(_ c: [Character]) -> APRSPacket? {
+        guard c.count >= 17 + 13, c[9] == "*" || c[9] == "_" else { return nil }
+        let name = String(c[0..<9]).trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, var p = parsePosition(Array(c.dropFirst(17))) else { return nil }
+        p.kind = .object; p.objectName = name; p.killed = c[9] == "_"
+        return p
+    }
+
+    /// Item: `NAME!<position>` (3–9 character name ended by `!`, or `_` when killed).
+    private nonisolated static func parseItem(_ c: [Character]) -> APRSPacket? {
+        guard c.count >= 4,
+              let end = (3..<min(c.count, 10)).first(where: { c[$0] == "!" || c[$0] == "_" }) else { return nil }
+        let name = String(c[0..<end]).trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, var p = parsePosition(Array(c.dropFirst(end + 1))) else { return nil }
+        p.kind = .item; p.objectName = name; p.killed = c[end] == "_"
+        return p
+    }
+
+    /// Third-party traffic `}SRC>DEST,PATH:info`: the inner packet, parsed, with its
+    /// header kept. Nested third-party headers aren't unwrapped again.
+    private nonisolated static func parseThirdParty(_ s: String, depth: Int) -> APRSPacket? {
+        guard depth == 0, let colon = s.firstIndex(of: ":") else { return nil }
+        let header = s[..<colon]
+        guard let gt = header.firstIndex(of: ">") else { return nil }
+        let source = String(header[..<gt]).uppercased()
+        let fields = header[header.index(after: gt)...].split(separator: ",").map(String.init)
+        guard AX25Address(source) != nil, let dest = fields.first, !dest.isEmpty else { return nil }
+        var p = parse(String(s[s.index(after: colon)...]), destination: dest, depth: depth + 1)
+        p.thirdPartySource = source
+        p.thirdPartyDestination = dest
+        p.thirdPartyPath = Array(fields.dropFirst())
+        return p
+    }
+
     private nonisolated static func parsePosition(_ c: [Character]) -> APRSPacket? {
+        guard var p = parseBarePosition(c) else { return nil }
+        // Weather station symbol: the comment starts with the weather fields.
+        if p.symbolCode == "_", let wx = APRSWeather.parse(p.comment, positionless: false) {
+            p.weather = wx
+            p.comment = wx.remainder
+        }
+        return p
+    }
+
+    private nonisolated static func parseBarePosition(_ c: [Character]) -> APRSPacket? {
         // Uncompressed: DDMM.mmN T DDDMM.mmW C (19 characters).
         if c.count >= 19, c[0].isNumber {
             guard let lat = dm(String(c[0..<7]), degDigits: 2, hemi: c[7], pos: "N", neg: "S"),
@@ -3522,20 +3694,32 @@ enum PacketModem: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Per-satellite packet setup (path, message format and modem).
+/// Per-satellite packet setup (path, message format, modem and minimum elevation).
 struct PacketSatelliteProfile: Codable, Equatable, Sendable {
     var path: String
     var format: PacketMessageFormat
     var modem: PacketModem = .automatic
+    /// Minimum elevation for sending and beacons on this satellite; nil = the global setting.
+    var minElevationDeg: Double?
 }
 
 extension PacketSatelliteProfile {
-    /// Tolerant: profiles saved before `modem` existed decode with Auto.
+    /// Tolerant: profiles saved before `modem` / `minElevationDeg` existed decode with defaults.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         path = (try? c.decodeIfPresent(String.self, forKey: .path)) ?? "ARISS"
         format = (try? c.decodeIfPresent(PacketMessageFormat.self, forKey: .format)) ?? .aprs
         modem = (try? c.decodeIfPresent(PacketModem.self, forKey: .modem)) ?? .automatic
+        minElevationDeg = (try? c.decodeIfPresent(Double.self, forKey: .minElevationDeg)) ?? nil
+    }
+}
+
+/// What the timed beacon sends.
+enum PacketBeaconContent: String, Codable, CaseIterable, Identifiable, Sendable {
+    case position, status, alternate
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .position: "Position"; case .status: "Status text"; case .alternate: "Alternate" }
     }
 }
 
@@ -3565,9 +3749,13 @@ enum PacketDuplex: String, Codable, CaseIterable, Identifiable, Sendable {
 
 struct PacketSettings: Codable, Equatable, Sendable {
     enum Transport: String, Codable, CaseIterable, Identifiable, Sendable {
-        case builtInModem, bleKISS
+        case builtInModem, bleKISS, tcpKISS
         var id: String { rawValue }
-        var label: String { self == .builtInModem ? "Built-in modem" : "BLE KISS TNC" }
+        var label: String {
+            switch self { case .builtInModem: "Built-in modem"; case .bleKISS: "BLE KISS"; case .tcpKISS: "KISS TCP" }
+        }
+        /// A KISS TNC (BLE or TCP): the TNC keys the radio; the phone's audio isn't involved.
+        var isKISS: Bool { self != .builtInModem }
     }
     var transport: Transport = .builtInModem
     var ssid = 6                    // -6 is the common SSID for satellite operation
@@ -3607,6 +3795,33 @@ struct PacketSettings: Codable, Equatable, Sendable {
     /// Built-in modem with CAT connected: put the radio in its data sub-mode (e.g.
     /// Icom FM-D / USB-D) so audio goes through the data port while packet runs.
     var useDataMode = true
+    /// KISS over TCP (Direwolf, UZ7HO soundmodem, a LAN TNC).
+    var kissHost = ""
+    var kissPort = 8001
+    /// Sending and beacons need the satellite at least this high (per-satellite override
+    /// in the profile).
+    var minElevationDeg = 0.0
+    /// Send one position as soon as the first digipeated frame of a pass is heard.
+    var beaconOnFirstHeard = false
+    var beaconContent: PacketBeaconContent = .position
+    /// Status beacon text (placeholders as in the quick messages).
+    var statusText = ""
+    /// Resend an unacknowledged numbered message (up to 2 times, 30 s apart).
+    var retryMessages = true
+    var monitorFilter = PacketMonitorFilter()
+    /// Alerts: a message/frame to me, a watched callsign or word, my frame digipeated.
+    var alertToMe = false
+    var alertWatch = false
+    var alertDigipeated = false
+    var watchList: [String] = []
+    /// Read messages to me (and optionally bulletins) aloud.
+    var speakMessages = false
+    var speakBulletins = false
+    /// Receive-only satgate (RF → APRS-IS). The passcode is in the Keychain.
+    var satgateEnabled = false
+    var satgateHost = APRSISGate.defaultHost
+    var satgatePort = APRSISGate.defaultPort
+    var satgateSSID = 10
 
     static let defaultMacros = ["CQ {MYGRID4}", "{CALL} {MYGRID4} 599", "R 599 {MYGRID4}", "73 TU", "{HEARD}", "{POSITION}"]
 
@@ -3631,6 +3846,16 @@ struct PacketSettings: Codable, Equatable, Sendable {
         bbLinkTune = v(.bbLinkTune, d.bbLinkTune)
         outputLevel = v(.outputLevel, d.outputLevel); inputGain = v(.inputGain, d.inputGain)
         useDataMode = v(.useDataMode, d.useDataMode)
+        kissHost = v(.kissHost, d.kissHost); kissPort = v(.kissPort, d.kissPort)
+        minElevationDeg = v(.minElevationDeg, d.minElevationDeg)
+        beaconOnFirstHeard = v(.beaconOnFirstHeard, d.beaconOnFirstHeard)
+        beaconContent = v(.beaconContent, d.beaconContent); statusText = v(.statusText, d.statusText)
+        retryMessages = v(.retryMessages, d.retryMessages); monitorFilter = v(.monitorFilter, d.monitorFilter)
+        alertToMe = v(.alertToMe, d.alertToMe); alertWatch = v(.alertWatch, d.alertWatch)
+        alertDigipeated = v(.alertDigipeated, d.alertDigipeated); watchList = v(.watchList, d.watchList)
+        speakMessages = v(.speakMessages, d.speakMessages); speakBulletins = v(.speakBulletins, d.speakBulletins)
+        satgateEnabled = v(.satgateEnabled, d.satgateEnabled); satgateHost = v(.satgateHost, d.satgateHost)
+        satgatePort = v(.satgatePort, d.satgatePort); satgateSSID = v(.satgateSSID, d.satgateSSID)
     }
 }
 
@@ -3648,9 +3873,14 @@ struct PacketLogEntry: Identifiable, Sendable {
     /// A message (APRS or plain text) addressed to us.
     var toMe = false
     var acked = false
+    /// Numbered message: times it was resent for lack of an ack, and whether we gave up.
+    var retries = 0
+    var ackFailed = false
+    var awaitingAck = false
     var isCQ = false
     var isTelemetry = false
     var isBeacon = false
+    var isStatus = false
     /// The text to show: the APRS message/status/comment, or the plain-text info.
     var text: String
 }
@@ -3672,6 +3902,23 @@ struct PacketHeardStation: Identifiable, Sendable {
     /// APRS symbol (table `/`, `\` or an overlay character, and code), when sent.
     var symbolTable: Character?
     var symbolCode: Character?
+    /// The station's latest weather report.
+    var weather: APRSWeather?
+}
+
+/// An APRS object (`;`) or item (`)`) heard this session, for the map.
+struct PacketObject: Identifiable, Sendable {
+    var id: String { name }
+    let name: String
+    var owner: String
+    var latitude: Double
+    var longitude: Double
+    var symbolTable: Character?
+    var symbolCode: Character?
+    var comment: String
+    var weather: APRSWeather?
+    var isItem: Bool
+    var lastHeard: Date
 }
 
 @MainActor
@@ -3680,6 +3927,8 @@ final class PacketEngine: ObservableObject {
     /// APRS "tocall" for experimental software (APZ…).
     static let tocall = "APZODK"
     static let maxLog = 300
+    /// The timed beacon's floor (the accepted minimum on a shared satellite channel).
+    static let minBeaconInterval: TimeInterval = 60
 
     @Published var settings: PacketSettings { didSet { if settings != oldValue { save(); settingsChanged(oldValue) } } }
     @Published private(set) var isRunning = false
@@ -3688,12 +3937,17 @@ final class PacketEngine: ObservableObject {
     @Published var errorText = ""
     @Published private(set) var log: [PacketLogEntry] = []
     @Published private(set) var heard: [PacketHeardStation] = []
+    @Published private(set) var objects: [PacketObject] = []
     @Published private(set) var channelBusy = false
     @Published private(set) var rxLevel: Float = 0
     @Published private(set) var heardSelfViaSatellite = false
     @Published private(set) var stats = (sent: 0, digipeated: 0, medianDelay: 0.0)
     /// The last automatically logged QSO, for the card ("Logged W1AW at 14:05").
     @Published private(set) var lastAutoLogged: (call: String, date: Date)?
+    /// The pass/session being recorded to the pass log.
+    @Published private(set) var currentSession: PacketSession?
+    /// Receive-only RF → APRS-IS gateway (opt-in).
+    let satgate = PacketSatgate()
 
     private weak var rig: RigController?
     private weak var audio: AudioHub?
@@ -3718,21 +3972,34 @@ final class PacketEngine: ObservableObject {
     /// receiver turnaround guard).
     private var rxBlankedUntil = Date.distantPast
 
-    // BLE KISS
-    private var kissLink: BLESerialTransport?
+    // KISS TNC (BLE or TCP)
+    private var kissLink: (any CATTransport)?
     private var kissDecoder = KISS.Decoder()
     private var kissReader: Task<Void, Never>?
     private var tunedForSatellite: UInt?
+    private var kissRetry = 0
 
     private var txQueue: [AX25Frame] = []
     private var txRunning = false
     private var messageNumber = Int.random(in: 1...99)
-    private var pendingAcks: [String: UUID] = [:]   // message id → log entry
+    /// Numbered messages waiting for an ack (message id → retry state).
+    private var pendingMessages: [String: PacketMessageRetry] = [:]
     /// Our recent transmissions, for matching the digipeated copy (info text → when).
     private var recentSends: [(info: [UInt8], date: Date, logID: UUID)] = []
     private var delays: [TimeInterval] = []
-    private var beaconTask: Task<Void, Never>?
+    private var beaconTimer: DispatchSourceTimer?
+    private var housekeepingTimer: DispatchSourceTimer?
+    private var lastBeaconAt = Date.distantPast
+    private var alternateNextIsStatus = false
+    private var firstHeardBeaconSent = false
     private var qsoTracker = PacketQSOTracker()
+    private var lastAlertAt: [String: Date] = [:]
+    private var lastAnyAlertAt = Date.distantPast
+    private lazy var speech = AVSpeechSynthesizer()
+    private let sessionQueue = DispatchQueue(label: "org.orbitdeck.packet.sessions")
+    private var sessionSaveScheduled = false
+    /// A session ends after this long without a frame (the next pass starts a new one).
+    static let sessionGap: TimeInterval = 20 * 60
 
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.settingsKey),
@@ -3753,6 +4020,10 @@ final class PacketEngine: ObservableObject {
 
     private func settingsChanged(_ old: PacketSettings) {
         if settings.beaconMinutes != old.beaconMinutes { restartBeacon() }
+        // Host/port/SSID edits apply at the next connect (Start or Reconnect), so typing
+        // doesn't log in to APRS-IS on every keystroke.
+        if settings.satgateEnabled != old.satgateEnabled { restartSatgate() }
+        if !settings.speakMessages && !settings.speakBulletins, speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
     }
 
     /// The operator's callsign (station setup in the log, else Settings).
@@ -3767,6 +4038,12 @@ final class PacketEngine: ObservableObject {
     }
     private var myGrid: String { store?.operatorGrid6 ?? "" }
 
+    /// The satgate's APRS-IS login (base call plus the satgate SSID).
+    var satgateCall: String {
+        guard let me = myAddress else { return "" }
+        return settings.satgateSSID > 0 ? "\(me.call)-\(settings.satgateSSID)" : me.call
+    }
+
     // MARK: Satellite profiles
 
     /// Built-in defaults (ISS: APRS via ARISS); per-satellite edits are stored.
@@ -3777,6 +4054,11 @@ final class PacketEngine: ObservableObject {
 
     func setProfile(_ profile: PacketSatelliteProfile, for norad: UInt) {
         settings.profiles[String(norad)] = profile
+    }
+
+    /// The minimum elevation for sending on this satellite (profile override, else global).
+    func minElevation(for norad: UInt?) -> Double {
+        profile(for: norad).minElevationDeg ?? settings.minElevationDeg
     }
 
     /// A transponder suited to packet on this satellite (AFSK/APRS/packet digipeater),
@@ -3831,6 +4113,27 @@ final class PacketEngine: ObservableObject {
         return try? OrbitPredictor.look(sat, observer: store.preferences.observer).elevation
     }
 
+    /// The selected satellite is at or above its minimum elevation (true without one).
+    private var satelliteUp: Bool {
+        guard let el = satelliteElevation() else { return true }
+        return el >= minElevation(for: store?.selectedSatellite?.id)
+    }
+
+    /// Timed/automatic transmissions need a known satellite above its minimum elevation.
+    private var satelliteUpForBeacon: Bool {
+        guard let el = satelliteElevation() else { return false }
+        return el >= minElevation(for: store?.selectedSatellite?.id)
+    }
+
+    /// The phone's own audio output isn't the radio's TX audio, so a sound or speech
+    /// can't be transmitted: a KISS TNC (BLE or TCP), or the built-in modem on Icom
+    /// network audio. With a USB interface or the phone-mic fallback the phone's
+    /// output IS the TX path (VOX would key on it), so nothing is played.
+    var phoneAudioIsSafe: Bool {
+        if settings.transport.isKISS { return true }
+        return !(audio?.usbConnected ?? true) && rig?.icomAudioTransport != nil
+    }
+
     // MARK: Start / stop
 
     func start(satellite: SatelliteRecord?) {
@@ -3844,16 +4147,24 @@ final class PacketEngine: ObservableObject {
         heardSelfViaSatellite = false
         switch settings.transport {
         case .builtInModem: startModem(satellite: satellite)
-        case .bleKISS: startKISS(satellite: satellite)
+        case .bleKISS, .tcpKISS: startKISS(satellite: satellite)
         }
-        if isRunning { restartBeacon() } else { AudioActivity.releaseMode("Packet") }
+        if isRunning {
+            restartBeacon()
+            startHousekeeping()
+            restartSatgate()
+        } else {
+            AudioActivity.releaseMode("Packet")
+        }
     }
 
     func stop() {
         guard isRunning else { return }
         txQueue.removeAll()
-        beaconTask?.cancel(); beaconTask = nil
+        beaconTimer?.cancel(); beaconTimer = nil
+        housekeepingTimer?.cancel(); housekeepingTimer = nil
         meterTimer?.cancel(); meterTimer = nil
+        if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
         if let source {
             source.stopPlayback(); source.stop()
             if isTransmitting { Task { await rig?.setPTT(false) } }
@@ -3863,13 +4174,19 @@ final class PacketEngine: ObservableObject {
         if engagedDataMode { rig?.setDigitalDataMode(false, client: "packet"); engagedDataMode = false }
         kissReader?.cancel(); kissReader = nil
         if let link = kissLink {
-            let restore = settings.bbLinkTune && tunedForSatellite != nil
+            let restore = settings.transport == .bleKISS && settings.bbLinkTune && tunedForSatellite != nil
             Task {
                 if restore { try? await link.send(KISS.encode([0xEB], command: 0x06)) }   // B.B. Link: restore frequency
                 await link.disconnect()
             }
         }
-        kissLink = nil; tunedForSatellite = nil
+        kissLink = nil; tunedForSatellite = nil; kissRetry = 0
+        for p in pendingMessages.values {
+            if let i = log.firstIndex(where: { $0.id == p.logID }) { log[i].awaitingAck = false }
+        }
+        pendingMessages.removeAll()
+        satgate.stop()
+        endSession()
         isTransmitting = false; isRunning = false; channelBusy = false; rxLevel = 0
         status = "Idle"
         AudioActivity.end()
@@ -3935,58 +4252,124 @@ final class PacketEngine: ObservableObject {
     private nonisolated(unsafe) var lastBusy = false   // demodQueue only
 
     private func startMeter() {
-        let t = DispatchSource.makeTimerSource(queue: .main)
-        t.schedule(deadline: .now() + 0.1, repeating: 0.1)
-        t.setEventHandler { [weak self] in
+        meterTimer = Self.mainTimer(every: 0.1) { [weak self] in
             guard let self else { return }
             let p = self.demodQueue.sync { () -> Float in let v = self.peak; self.peak = 0; return v }
             self.rxLevel = max(p, self.rxLevel * 0.75)
         }
+    }
+
+    /// A repeating main-queue timer. Built in a nonisolated context so the handler
+    /// isn't inferred main-actor isolated by the caller; it hops in explicitly.
+    nonisolated static func mainTimer(every seconds: Double, first: Double? = nil,
+                                      _ handler: @escaping @MainActor () -> Void) -> DispatchSourceTimer {
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + (first ?? seconds), repeating: seconds)
+        t.setEventHandler { MainActor.assumeIsolated { handler() } }
         t.resume()
-        meterTimer = t
+        return t
+    }
+
+    /// One-shot main-queue callback (see `mainTimer`).
+    nonisolated static func mainAfter(_ seconds: Double, _ handler: @escaping @MainActor () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { MainActor.assumeIsolated { handler() } }
     }
 
     private func startKISS(satellite: SatelliteRecord?) {
-        guard let uuid = UUID(uuidString: settings.bleIdentifier) else {
-            errorText = "Choose the BLE KISS adapter (e.g. B.B. Link) in Setup."
+        let link: any CATTransport
+        let name: String
+        switch settings.transport {
+        case .bleKISS:
+            guard let uuid = UUID(uuidString: settings.bleIdentifier) else {
+                errorText = "Choose the BLE KISS adapter (e.g. B.B. Link) in Setup."
+                return
+            }
+            link = BLESerialTransport(identifier: uuid, binding: .bleKISS)
+            name = settings.bleName.isEmpty ? "adapter" : settings.bleName
+        case .tcpKISS:
+            let host = settings.kissHost.trimmingCharacters(in: .whitespaces)
+            guard !host.isEmpty, (1...65535).contains(settings.kissPort) else {
+                errorText = "Enter the KISS TCP host and port (Direwolf: 8001) in Setup."
+                return
+            }
+            link = KISSTCPTransport(host: host, port: UInt16(settings.kissPort))
+            name = "\(host):\(settings.kissPort)"
+        case .builtInModem:
             return
         }
-        let link = BLESerialTransport(identifier: uuid, binding: .bleKISS)
-        link.onDisconnect = { [weak self] in
-            Task { @MainActor in
-                guard let self, self.isRunning else { return }
-                self.errorText = "The KISS adapter disconnected."
-                self.stop()
-            }
-        }
-        kissLink = link
         isRunning = true
         AudioActivity.begin()
-        status = "Connecting to \(settings.bleName.isEmpty ? "adapter" : settings.bleName)…"
+        kissRetry = 0
+        connectKISS(link, name: name, satellite: satellite)
+    }
+
+    /// Connect (or reconnect) a KISS link, set the TNC parameters and start reading.
+    private func connectKISS(_ link: any CATTransport, name: String, satellite: SatelliteRecord?) {
+        link.onDisconnect = { [weak self] in
+            Task { @MainActor in self?.kissLinkDropped(link, name: name) }
+        }
+        kissLink = link
+        kissDecoder = KISS.Decoder()
+        status = "Connecting to \(name)…"
         Task {
             do {
                 try await link.connect()
             } catch {
-                errorText = "Couldn't connect to the KISS adapter: \(error.localizedDescription)"
-                stop()
+                guard isRunning, kissLink === link else { return }
+                if settings.transport == .tcpKISS && kissRetry > 0 {
+                    scheduleKISSReconnect(name: name, reason: error.localizedDescription)
+                } else {
+                    errorText = "Couldn't connect to the KISS TNC: \(error.localizedDescription)"
+                    stop()
+                }
                 return
             }
-            status = "Connected — radio TNC (KISS)"
+            guard isRunning, kissLink === link else { await link.disconnect(); return }
+            kissRetry = 0
+            status = settings.transport == .tcpKISS ? "Connected — KISS TCP \(name)" : "Connected — radio TNC (KISS)"
             // KISS parameters: TXDELAY (10 ms units), persistence, slot time.
             try? await link.send(KISS.encode([UInt8(clamping: settings.txDelayMs / 10)], command: 0x01))
             try? await link.send(KISS.encode([UInt8(clamping: settings.persistence)], command: 0x02))
             try? await link.send(KISS.encode([UInt8(clamping: settings.slotTimeMs / 10)], command: 0x03))
-            await tuneBBLink(for: satellite)
-            // Runs until stop() cancels it (that also releases its hold on self).
+            if settings.transport == .bleKISS { await tuneBBLink(for: satellite) }
+            // Runs until stop() or a drop cancels it (that also releases its hold on self).
+            kissReader?.cancel()
             kissReader = Task {
                 while !Task.isCancelled {
                     let bytes = await link.readAvailable(maxWait: 0.5)
-                    guard !bytes.isEmpty else { continue }
+                    guard !bytes.isEmpty, !Task.isCancelled else { continue }
                     for f in self.kissDecoder.feed(bytes) where f.command == 0 {
                         if let frame = AX25Frame.decode(f.data) { self.received(frame) }
                     }
                 }
             }
+        }
+    }
+
+    /// The KISS link dropped: TCP reconnects with backoff; BLE stops (as before).
+    private func kissLinkDropped(_ link: any CATTransport, name: String) {
+        guard isRunning, let current = kissLink, current === link else { return }
+        kissReader?.cancel(); kissReader = nil
+        if settings.transport == .tcpKISS {
+            scheduleKISSReconnect(name: name, reason: "Connection lost")
+        } else {
+            errorText = "The KISS adapter disconnected."
+            stop()
+        }
+    }
+
+    private func scheduleKISSReconnect(name: String, reason: String) {
+        let delays: [Double] = [2, 5, 10, 30]
+        let delay = delays[min(kissRetry, delays.count - 1)]
+        kissRetry += 1
+        status = "\(reason) — reconnecting to \(name) in \(Int(delay)) s"
+        let host = settings.kissHost.trimmingCharacters(in: .whitespaces), port = settings.kissPort
+        let attempt = kissRetry
+        Self.mainAfter(delay) { [weak self] in
+            guard let self, self.isRunning, self.settings.transport == .tcpKISS, self.kissRetry == attempt,
+                  (1...65535).contains(port) else { return }
+            self.connectKISS(KISSTCPTransport(host: host, port: UInt16(port)), name: name,
+                             satellite: self.store?.selectedSatellite)
         }
     }
 
@@ -4014,7 +4397,9 @@ final class PacketEngine: ObservableObject {
         var entry = PacketLogEntry(date: Date(), direction: .received, frame: frame, aprs: aprs,
                                    text: Self.displayText(frame: frame, aprs: aprs))
         classify(&entry)
+        var ownFrame = false
         if let me = myAddress, frame.source == me {
+            ownFrame = true
             // Our own frame came back. Match it to the send it copies.
             recentSends.removeAll { Date().timeIntervalSince($0.date) > 120 }
             if let i = recentSends.lastIndex(where: { $0.info == frame.info }) {
@@ -4022,12 +4407,19 @@ final class PacketEngine: ObservableObject {
                 if frame.wasDigipeated || delay >= 0.5 {
                     entry.ownDigipeated = true
                     heardSelfViaSatellite = true
-                    if let j = log.firstIndex(where: { $0.id == recentSends[i].logID }), log[j].digipeatDelay == nil {
+                    let logID = recentSends[i].logID
+                    if let j = log.firstIndex(where: { $0.id == logID }), log[j].digipeatDelay == nil {
                         log[j].digipeatDelay = delay
                         delays.append(delay)
                         updateStats()
+                        updateSessionRecord(logID) { $0.digipeatDelay = delay }
                         for station in stationsNamed(by: log[j]) {
                             if let done = qsoTracker.digipeated(to: station, at: Date()) { autoLog(station, done) }
+                        }
+                        if settings.alertDigipeated {
+                            alert(key: "digi", title: "Digipeated",
+                                  body: String(format: "Your frame came back through %@ after %.1f s.",
+                                               frame.digipeaters[frame.repeatingDigiIndex ?? 0].call, delay))
                         }
                     }
                 } else {
@@ -4038,25 +4430,38 @@ final class PacketEngine: ObservableObject {
             }
         } else {
             noteHeard(frame, aprs: aprs, isCQ: entry.isCQ)
+            noteObject(frame, aprs: aprs)
             let namesMe = entry.toMe || myAddress.map { PacketText.mentions($0.call, in: entry.text) } ?? false
             if let done = qsoTracker.heard(from: frame.source.description, mentioningMe: namesMe,
                                            text: entry.text, at: Date()) {
                 autoLog(frame.source.description, done)
             }
+            gateToAPRSIS(frame)
         }
         if entry.toMe {
-            if aprs.kind == .ack, let id = aprs.messageID, let logID = pendingAcks.removeValue(forKey: id),
-               let i = log.firstIndex(where: { $0.id == logID }) {
-                log[i].acked = true
+            if aprs.kind == .ack, let id = aprs.messageID, let pending = pendingMessages.removeValue(forKey: id),
+               let i = log.firstIndex(where: { $0.id == pending.logID }) {
+                log[i].acked = true; log[i].awaitingAck = false; log[i].ackFailed = false
             }
             if aprs.kind == .message, settings.autoAck, let id = aprs.messageID {
                 send(info: APRS.ack(to: frame.source.description, id: id))
             }
         }
         append(entry)
+        if !ownFrame { alertsAndSpeech(for: entry) }
+        // Beacon when the satellite is first heard: one position on the first frame of
+        // the pass that came through a digipeater, then the timed beacon carries on.
+        if !ownFrame, frame.wasDigipeated, settings.beaconOnFirstHeard, !firstHeardBeaconSent, isRunning {
+            firstHeardBeaconSent = true
+            if satelliteUpForBeacon, Date().timeIntervalSince(lastBeaconAt) >= Self.minBeaconInterval {
+                lastBeaconAt = Date()
+                sendPosition()
+                restartBeacon()
+            }
+        }
     }
 
-    /// Tag a log entry: to me, CQ, telemetry, beacon.
+    /// Tag a log entry: to me, CQ, telemetry, beacon, status.
     private func classify(_ entry: inout PacketLogEntry) {
         let frame = entry.frame, aprs = entry.aprs
         let text = entry.text
@@ -4069,36 +4474,57 @@ final class PacketEngine: ObservableObject {
         }
         entry.isCQ = frame.destination.call == "CQ" || PacketText.isCQ(text)
         entry.isTelemetry = aprs.kind == .telemetry || frame.infoText.contains("[TLM")
-        entry.isBeacon = !entry.toMe && !entry.isCQ && (aprs.kind == .position || aprs.kind == .micE || aprs.kind == .status)
+        entry.isStatus = aprs.kind == .status
+        entry.isBeacon = !entry.toMe && !entry.isCQ
+            && [.position, .micE, .object, .item, .weather].contains(aprs.kind)
     }
 
     /// What a frame says, for the log: APRS message/status/comment, else the text.
     static func displayText(frame: AX25Frame, aprs: APRSPacket) -> String {
+        var text: String
         switch aprs.kind {
-        case .message: return aprs.text
-        case .ack: return "ack \(aprs.messageID ?? "")"
-        case .reject: return "rej \(aprs.messageID ?? "")"
-        case .status, .telemetry, .position, .micE: return aprs.comment.trimmingCharacters(in: .whitespaces)
-        case .other: return frame.infoText.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .message: text = aprs.text
+        case .ack: text = "ack \(aprs.messageID ?? "")"
+        case .reject: text = "rej \(aprs.messageID ?? "")"
+        case .object, .item:
+            let comment = aprs.comment.trimmingCharacters(in: .whitespaces)
+            text = "\(aprs.kind == .object ? "Object" : "Item") \(aprs.objectName ?? "")\(aprs.killed ? " (killed)" : "")"
+                + (comment.isEmpty ? "" : ": \(comment)")
+        case .weather, .status, .telemetry, .position, .micE:
+            text = aprs.comment.trimmingCharacters(in: .whitespaces)
+        case .other:
+            text = frame.infoText.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        if let wx = aprs.weather, !wx.summary.isEmpty {
+            text = text.isEmpty ? wx.summary : "\(wx.summary) · \(text)"
+        }
+        if let src = aprs.thirdPartySource { text = "[\(src)] " + text }
+        return text
     }
 
     private func noteHeard(_ frame: AX25Frame, aprs: APRSPacket, isCQ: Bool) {
-        let call = frame.source.description
+        // Third-party traffic describes the inner station.
+        let call = aprs.thirdPartySource ?? frame.source.description
+        // An object/item's position belongs to the object, not the sender.
+        let isObject = aprs.kind == .object || aprs.kind == .item
+        let lat = isObject ? nil : aprs.latitude, lon = isObject ? nil : aprs.longitude
         let grid = aprs.grid ?? PacketText.grid(in: frame.infoText)
-            ?? aprs.latitude.flatMap { lat in aprs.longitude.map { FeatureEngine.latLonToGrid6(latitude: lat, longitude: $0) } }
+            ?? lat.flatMap { la in lon.map { FeatureEngine.latLonToGrid6(latitude: la, longitude: $0) } }
         if let i = heard.firstIndex(where: { $0.call == call }) {
             heard[i].lastHeard = Date(); heard[i].frames += 1
             if isCQ { heard[i].cqs += 1 }
             if let grid { heard[i].grid = grid }
-            if let lat = aprs.latitude, let lon = aprs.longitude { heard[i].latitude = lat; heard[i].longitude = lon }
+            if let lat, let lon { heard[i].latitude = lat; heard[i].longitude = lon }
             if frame.wasDigipeated { heard[i].viaDigipeater = true }
-            if let code = aprs.symbolCode { heard[i].symbolTable = aprs.symbolTable; heard[i].symbolCode = code }
+            if !isObject, let code = aprs.symbolCode { heard[i].symbolTable = aprs.symbolTable; heard[i].symbolCode = code }
+            if !isObject, let wx = aprs.weather { heard[i].weather = wx }
         } else {
             var station = PacketHeardStation(call: call, firstHeard: Date(), lastHeard: Date(), grid: grid,
-                                             latitude: aprs.latitude, longitude: aprs.longitude,
+                                             latitude: lat, longitude: lon,
                                              viaDigipeater: frame.wasDigipeated,
-                                             symbolTable: aprs.symbolTable, symbolCode: aprs.symbolCode)
+                                             symbolTable: isObject ? nil : aprs.symbolTable,
+                                             symbolCode: isObject ? nil : aprs.symbolCode,
+                                             weather: isObject ? nil : aprs.weather)
             if isCQ { station.cqs = 1 }
             if station.latitude == nil, let g = grid, let c = PacketText.gridCenter(g) {
                 station.latitude = c.latitude; station.longitude = c.longitude
@@ -4108,13 +4534,27 @@ final class PacketEngine: ObservableObject {
         heard.sort { $0.lastHeard > $1.lastHeard }
     }
 
+    /// Objects and items for the map; a killed one is removed.
+    private func noteObject(_ frame: AX25Frame, aprs: APRSPacket) {
+        guard aprs.kind == .object || aprs.kind == .item, let name = aprs.objectName else { return }
+        if aprs.killed { objects.removeAll { $0.name == name }; return }
+        guard let lat = aprs.latitude, let lon = aprs.longitude else { return }
+        let o = PacketObject(name: name, owner: aprs.thirdPartySource ?? frame.source.description,
+                             latitude: lat, longitude: lon, symbolTable: aprs.symbolTable,
+                             symbolCode: aprs.symbolCode, comment: aprs.comment.trimmingCharacters(in: .whitespaces),
+                             weather: aprs.weather, isItem: aprs.kind == .item, lastHeard: Date())
+        if let i = objects.firstIndex(where: { $0.name == name }) { objects[i] = o } else { objects.append(o) }
+        if objects.count > 200 { objects.removeFirst(objects.count - 200) }
+    }
+
     private func append(_ entry: PacketLogEntry) {
         log.append(entry)
         if log.count > Self.maxLog { log.removeFirst(log.count - Self.maxLog) }
+        record(PacketLogRecord(entry: entry))
     }
 
     func clearLog() { log.removeAll() }
-    func clearHeard() { heard.removeAll() }
+    func clearHeard() { heard.removeAll(); objects.removeAll() }
 
     private func updateStats() {
         let sorted = delays.sorted()
@@ -4168,6 +4608,155 @@ final class PacketEngine: ObservableObject {
         lastAutoLogged = (base, Date())
     }
 
+    // MARK: Alerts and speech
+
+    /// Ask for notification permission (only when the operator turns an alert on).
+    func requestAlertPermission() {
+        Task {
+            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        }
+    }
+
+    private func alertsAndSpeech(for entry: PacketLogEntry) {
+        let from = entry.aprs.thirdPartySource ?? entry.frame.source.description
+        let isMessageToMe = entry.toMe && (entry.aprs.kind == .message || entry.aprs.kind == .other)
+        if isMessageToMe {
+            if settings.alertToMe { alert(key: "me-\(from)", title: "Packet from \(from)", body: entry.text) }
+            if settings.speakMessages { speak("Message from \(Self.spoken(from)). \(entry.text)") }
+        } else if settings.alertWatch,
+                  let hit = PacketWatch.match(settings.watchList, source: from, text: entry.text) {
+            alert(key: "watch-\(hit)-\(from)", title: "Heard \(hit)", body: "\(from): \(entry.text)")
+        }
+        if entry.aprs.isBulletin, settings.speakBulletins {
+            speak("Bulletin from \(Self.spoken(from)). \(entry.text)")
+        }
+    }
+
+    /// Haptic + system sound in the foreground, a local notification otherwise.
+    /// The same alert repeats at most once a minute, and alerts at most every 3 s.
+    private func alert(key: String, title: String, body: String) {
+        let now = Date()
+        if let last = lastAlertAt[key], now.timeIntervalSince(last) < 60 { return }
+        guard now.timeIntervalSince(lastAnyAlertAt) >= 3 else { return }
+        lastAlertAt[key] = now; lastAnyAlertAt = now
+        lastAlertAt = lastAlertAt.filter { now.timeIntervalSince($0.value) < 600 }
+        // A sound must never reach the radio: only when the phone's output isn't the TX path.
+        let soundOK = phoneAudioIsSafe && !isTransmitting
+        if UIApplication.shared.applicationState == .active {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            if soundOK { AudioServicesPlaySystemSound(1007) }
+        } else {
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = String(body.prefix(200))
+            content.sound = soundOK ? .default : nil
+            content.userInfo = ["packet": true]
+            let request = UNNotificationRequest(identifier: "packet-\(UUID().uuidString)", content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(request) { _ in }
+        }
+    }
+
+    /// Read a message aloud — only when the phone's own output isn't the radio's TX
+    /// audio, and never while transmitting. Uses the app's current audio session as is
+    /// (no category change, so the AudioHub capture isn't disturbed).
+    private func speak(_ text: String) {
+        guard phoneAudioIsSafe, !isTransmitting else { return }
+        let u = AVSpeechUtterance(string: String(text.prefix(300)))
+        u.rate = AVSpeechUtteranceDefaultSpeechRate
+        speech.speak(u)
+    }
+
+    /// "N8HM-6" → "N 8 H M 6" so the synthesizer spells the call.
+    static func spoken(_ call: String) -> String {
+        call.replacingOccurrences(of: "-", with: " ").map(String.init).joined(separator: " ")
+            .replacingOccurrences(of: "   ", with: " ")
+    }
+
+    // MARK: Satgate
+
+    /// (Re)start the RF → APRS-IS gateway when it's enabled and packet is running.
+    func restartSatgate() {
+        satgate.stop()
+        guard isRunning, settings.satgateEnabled else { return }
+        satgate.host = settings.satgateHost.trimmingCharacters(in: .whitespaces)
+        satgate.port = UInt16(clamping: settings.satgatePort)
+        satgate.login = satgateCall
+        satgate.passcode = OrbitSecretStore.get(.aprsisPasscode).trimmingCharacters(in: .whitespaces)
+        satgate.start()
+    }
+
+    private func gateToAPRSIS(_ frame: AX25Frame) {
+        guard settings.satgateEnabled, satgate.isActive else { return }
+        var own: Set<String> = [satgate.login]
+        if let me = myAddress { own.insert(me.description) }
+        satgate.gate(frame, ownCalls: own)
+    }
+
+    // MARK: Pass log
+
+    /// Start a new session on the first frame, a satellite change or after a gap.
+    private func sessionForNow() -> PacketSession {
+        let now = Date()
+        let sat = store?.selectedSatellite
+        if let s = currentSession, s.norad == sat?.id, now.timeIntervalSince(s.end) < Self.sessionGap { return s }
+        endSession()
+        firstHeardBeaconSent = false
+        let s = PacketSession(start: now, end: now, satellite: sat?.name ?? "", norad: sat?.id,
+                              myCall: myAddress?.description ?? myCall)
+        let keep = PacketSessionFiles.keep, id = s.id
+        PacketSessionFiles.pruneAsync(on: sessionQueue, keep: keep - 1, except: id)
+        return s
+    }
+
+    private func record(_ r: PacketLogRecord) {
+        var s = sessionForNow()
+        s.records.append(r)
+        if s.records.count > PacketSession.maxRecords { s.records.removeFirst(s.records.count - PacketSession.maxRecords) }
+        s.end = r.date
+        currentSession = s
+        scheduleSessionSave()
+    }
+
+    private func updateSessionRecord(_ id: UUID, _ change: (inout PacketLogRecord) -> Void) {
+        guard var s = currentSession, let i = s.records.lastIndex(where: { $0.id == id }) else { return }
+        change(&s.records[i])
+        currentSession = s
+        scheduleSessionSave()
+    }
+
+    /// Debounced write (every few seconds at most), off the main actor.
+    private func scheduleSessionSave() {
+        guard !sessionSaveScheduled else { return }
+        sessionSaveScheduled = true
+        Self.mainAfter(3) { [weak self] in
+            guard let self else { return }
+            self.sessionSaveScheduled = false
+            if let s = self.currentSession { PacketSessionFiles.saveAsync(s, on: self.sessionQueue) }
+        }
+    }
+
+    private func endSession() {
+        if let s = currentSession { PacketSessionFiles.saveAsync(s, on: sessionQueue) }
+        currentSession = nil
+    }
+
+    /// Saved sessions, newest first (the one in progress uses its live copy).
+    func loadSessions() async -> [PacketSession] {
+        let current = currentSession
+        let queue = sessionQueue
+        var all = await PacketSessionFiles.loadAllAsync(on: queue)
+        if let current {
+            all.removeAll { $0.id == current.id }
+            all.insert(current, at: 0)
+        }
+        return all
+    }
+
+    func deleteSession(_ id: UUID) {
+        if currentSession?.id == id { currentSession = nil }
+        PacketSessionFiles.deleteAsync(id, on: sessionQueue)
+    }
+
     // MARK: Transmit
 
     /// Expand a quick message's placeholders. `{POSITION}` is handled by the caller.
@@ -4200,7 +4789,11 @@ final class PacketEngine: ObservableObject {
             } else if settings.requestAcks {
                 messageNumber = messageNumber % 99 + 1
                 let id = String(messageNumber)
-                if let logID = send(info: APRS.message(to: addressee, text: body, id: id)) { pendingAcks[id] = logID }
+                if let logID = send(info: APRS.message(to: addressee, text: body, id: id)),
+                   let i = log.firstIndex(where: { $0.id == logID }) {
+                    log[i].awaitingAck = true
+                    pendingMessages[id] = PacketMessageRetry(id: id, logID: logID, frame: log[i].frame, firstSent: Date())
+                }
             } else {
                 send(info: APRS.message(to: addressee, text: body))
             }
@@ -4224,13 +4817,29 @@ final class PacketEngine: ObservableObject {
                                  ambiguity: settings.positionPrecision.ambiguity))
     }
 
+    /// The status beacon: APRS `>status`, or plain text to CQ on a plain-text satellite.
+    func sendStatusBeacon() {
+        var text = settings.statusText.trimmingCharacters(in: .whitespaces)
+        if text.isEmpty { text = "OrbitDeck {MYGRID4}" }
+        text = expand(text, to: "")
+        guard !text.isEmpty else { return }
+        switch profile(for: store?.selectedSatellite?.id).format {
+        case .aprs: send(info: APRS.status(text))
+        case .plainText: send(info: String(text.prefix(200)), destination: AX25Address(call: "CQ"))
+        }
+    }
+
     /// Queue a UI frame. Returns the log entry's id. `destination` defaults to our
     /// APRS tocall; plain-text (UISS) frames use CQ or the station's call.
     @discardableResult
     func send(info: String, destination: AX25Address? = nil) -> UUID? {
         guard isRunning, let me = myAddress else { return nil }
-        if settings.blockBelowHorizon, let el = satelliteElevation(), el < 0 {
-            errorText = "\(store?.selectedSatellite?.name ?? "The satellite") is below the horizon — not transmitting."
+        let minEl = minElevation(for: store?.selectedSatellite?.id)
+        if settings.blockBelowHorizon, let el = satelliteElevation(), el < minEl {
+            let name = store?.selectedSatellite?.name ?? "The satellite"
+            errorText = minEl > 0
+                ? "\(name) is below \(Int(minEl))° — not transmitting."
+                : "\(name) is below the horizon — not transmitting."
             return nil
         }
         errorText = ""
@@ -4251,6 +4860,18 @@ final class PacketEngine: ObservableObject {
         return entry.id
     }
 
+    /// Resend a numbered message (same id), recorded as a retry of the original entry.
+    private func resend(_ p: PacketMessageRetry) {
+        guard isRunning else { return }
+        var r = PacketLogRecord(date: Date(), direction: .sent, frame: p.frame)
+        r.retry = true
+        record(r)
+        recentSends.append((p.frame.info, Date(), p.logID))
+        if let i = log.firstIndex(where: { $0.id == p.logID }) { log[i].retries += 1 }
+        txQueue.append(p.frame)
+        runTXQueue()
+    }
+
     private func runTXQueue() {
         guard !txRunning else { return }
         txRunning = true
@@ -4258,7 +4879,7 @@ final class PacketEngine: ObservableObject {
             while let frame = txQueue.first, isRunning {
                 txQueue.removeFirst()
                 switch settings.transport {
-                case .bleKISS: await sendKISS(frame)
+                case .bleKISS, .tcpKISS: await sendKISS(frame)
                 case .builtInModem: await sendModem(frame)
                 }
             }
@@ -4307,6 +4928,8 @@ final class PacketEngine: ObservableObject {
         guard let source else { return }
         // Receive-only transponder: never key or play TX audio (VOX would transmit it).
         if let why = rig?.pttBlockedReason { errorText = why; return }
+        // Speech must never reach the TX audio.
+        if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
         txLock.withLock { txBuffer = samples; txIndex = 0 }
         transmissionID += 1
         let thisTX = transmissionID
@@ -4372,16 +4995,729 @@ final class PacketEngine: ObservableObject {
 
     // MARK: Timed beacon
 
-    /// Position beacon every N minutes while running and the satellite is up.
+    /// Beacon every N minutes (at least 1) while running and the satellite is above
+    /// its minimum elevation: a position, the status text, or the two alternating.
     private func restartBeacon() {
-        beaconTask?.cancel(); beaconTask = nil
+        beaconTimer?.cancel(); beaconTimer = nil
         let minutes = settings.beaconMinutes
         guard isRunning, minutes > 0 else { return }
-        beaconTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(max(1, minutes)) * 60_000_000_000)
-                guard let self, !Task.isCancelled, self.isRunning else { return }
-                if (self.satelliteElevation() ?? -1) >= 0 { self.sendPosition() }
+        let interval = max(Self.minBeaconInterval, Double(minutes) * 60)
+        beaconTimer = Self.mainTimer(every: interval) { [weak self] in self?.beaconTick() }
+    }
+
+    private func beaconTick() {
+        guard isRunning, satelliteUpForBeacon,
+              Date().timeIntervalSince(lastBeaconAt) >= Self.minBeaconInterval - 1 else { return }
+        lastBeaconAt = Date()
+        switch settings.beaconContent {
+        case .position: sendPosition()
+        case .status: sendStatusBeacon()
+        case .alternate:
+            if alternateNextIsStatus { sendStatusBeacon() } else { sendPosition() }
+            alternateNextIsStatus.toggle()
+        }
+    }
+
+    // MARK: Housekeeping (message retries)
+
+    private func startHousekeeping() {
+        housekeepingTimer?.cancel()
+        housekeepingTimer = Self.mainTimer(every: 5) { [weak self] in self?.housekeeping() }
+    }
+
+    /// Resend unacked numbered messages (2 retries, 30 s apart, only while the
+    /// satellite is above the minimum elevation); give up after the last one.
+    private func housekeeping() {
+        guard isRunning else { return }
+        let now = Date()
+        let up = satelliteUp
+        for (id, var p) in pendingMessages {
+            switch p.action(now: now, satelliteUp: up, enabled: settings.retryMessages) {
+            case .wait:
+                continue
+            case .resend:
+                p.didResend(at: now)
+                pendingMessages[id] = p
+                resend(p)
+            case .giveUp:
+                pendingMessages[id] = nil
+                if let i = log.firstIndex(where: { $0.id == p.logID }) {
+                    log[i].awaitingAck = false
+                    log[i].ackFailed = true
+                }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+//  Packet extras — monitor filter, watch list, pass log, satgate, KISS over TCP
+//
+//  Kept in this file because new source files have to be added to the Xcode
+//  target by hand. Behavior inspired by UISS (ON6MU); written from the APRS
+//  1.0.1/1.2 specifications and the APRS-IS server documentation.
+// ===========================================================================
+
+import AVFoundation
+import AudioToolbox
+import UserNotifications
+
+// MARK: Satellite digipeaters
+
+/// Digipeater calls and aliases used by satellites (and the ISS), highlighted in the
+/// monitor's path.
+enum PacketDigis {
+    nonisolated static let satellite: Set<String> = [
+        "RS0ISS", "NA1SS", "OR4ISS", "DP0ISS", "ARISS", "APRSAT", "PSAT", "PSAT2", "PCSAT", "W3ADO",
+    ]
+
+    nonisolated static func isSatellite(_ call: String) -> Bool {
+        satellite.contains(PacketText.baseCall(call.replacingOccurrences(of: "*", with: "")))
+    }
+}
+
+// MARK: Watch list
+
+enum PacketWatch {
+    /// "W1AW, ISS, field day" → ["W1AW", "ISS", "FIELD DAY"].
+    nonisolated static func parseList(_ text: String) -> [String] {
+        text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).uppercased() }.filter { !$0.isEmpty }
+    }
+
+    /// The first watch item a frame matches. A callsign item matches the source (any
+    /// SSID, unless the item has one) or a mention of it in the text; anything else
+    /// matches as text, ignoring case.
+    nonisolated static func match(_ list: [String], source: String, text: String) -> String? {
+        let src = source.uppercased(), upper = text.uppercased()
+        for raw in list {
+            let item = raw.trimmingCharacters(in: .whitespaces).uppercased()
+            guard !item.isEmpty else { continue }
+            if isCallsign(item) {
+                let sourceHit = item.contains("-") ? src == item : PacketText.baseCall(src) == item
+                if sourceHit || PacketText.mentions(item, in: text) { return item }
+            } else if upper.contains(item) {
+                return item
+            }
+        }
+        return nil
+    }
+
+    /// Looks like an amateur callsign (letters and a digit, optional SSID).
+    nonisolated static func isCallsign(_ s: String) -> Bool {
+        guard !s.contains(" "), let a = AX25Address(s) else { return false }
+        return a.call.count >= 3 && a.call.contains(where: \.isNumber) && a.call.contains(where: \.isLetter)
+    }
+}
+
+// MARK: Monitor filter
+
+/// What the monitor shows (stored with the packet settings).
+struct PacketMonitorFilter: Codable, Equatable, Sendable {
+    var onlyMine = false
+    var digipeatedOnly = false
+    var hideBeacons = false
+    var hideTelemetry = false
+    var hideStatus = false
+    /// Callsign prefix (source, destination, addressee, object name).
+    var call = ""
+    /// Text anywhere in the frame.
+    var text = ""
+    /// Show raw TNC2 lines instead of the decoded rows.
+    var showRaw = false
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ k: CodingKeys, _ def: T) -> T { ((try? c.decodeIfPresent(T.self, forKey: k)) ?? nil) ?? def }
+        onlyMine = v(.onlyMine, false); digipeatedOnly = v(.digipeatedOnly, false)
+        hideBeacons = v(.hideBeacons, false); hideTelemetry = v(.hideTelemetry, false)
+        hideStatus = v(.hideStatus, false); call = v(.call, ""); text = v(.text, "")
+        showRaw = v(.showRaw, false)
+    }
+
+    /// Filters narrowing the list (the raw toggle is a display choice, not a filter).
+    var activeCount: Int {
+        [onlyMine, digipeatedOnly, hideBeacons, hideTelemetry, hideStatus].filter { $0 }.count
+            + (call.trimmingCharacters(in: .whitespaces).isEmpty ? 0 : 1)
+            + (text.trimmingCharacters(in: .whitespaces).isEmpty ? 0 : 1)
+    }
+
+    func matches(_ e: PacketLogEntry) -> Bool {
+        if onlyMine && !(e.direction == .sent || e.ownDigipeated || e.toMe) { return false }
+        if digipeatedOnly && !e.frame.wasDigipeated { return false }
+        if hideBeacons && e.isBeacon { return false }
+        if hideTelemetry && e.isTelemetry { return false }
+        if hideStatus && e.isStatus { return false }
+        let c = call.trimmingCharacters(in: .whitespaces).uppercased()
+        if !c.isEmpty {
+            let calls = [e.frame.source.description, e.frame.destination.description, e.aprs.addressee,
+                         e.aprs.thirdPartySource ?? "", e.aprs.objectName ?? ""].map { $0.uppercased() }
+            if !calls.contains(where: { $0.hasPrefix(c) }) { return false }
+        }
+        let t = text.trimmingCharacters(in: .whitespaces)
+        if !t.isEmpty, !(e.text.localizedCaseInsensitiveContains(t) || e.frame.infoText.localizedCaseInsensitiveContains(t)) {
+            return false
+        }
+        return true
+    }
+}
+
+// MARK: Message retry
+
+/// An unacknowledged numbered message: resent up to `maxRetries` times, `interval`
+/// apart, only while the satellite is above its minimum elevation.
+struct PacketMessageRetry: Equatable, Sendable {
+    static let maxRetries = 2
+    static let interval: TimeInterval = 30
+    /// Give up on a message that never got its retries out (satellite set).
+    static let giveUpAfter: TimeInterval = 15 * 60
+
+    enum Action: Equatable, Sendable { case wait, resend, giveUp }
+
+    let id: String
+    let logID: UUID
+    let frame: AX25Frame
+    let firstSent: Date
+    var retries = 0
+    var nextAt: Date
+
+    init(id: String, logID: UUID, frame: AX25Frame, firstSent: Date) {
+        self.id = id; self.logID = logID; self.frame = frame; self.firstSent = firstSent
+        nextAt = firstSent.addingTimeInterval(Self.interval)
+    }
+
+    func action(now: Date, satelliteUp: Bool, enabled: Bool) -> Action {
+        guard now >= nextAt else { return .wait }
+        if retries >= Self.maxRetries || now.timeIntervalSince(firstSent) > Self.giveUpAfter { return .giveUp }
+        return enabled && satelliteUp ? .resend : .wait
+    }
+
+    mutating func didResend(at now: Date) {
+        retries += 1
+        nextAt = now.addingTimeInterval(Self.interval)
+    }
+}
+
+// MARK: Pass log
+
+/// One frame in the persistent pass log.
+struct PacketLogRecord: Codable, Equatable, Sendable, Identifiable {
+    enum Direction: String, Codable, Sendable { case received = "rx", sent = "tx" }
+    var id = UUID()
+    var date: Date
+    var direction: Direction
+    var source: String
+    var destination: String
+    /// Via path in TNC2 form, `*` after the digipeater that repeated it.
+    var path: [String] = []
+    var info: String
+    /// Heard through a digipeater (an H bit set).
+    var digipeated = false
+    /// Our own frame heard back through the digipeater.
+    var ownDigipeated = false
+    /// Sent frames: seconds until the digipeated copy came back.
+    var digipeatDelay: Double?
+    var toMe = false
+    /// A resend of an unacknowledged message.
+    var retry = false
+
+    init(date: Date, direction: Direction, frame: AX25Frame) {
+        self.date = date
+        self.direction = direction
+        source = frame.source.description
+        destination = frame.destination.description
+        path = frame.pathText
+        info = frame.infoText
+        digipeated = frame.wasDigipeated
+    }
+
+    /// The log entry's record, sharing its id (so a later digipeat delay finds it).
+    init(entry: PacketLogEntry) {
+        self.init(date: entry.date, direction: entry.direction == .sent ? .sent : .received, frame: entry.frame)
+        id = entry.id
+        ownDigipeated = entry.ownDigipeated
+        digipeatDelay = entry.digipeatDelay
+        toMe = entry.toMe
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ k: CodingKeys, _ def: T) -> T { ((try? c.decodeIfPresent(T.self, forKey: k)) ?? nil) ?? def }
+        id = v(.id, UUID()); date = v(.date, Date.distantPast); direction = v(.direction, .received)
+        source = v(.source, ""); destination = v(.destination, ""); path = v(.path, [])
+        info = v(.info, ""); digipeated = v(.digipeated, false); ownDigipeated = v(.ownDigipeated, false)
+        digipeatDelay = (try? c.decodeIfPresent(Double.self, forKey: .digipeatDelay)) ?? nil
+        toMe = v(.toMe, false); retry = v(.retry, false)
+    }
+
+    /// `SRC>DEST,PATH*:info` on one line.
+    var tnc2: String {
+        let clean = info.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+        return "\(source)>" + ([destination] + path).joined(separator: ",") + ":" + clean
+    }
+}
+
+/// A pass (or session): every frame received and sent while packet ran on one
+/// satellite, until a gap of `PacketEngine.sessionGap`.
+struct PacketSession: Codable, Identifiable, Equatable, Sendable {
+    static let maxRecords = 5000
+    var id = UUID()
+    var start: Date
+    var end: Date
+    var satellite: String
+    var norad: UInt?
+    var myCall: String
+    var records: [PacketLogRecord] = []
+
+    init(start: Date, end: Date, satellite: String, norad: UInt?, myCall: String, records: [PacketLogRecord] = []) {
+        self.start = start; self.end = end; self.satellite = satellite; self.norad = norad
+        self.myCall = myCall; self.records = records
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ k: CodingKeys, _ def: T) -> T { ((try? c.decodeIfPresent(T.self, forKey: k)) ?? nil) ?? def }
+        id = v(.id, UUID()); start = v(.start, Date.distantPast); end = v(.end, start)
+        satellite = v(.satellite, ""); norad = (try? c.decodeIfPresent(UInt.self, forKey: .norad)) ?? nil
+        myCall = v(.myCall, ""); records = v(.records, [])
+    }
+
+    var stats: PacketSessionStats { PacketSessionStats.compute(records) }
+}
+
+/// Per-pass statistics.
+struct PacketSessionStats: Equatable, Sendable {
+    var framesHeard = 0
+    var stationsHeard = 0
+    var sent = 0
+    var digipeated = 0
+    /// Digipeated / sent, nil when nothing was sent.
+    var successPercent: Int?
+    var medianDelay: Double?
+    var framesPerMinute = 0.0
+
+    nonisolated static func compute(_ records: [PacketLogRecord]) -> PacketSessionStats {
+        var s = PacketSessionStats()
+        let heard = records.filter { $0.direction == .received && !$0.ownDigipeated }
+        let sent = records.filter { $0.direction == .sent && !$0.retry }
+        s.framesHeard = heard.count
+        s.stationsHeard = Set(heard.map(\.source)).count
+        s.sent = sent.count
+        let delays = sent.compactMap(\.digipeatDelay).sorted()
+        s.digipeated = delays.count
+        if !sent.isEmpty { s.successPercent = Int((Double(delays.count) / Double(sent.count) * 100).rounded()) }
+        if !delays.isEmpty {
+            let n = delays.count
+            s.medianDelay = n % 2 == 1 ? delays[n / 2] : (delays[n / 2 - 1] + delays[n / 2]) / 2
+        }
+        if let first = heard.first?.date, let last = heard.last?.date {
+            s.framesPerMinute = Double(heard.count) / max(1, last.timeIntervalSince(first) / 60)
+        }
+        return s
+    }
+
+    var summary: String {
+        var parts = ["\(framesHeard) frames heard", "\(stationsHeard) stations"]
+        parts.append("sent \(sent), digipeated \(digipeated)" + (successPercent.map { " (\($0) %)" } ?? ""))
+        if let d = medianDelay { parts.append(String(format: "median delay %.1f s", d)) }
+        parts.append(String(format: "%.1f frames/min", framesPerMinute))
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// TNC2/UISS-style text and CSV exports of a session.
+enum PacketSessionExport {
+    nonisolated static func utc(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss'Z'"
+        return f.string(from: d)
+    }
+
+    /// `# header` lines, then one `2026-11-09 14:05:03Z RX SRC>DEST,PATH*:info` per frame.
+    nonisolated static func tnc2(_ s: PacketSession) -> String {
+        var lines = ["# OrbitDeck packet log — \(s.satellite.isEmpty ? "no satellite" : s.satellite)"
+                     + (s.norad.map { " (\($0))" } ?? "") + " — \(s.myCall)",
+                     "# \(utc(s.start)) to \(utc(s.end))",
+                     "# \(s.stats.summary)"]
+        for r in s.records {
+            let tag = r.direction == .sent ? (r.retry ? "TX retry" : "TX") : "RX"
+            lines.append("\(utc(r.date)) \(tag) \(r.tnc2)")
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    nonisolated static func csv(_ s: PacketSession) -> String {
+        var lines = ["utc,direction,source,destination,path,info,digipeated,own_digipeated,digipeat_delay_s,to_me,retry"]
+        for r in s.records {
+            let fields = [utc(r.date), r.direction.rawValue, r.source, r.destination, r.path.joined(separator: ","),
+                          r.info, r.digipeated ? "1" : "0", r.ownDigipeated ? "1" : "0",
+                          r.digipeatDelay.map { String(format: "%.1f", $0) } ?? "", r.toMe ? "1" : "0", r.retry ? "1" : "0"]
+            lines.append(fields.map(csvField).joined(separator: ","))
+        }
+        return lines.joined(separator: "\r\n") + "\r\n"
+    }
+
+    /// RFC 4180 quoting; text starting like a spreadsheet formula is prefixed with `'`.
+    nonisolated static func csvField(_ value: String) -> String {
+        var v = value
+        if let first = v.first, "=+@".contains(first) { v = "'" + v }
+        guard v.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" }) else { return v }
+        return "\"" + v.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+
+    /// "OrbitDeck-packet-ISS-20261109-1405".
+    nonisolated static func fileStem(_ s: PacketSession) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyyMMdd-HHmm"
+        let sat = s.satellite.filter { $0.isLetter || $0.isNumber || $0 == "-" }
+        return "OrbitDeck-packet-\(sat.isEmpty ? "session" : sat)-\(f.string(from: s.start))"
+    }
+
+    /// Write both exports to the temporary directory, for ShareLink.
+    nonisolated static func writeFiles(_ s: PacketSession) -> (text: URL, csv: URL)? {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("PacketExport", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let stem = fileStem(s)
+        let text = dir.appendingPathComponent(stem + ".txt"), csvURL = dir.appendingPathComponent(stem + ".csv")
+        do {
+            try Data(tnc2(s).utf8).write(to: text, options: .atomic)
+            try Data(csv(s).utf8).write(to: csvURL, options: .atomic)
+            return (text, csvURL)
+        } catch {
+            return nil
+        }
+    }
+}
+
+/// Session files in Application Support/PacketSessions, one JSON file per session
+/// named `<start epoch>-<id>.json`; the newest `keep` are kept. All I/O runs on the
+/// caller's serial queue (the helpers below are nonisolated so their closures are too).
+enum PacketSessionFiles {
+    nonisolated static let keep = 30
+
+    nonisolated static var directory: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("PacketSessions", isDirectory: true)
+    }
+
+    nonisolated static func fileName(_ s: PacketSession) -> String {
+        "\(Int(max(0, s.start.timeIntervalSince1970)))-\(s.id.uuidString).json"
+    }
+
+    nonisolated static func files() -> [URL] {
+        guard let dir = directory,
+              let urls = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return [] }
+        return urls.filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+
+    nonisolated static func save(_ s: PacketSession) {
+        guard let dir = directory else { return }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(s) else { return }
+        try? data.write(to: dir.appendingPathComponent(fileName(s)), options: .atomic)
+    }
+
+    nonisolated static func loadAll() -> [PacketSession] {
+        files().compactMap { url in (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(PacketSession.self, from: $0) } }
+    }
+
+    nonisolated static func delete(_ id: UUID) {
+        for url in files() where url.lastPathComponent.contains(id.uuidString) { try? FileManager.default.removeItem(at: url) }
+    }
+
+    /// Keep the newest `keep` files (plus `except`).
+    nonisolated static func prune(keep: Int, except: UUID?) {
+        let all = files().filter { url in except.map { !url.lastPathComponent.contains($0.uuidString) } ?? true }
+        for url in all.dropFirst(max(0, keep)) { try? FileManager.default.removeItem(at: url) }
+    }
+
+    nonisolated static func saveAsync(_ s: PacketSession, on queue: DispatchQueue) { queue.async { save(s) } }
+    nonisolated static func deleteAsync(_ id: UUID, on queue: DispatchQueue) { queue.async { delete(id) } }
+    nonisolated static func pruneAsync(on queue: DispatchQueue, keep: Int, except: UUID?) {
+        queue.async { prune(keep: keep, except: except) }
+    }
+    nonisolated static func loadAllAsync(on queue: DispatchQueue) async -> [PacketSession] {
+        await withCheckedContinuation { (cont: CheckedContinuation<[PacketSession], Never>) in
+            queue.async { cont.resume(returning: loadAll()) }
+        }
+    }
+}
+
+// MARK: APRS-IS satgate rules
+
+/// RF → APRS-IS gating rules (aprs-is.net "IGate details" / q-construct docs):
+///  • only UI frames with PID F0 and a non-empty info field, cut at the first CR/LF;
+///  • never our own frames (our RF call or the satgate login);
+///  • never a frame whose path holds TCPIP, TCPXX, NOGATE or RFONLY (or a q construct);
+///  • never generic queries (`?`);
+///  • third-party (`}`) frames are unwrapped and the inner packet gated, unless its
+///    header holds TCPIP/TCPXX/NOGATE/RFONLY (Internet traffic already sent to RF);
+///  • the path is kept as heard (TNC2, `*` on the repeating digipeater) with
+///    `,qAR,<satgate call>` appended;
+///  • the same packet (source, destination, info) only once per 30 s.
+/// Nothing from APRS-IS is ever sent to RF.
+enum APRSISGate {
+    nonisolated static let defaultHost = "rotate.aprs2.net"
+    nonisolated static let defaultPort = 14580
+    nonisolated static let blocked: Set<String> = ["TCPIP", "TCPXX", "NOGATE", "RFONLY"]
+
+    nonisolated static func isBlocked(_ element: String) -> Bool {
+        let e = element.replacingOccurrences(of: "*", with: "")
+        return e.hasPrefix("q") || blocked.contains(PacketText.baseCall(e))
+    }
+
+    /// The APRS-IS line (without CR LF) for a frame heard on RF, or nil when it must not be gated.
+    nonisolated static func line(for frame: AX25Frame, igate: String, ownCalls: Set<String>) -> String? {
+        guard frame.isUI, frame.pid == 0xF0, !igate.isEmpty else { return nil }
+        guard !ownCalls.contains(frame.source.description) else { return nil }
+        guard !frame.digipeaters.contains(where: { isBlocked($0.call) }) else { return nil }
+        guard let raw = String(bytes: frame.info, encoding: .utf8) else { return nil }
+        let info = String(raw.prefix { $0 != "\r" && $0 != "\n" })
+        guard let dti = info.first, dti != "?" else { return nil }
+        if dti == "}" {
+            let inner = String(info.dropFirst())
+            guard let colon = inner.firstIndex(of: ":") else { return nil }
+            let header = String(inner[..<colon]), innerInfo = String(inner[inner.index(after: colon)...])
+            guard let gt = header.firstIndex(of: ">"), AX25Address(String(header[..<gt])) != nil else { return nil }
+            let fields = header[header.index(after: gt)...].split(separator: ",").map(String.init)
+            guard let dest = fields.first, !dest.isEmpty, !fields.contains(where: isBlocked),
+                  let innerDTI = innerInfo.first, innerDTI != "?" else { return nil }
+            guard !ownCalls.contains(String(header[..<gt]).uppercased()) else { return nil }
+            return "\(header),qAR,\(igate):\(innerInfo)"
+        }
+        return "\(frame.tnc2Header),qAR,\(igate):\(info)"
+    }
+}
+
+/// Drops a packet already gated in the last `window` seconds (same source,
+/// destination and info; the path is ignored, as digipeated copies differ only there).
+struct APRSISDupeFilter: Sendable {
+    var window: TimeInterval = 30
+    private var seen: [String: Date] = [:]
+
+    init(window: TimeInterval = 30) { self.window = window }
+
+    nonisolated static func key(_ line: String) -> String {
+        guard let colon = line.firstIndex(of: ":") else { return line }
+        let header = line[..<colon]
+        let srcDest = header.split(separator: ",").first.map(String.init) ?? String(header)
+        return srcDest + line[colon...]
+    }
+
+    mutating func isDuplicate(_ line: String, at now: Date) -> Bool {
+        seen = seen.filter { now.timeIntervalSince($0.value) < window }
+        let k = Self.key(line)
+        if seen[k] != nil { return true }
+        seen[k] = now
+        return false
+    }
+}
+
+/// Receive-only satgate: logs in to APRS-IS with the operator's callsign and
+/// passcode and forwards heard RF packets. It sends no filter, so the server sends
+/// nothing back but keepalives — and nothing is ever transmitted from it.
+@MainActor
+final class PacketSatgate: NearbyTCPFeed {
+    @Published private(set) var gatedCount = 0
+    /// nil until the server's `# logresp` line.
+    @Published private(set) var verified: Bool?
+    @Published private(set) var serverLine = ""
+
+    var host = APRSISGate.defaultHost
+    var port = UInt16(APRSISGate.defaultPort)
+    var login = ""
+    var passcode = ""
+    private var dupes = APRSISDupeFilter()
+
+    init() { super.init(label: "satgate", idleTimeout: 120, telnet: false) }
+
+    override func endpoint() -> (host: String, port: UInt16)? {
+        guard login.count >= 3 else { state = .failed("Set your callsign in Settings first."); return nil }
+        guard let code = Int(passcode), code >= 0 else { state = .failed("Enter your APRS-IS passcode in Setup."); return nil }
+        guard !host.isEmpty, port > 0 else { state = .failed("Enter the APRS-IS server."); return nil }
+        return (host, port)
+    }
+
+    override func didConnect() {
+        verified = nil; serverLine = ""
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1"
+        sendRaw("user \(login) pass \(passcode) vers OrbitDeck \(version)\r\n")
+    }
+
+    override func didReceive(_ lines: [String]) {
+        for line in lines where line.hasPrefix("#") {
+            let l = line.lowercased()
+            guard l.contains("logresp") else { continue }
+            serverLine = String(line.dropFirst(2))
+            verified = l.contains(" verified")
+        }
+    }
+
+    /// Gate a frame heard on RF (see `APRSISGate`). Returns true when it was sent.
+    @discardableResult
+    func gate(_ frame: AX25Frame, ownCalls: Set<String>) -> Bool {
+        guard state == .connected, verified == true,
+              let line = APRSISGate.line(for: frame, igate: login, ownCalls: ownCalls),
+              !dupes.isDuplicate(line, at: Date()) else { return false }
+        sendRaw(line + "\r\n")
+        gatedCount += 1
+        return true
+    }
+
+    override func stop() {
+        super.stop()
+        verified = nil
+    }
+}
+
+// MARK: KISS over TCP
+
+/// KISS TNC over TCP (Direwolf, UZ7HO soundmodem, a LAN TNC; port 8001 by default).
+/// A `CATTransport`, so the engine's KISS read/write path is shared with BLE. All
+/// state is confined to `queue` except `connected` (lock).
+final class KISSTCPTransport: CATTransport, @unchecked Sendable {
+    private let host: String
+    private let port: UInt16
+    private let queue = DispatchQueue(label: "org.orbitdeck.packet.kisstcp")
+    private let lock = NSLock()
+    private var conn: NWConnection?
+    private var generation = 0
+    private var connectCont: CheckedContinuation<Void, Error>?
+    private var rx: [UInt8] = []
+    private var waiter: CheckedContinuation<[UInt8], Never>?
+    private var waiterID = 0
+    private var connected = false
+    private var disconnectHandler: (@Sendable () -> Void)?
+
+    var onDisconnect: (@Sendable () -> Void)? {
+        get { lock.withLock { disconnectHandler } }
+        set { lock.withLock { disconnectHandler = newValue } }
+    }
+
+    var isConnected: Bool { lock.withLock { connected } }
+
+    init(host: String, port: UInt16) {
+        self.host = host
+        self.port = port
+    }
+
+    func connect() async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            queue.async { self.open(cont) }
+        }
+    }
+
+    private func open(_ cont: CheckedContinuation<Void, Error>) {
+        teardown()
+        let gen = generation
+        guard !host.isEmpty, let p = NWEndpoint.Port(rawValue: port) else {
+            cont.resume(throwing: CATError.network("Invalid KISS host or port")); return
+        }
+        connectCont = cont
+        let tcp = NWProtocolTCP.Options()
+        tcp.noDelay = true
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 30
+        tcp.connectionTimeout = 10
+        let c = NWConnection(host: NWEndpoint.Host(host), port: p, using: NWParameters(tls: nil, tcp: tcp))
+        conn = c
+        c.stateUpdateHandler = { [weak self] state in
+            guard let self, gen == self.generation else { return }
+            switch state {
+            case .ready:
+                self.lock.withLock { self.connected = true }
+                self.receive(c, gen)
+                if let cc = self.connectCont { self.connectCont = nil; cc.resume() }
+            case .failed(let e), .waiting(let e):
+                self.dropped(e.localizedDescription)
+            default:
+                break
+            }
+        }
+        c.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 12) {
+            guard gen == self.generation, let cc = self.connectCont else { return }
+            self.connectCont = nil
+            self.teardown()
+            cc.resume(throwing: CATError.connectTimeout)
+        }
+    }
+
+    /// Connect failure, or a live drop (reported once through `onDisconnect`).
+    private func dropped(_ reason: String) {
+        if let cc = connectCont {
+            connectCont = nil
+            teardown()
+            cc.resume(throwing: CATError.network(reason))
+            return
+        }
+        let was = lock.withLock { () -> Bool in let w = connected; connected = false; return w }
+        teardown()
+        if was { onDisconnect?() }
+    }
+
+    private func teardown() {
+        generation += 1
+        conn?.cancel(); conn = nil
+        lock.withLock { connected = false }
+        if let w = waiter { waiter = nil; let out = rx; rx = []; w.resume(returning: out) }
+    }
+
+    private func receive(_ c: NWConnection, _ gen: Int) {
+        c.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, complete, error in
+            guard let self, gen == self.generation else { return }
+            if let data, !data.isEmpty {
+                self.rx.append(contentsOf: data)
+                if self.rx.count > 262_144 { self.rx.removeFirst(self.rx.count - 262_144) }
+                if let w = self.waiter { self.waiter = nil; let out = self.rx; self.rx = []; w.resume(returning: out) }
+            }
+            if let error { self.dropped(error.localizedDescription) }
+            else if complete { self.dropped("Closed by the TNC") }
+            else { self.receive(c, gen) }
+        }
+    }
+
+    func disconnect() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async {
+                if let cc = self.connectCont { self.connectCont = nil; cc.resume(throwing: CancellationError()) }
+                self.teardown()
+                cont.resume()
+            }
+        }
+    }
+
+    func send(_ bytes: [UInt8]) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            queue.async {
+                guard let c = self.conn, self.isConnected else { cont.resume(throwing: CATError.notConnected); return }
+                c.send(content: Data(bytes), completion: .contentProcessed { error in
+                    if let error { cont.resume(throwing: CATError.network(error.localizedDescription)) } else { cont.resume() }
+                })
+            }
+        }
+    }
+
+    /// Bytes received so far, waiting up to `maxWait` for the first (always waits
+    /// when disconnected, so a reader loop never spins).
+    func readAvailable(maxWait: TimeInterval) async -> [UInt8] {
+        await withCheckedContinuation { (cont: CheckedContinuation<[UInt8], Never>) in
+            queue.async {
+                if !self.rx.isEmpty { let out = self.rx; self.rx = []; cont.resume(returning: out); return }
+                if let old = self.waiter { self.waiter = nil; old.resume(returning: []) }
+                self.waiterID += 1
+                let id = self.waiterID
+                self.waiter = cont
+                self.queue.asyncAfter(deadline: .now() + max(0.01, maxWait)) {
+                    guard self.waiterID == id, let w = self.waiter else { return }
+                    self.waiter = nil
+                    w.resume(returning: [])
+                }
             }
         }
     }
