@@ -896,14 +896,6 @@ struct HomeRigControlCard: View {
                         get: { rig.config.tuning.trackDoppler },
                         set: { rig.config.tuning.trackDoppler = $0; rig.persist() }
                     ))
-                    Picker("Linear mode", selection: Binding(
-                        get: { rig.config.tuning.linearCW },
-                        set: { rig.config.tuning.linearCW = $0; rig.persist() }
-                    )) {
-                        Text("SSB").tag(false)
-                        Text("CW").tag(true)
-                    }
-                    .pickerStyle(.segmented)
                 }
                 StopAllButton()
                 Text("CAT works only while OrbitDeck is in the foreground. Keep the Home screen awake during a pass (Settings ▸ Display).")

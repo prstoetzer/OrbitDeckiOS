@@ -171,6 +171,7 @@ private struct FavoritePassTimelineCard: View {
 
 struct HomeView: View {
     @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var rig: RigController
     @Environment(\.scenePhase) private var scenePhase
     @State private var nextPass: PredictedPass?
     @State private var passError: String?
@@ -664,6 +665,20 @@ struct HomeView: View {
         }
     }
 
+    /// SSB or CW on a linear transponder. Drives the CAT radio's mode (both legs) when
+    /// one is connected, and the quick-log mode/RST either way.
+    private var linearModePicker: some View {
+        Picker("Mode", selection: Binding(
+            get: { rig.config.tuning.linearCW },
+            set: { rig.config.tuning.linearCW = $0; rig.persist() }
+        )) {
+            Text("SSB").tag(false)
+            Text("CW").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .accessibilityLabel("Linear transponder mode")
+    }
+
     private func dopplerCard(satellite: SatelliteRecord, transponder: TransponderRecord, rangeRateKmS: Double) -> some View {
         // Passband tuning: move the operating frequency off the transponder center on
         // a linear bird. An inverting transponder walks the uplink the opposite way.
@@ -689,6 +704,9 @@ struct HomeView: View {
                 MetricRow("Uplink", ODFormat.frequency(uplink))
                 MetricRow("TX (tune)", ODFormat.frequency(corrected.tx), valueColor: ODTheme.warning)
                 MetricRow("Doppler (UP)", String(format: "%+lld Hz", trueShift.tx - uplink))
+            }
+            if transponder.isLinear {
+                linearModePicker
             }
             if transponder.isLinear, transponder.bandwidth > 0 {
                 passbandSlider(bandwidth: transponder.bandwidth)
@@ -886,15 +904,18 @@ struct HomeAmsatQuickReport: View {
     }
 
     private func resolve() async {
+        // A new satellite: drop the previous one's AMSAT name and any posting result
+        // first, so a slow or failed lookup can't leave a report aimed at the old bird.
+        apiMatches = []; apiName = ""; message = ""; succeeded = false; pendingStatus = nil
         // Retry quietly on cold networks; the catalog is session-cached once it
         // succeeds. Fall back to the satellite name so manual reporting still works.
         for attempt in 0..<5 {
             if Task.isCancelled { return }
             do {
                 let matches = try await AmsatStatusService.catalogMatches(commonName: satellite.name)
+                if Task.isCancelled { return }
                 apiMatches = matches
-                if let first = matches.first { apiName = first }
-                else if apiName.isEmpty { apiName = satellite.name }
+                apiName = matches.first ?? satellite.name
                 return
             } catch {
                 if attempt < 4 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
