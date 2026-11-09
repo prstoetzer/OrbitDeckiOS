@@ -33,7 +33,7 @@ Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build eac
 - **Engaged-satellite lock** — picking another satellite mid-pass asks before retuning the radio and moving the antenna (automatic switching still switches); shared rule for CAT and rotator. [3]
 - **Stop all** — releases PTT, stops FT4/packet, disconnects CAT, parks the rotator. [3]
 - **Passband-edge banner**, **CAT monitor** (per-frame trace) and **guided self-test**, **CAT rate floor** for slow serial rates, **tilt-to-tune** (optional). [3]
-- **No-CAT HOLD/TUNE calculator** — hold one leg at a fixed dial (HT, FT-817) and read the other's corrected dial live. [3]
+- **No-CAT HOLD/TUNE calculator** — hold one leg at a fixed dial (HT, FT-817) and read the other's corrected dial live.[3]; type the held dial in MHz, kHz or Hz with a live result and a keypad Done button [4]
 - **Kenwood TS-590/590SG/890/990** as single-radio legs. [1]
 - **rigctld** — VFO mode with `\chk_vfo` probe (avoids Hamlib retuning the wrong VFO on Icom sat rigs); split method kept as a fallback and for existing setups. [3]
 - **Clean disconnect** — CTCSS off, Icom satellite mode off, back to MAIN/VFO A. [1]

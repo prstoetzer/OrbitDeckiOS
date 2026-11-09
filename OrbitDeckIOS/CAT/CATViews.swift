@@ -696,20 +696,33 @@ struct ManualDopplerCalculator: View {
                 .pickerStyle(.segmented)
             }
             if let leg = holdLeg {
-                HStack {
-                    Text(leg == .uplink ? "TX dial (held)" : "RX dial (held)").font(.caption).lineLimit(1)
-                    Spacer(minLength: 6)
-                    TextField("MHz", text: $entry)
-                        .keyboardType(.decimalPad)
-                        .multilineTextAlignment(.trailing)
-                        .monospacedDigit()
-                        .frame(minWidth: 96, maxWidth: 130)
-                        .textFieldStyle(.odField)
-                        .focused($entryFocused)
-                        .onSubmit(commitEntry)
-                        .onChange(of: entryFocused) { _, focused in if !focused { commitEntry() } }
-                    Button("Now") { heldDialHz = leg == .uplink ? currentTx : currentRx; entry = mhz(heldDialHz) }
-                        .buttonStyle(.bordered).controlSize(.small)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(leg == .uplink ? "TX dial to hold (MHz)" : "RX dial to hold (MHz)")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                    HStack(spacing: 6) {
+                        // The result follows the typed value live: the decimal pad has no
+                        // Return key, so waiting for a commit meant nothing ever updated.
+                        TextField("e.g. 145.96000", text: $entry)
+                            .keyboardType(.decimalPad)
+                            .font(.body.monospacedDigit())
+                            .textFieldStyle(.odField)
+                            .focused($entryFocused)
+                            .onSubmit(commitEntry)
+                            .onChange(of: entryFocused) { _, focused in if !focused { commitEntry() } }
+                            .toolbar {
+                                ToolbarItemGroup(placement: .keyboard) {
+                                    Spacer()
+                                    Button("Done") { entryFocused = false }
+                                }
+                            }
+                        Button("Now") { heldDialHz = leg == .uplink ? currentTx : currentRx; entry = mhz(heldDialHz) }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .accessibilityHint("Fills in the current corrected dial")
+                    }
+                    if !entry.isEmpty, parsedEntry == nil {
+                        Text("Enter the frequency in MHz (145.96), kHz (145960) or Hz.")
+                            .font(.caption2).foregroundStyle(ODTheme.warning)
+                    }
                 }
                 let result = solve(leg: leg)
                 MetricRow(leg == .uplink ? "RX (tune)" : "TX (tune)", ODFormat.frequency(result.other),
@@ -727,11 +740,26 @@ struct ManualDopplerCalculator: View {
         }
     }
 
-    private func mhz(_ hz: Int64) -> String { String(format: "%.4f", Double(hz) / 1_000_000) }
+    /// 10 Hz resolution — fine enough for SSB/CW hand tuning.
+    private func mhz(_ hz: Int64) -> String { String(format: "%.5f", Double(hz) / 1_000_000) }
+
+    /// The typed held dial in Hz. Accepts MHz ("145.96"), kHz ("145960") or Hz
+    /// ("145960000"); nil while the text isn't a usable frequency.
+    private var parsedEntry: Int64? {
+        let text = entry.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)
+        guard let v = Double(text), v > 0 else { return nil }
+        // With a decimal point it's MHz (145.96, 10368.1). A whole number is judged by
+        // size: under 100,000 → MHz, under 100,000,000 → kHz (145960), else Hz.
+        let hz: Double = text.contains(".") || v < 100_000 ? v * 1_000_000
+            : (v < 100_000_000 ? v * 1_000 : v)
+        return hz >= 1_000_000 ? Int64(hz.rounded()) : nil
+    }
+
+    /// The dial the calculation uses: what's being typed, else the last good value.
+    private var liveHeldHz: Int64 { parsedEntry ?? heldDialHz }
 
     private func commitEntry() {
-        let text = entry.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)
-        if let v = Double(text), v > 0 { heldDialHz = Int64((v * 1_000_000).rounded()) }
+        if let hz = parsedEntry { heldDialHz = hz }
         entry = mhz(heldDialHz)
     }
 
@@ -741,7 +769,7 @@ struct ManualDopplerCalculator: View {
         let beta = (rangeRateKmS * 1000.0) / 299_792_458.0
         if leg == .uplink {
             // What the satellite hears from the fixed transmitter.
-            let atSat = Double(heldDialHz) * (1.0 - beta)
+            let atSat = Double(liveHeldHz) * (1.0 - beta)
             let offset = atSat - Double(transponder.uplinkCenter)
             let dlAtSat = transponder.isLinear
                 ? Double(transponder.downlinkCenter) + (transponder.invert ? -offset : offset)
@@ -750,7 +778,7 @@ struct ManualDopplerCalculator: View {
             return (Int64(rx.rounded()), Int64(offset.rounded()))
         } else {
             // What the satellite sent to arrive on the fixed receiver dial.
-            let atSat = (Double(heldDialHz) - downlinkCalibrationHz) / (1.0 - beta)
+            let atSat = (Double(liveHeldHz) - downlinkCalibrationHz) / (1.0 - beta)
             let offset = atSat - Double(transponder.downlinkCenter)
             let ulAtSat = transponder.isLinear
                 ? Double(transponder.uplinkCenter) + (transponder.invert ? -offset : offset)
