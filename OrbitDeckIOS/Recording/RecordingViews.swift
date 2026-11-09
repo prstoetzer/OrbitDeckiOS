@@ -36,7 +36,9 @@ struct HomeRecordingCard: View {
                         .tint(recorder.isRecording ? ODTheme.warning : ODTheme.accent)
                 }
                 SatelliteStatusLine(satellite: satellite)
-                AudioLevelControl(title: "Recording level", gain: $recorder.inputGain, level: recorder.level)
+                LiveMetersReader(meters: recorder.meters) { m in
+                    AudioLevelControl(title: "Recording level", gain: $recorder.inputGain, level: m.level)
+                }
                 VoiceMemoControl(satellite: satellite)
                 Text("Records the received audio from your USB (or network) audio interface, tagged with the satellite and time. Set the level so the meter rides in the green. Keeps recording with the screen locked or the app backgrounded during a pass.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
@@ -169,7 +171,7 @@ struct VoiceMemoControl: View {
                     Text("\(ODFormat.duration(memo.elapsed)) / \(ODFormat.duration(PassRecorder.memoCap))")
                         .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.warning)
                         .fixedSize()
-                    AudioLevelBar(level: memo.level)
+                    LiveMetersReader(meters: memo.meters) { m in AudioLevelBar(level: m.level) }
                 }
             }
             if !memo.errorText.isEmpty {

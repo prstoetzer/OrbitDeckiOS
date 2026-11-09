@@ -71,17 +71,36 @@ struct FT4WaterfallMark: Sendable, Equatable, Identifiable {
     var date: Date { Date(timeIntervalSince1970: Double(slot) * kFT4SlotSeconds) }
 }
 
+/// High-rate display state — level meters and a waterfall image — published on its own
+/// object rather than the engine's, so a 10 Hz meter update re-renders only the small
+/// views that show it (via `LiveMetersReader`) instead of a whole mode card.
+@MainActor
+final class LiveMeters: ObservableObject {
+    @Published private(set) var level: Float = 0
+    @Published private(set) var txLevel: Float = 0
+    @Published var image: UIImage?
+    @Published var marks: [FT4WaterfallMark] = []
+
+    /// Fast attack, slow release (reads like a VU meter); settles to exactly 0 so an
+    /// idle meter stops publishing.
+    func decayLevel(peak: Float) { setLevel(max(peak, level * 0.75)) }
+    func decayTX(peak: Float) { setTX(max(peak, txLevel * 0.75)) }
+    func setLevel(_ v: Float) { let q = v < 0.002 ? 0 : v; if q != level { level = q } }
+    func setTX(_ v: Float) { let q = v < 0.002 ? 0 : v; if q != txLevel { txLevel = q } }
+    func setMarks(_ m: [FT4WaterfallMark]) { if m != marks { marks = m } }
+}
+
 @MainActor
 final class FT4Engine: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var decodes: [FT4DecodedMessage] = []
     @Published private(set) var status = "Idle"
     @Published private(set) var isTransmitting = false
-    @Published private(set) var txLevel: Float = 0     // live TX output level (0…1)
-    @Published private(set) var rxLevel: Float = 0     // live RX input level (0…1)
-    @Published private(set) var waterfall: UIImage?    // scrolling spectrum waterfall
-    /// Slot-boundary lines in the current waterfall image (for the UTC labels).
-    @Published private(set) var waterfallMarks: [FT4WaterfallMark] = []
+    /// Live TX/RX levels (0…1).
+    let meters = LiveMeters()
+    /// The scrolling waterfall and its slot-boundary lines — a separate object so level
+    /// ticks don't redraw the image and waterfall lines don't redraw the gain sliders.
+    let spectrum = LiveMeters()
     @Published var errorText = ""
 
     // MARK: Settings (persisted under their own keys; missing keys fall back to defaults)
@@ -101,7 +120,7 @@ final class FT4Engine: ObservableObject {
         didSet { UserDefaults.standard.set(waterfallSlotLines, forKey: FT4Settings.waterfallSlotLinesKey); wfSlotLines = waterfallSlotLines }
     }
     /// Seconds of history the waterfall shows (12 / 24 / 48).
-    @Published var waterfallSeconds = FT4Settings.int(FT4Settings.waterfallSecondsKey, default: 24, in: 12...48) {
+    @Published var waterfallSeconds = FT4Settings.int(FT4Settings.waterfallSecondsKey, default: 12, in: 12...48) {
         didSet {
             UserDefaults.standard.set(waterfallSeconds, forKey: FT4Settings.waterfallSecondsKey)
             wfTicksPerLine = FT4Engine.ticksPerLine(forSeconds: waterfallSeconds)
@@ -187,6 +206,9 @@ final class FT4Engine: ObservableObject {
     /// Supplies instantaneous downlink/uplink Doppler SHIFT (Hz) at a given time, from
     /// the ephemeris. Set by the view at start(); used for the readout and TX pre-comp.
     var dopplerProvider: (@Sendable (Date) -> (dl: Double, ul: Double)?)?
+    /// The FM-only gate for the transponder now tracked (set by the card at start).
+    var fmOnlyCheck: (() -> String?)?
+    private var fmOnlyBlock: String? { fmOnlyCheck?() }
     /// True when the uplink is keyed in LSB (inverting linear transponders). In LSB the
     /// audio→RF mapping is inverted (RF = dial − audio), so the TX Doppler pre-comp slope
     /// must flip sign — otherwise it DOUBLES the drift on an inverting bird instead of
@@ -213,7 +235,9 @@ final class FT4Engine: ObservableObject {
     private nonisolated(unsafe) let deDoppler = HilbertDeDoppler()
 
     /// Quietest spot in the passband (Hz), updated from the waterfall — for "clear TX".
-    @Published private(set) var suggestedTxFreq: Double = 1500
+    /// Not published: read only when "Clear spot" is tapped (a 10 Hz update would
+    /// re-render the whole FT4 card).
+    private(set) var suggestedTxFreq: Double = 1500
 
     // Auto-sequencing (WSJT-style): the engine advances the standard FT4 exchange
     // and logs on completion. Report we send (dB); the station we're working.
@@ -290,12 +314,20 @@ final class FT4Engine: ObservableObject {
     private let analysisQueue = DispatchQueue(label: "org.orbitdeck.ft4.spec")
     private nonisolated(unsafe) var analysisTimer: DispatchSourceTimer?
     private nonisolated(unsafe) let specLock = NSLock()
-    private nonisolated(unsafe) var specWindow: [Float] = []
+    /// The latest `specCapacity` input samples as a ring (audio thread writes, the
+    /// analysis tick copies it out in time order) — no per-buffer memmove of the window.
+    private nonisolated let specCapacity = 8192
+    private nonisolated(unsafe) var specRing = [Float](repeating: 0, count: 8192)
+    private nonisolated(unsafe) var specWrite = 0          // next write index
+    private nonisolated(unsafe) var specFilled = 0         // valid samples (≤ capacity)
+    private nonisolated(unsafe) var specScratch: [Float] = []   // analysisQueue only
     private nonisolated(unsafe) var rxPeak: Float = 0
     private nonisolated(unsafe) let analyzer = SpectrumAnalyzer(n: 4096)
-    // Waterfall rows are colored once, when they're added (newest last), so a refresh only
-    // concatenates bytes. Each row remembers the slot it started in for the boundary lines.
-    private nonisolated(unsafe) var waterRows: [[UInt8]] = []
+    // Waterfall pixels (newest row last), colored once when each row arrives, so a refresh
+    // is a single copy into the image. Each row remembers the slot it started in for the
+    // boundary lines.
+    private nonisolated(unsafe) var waterBytes: [UInt8] = []
+    private nonisolated(unsafe) var waterWidth = 0
     private nonisolated(unsafe) var waterRowSlots: [Int] = []
     private nonisolated(unsafe) var waterFloor: Float = 0          // tracked noise floor (dB)
     private nonisolated(unsafe) var wfAccum: [Float] = []          // linear power, current line
@@ -379,9 +411,9 @@ final class FT4Engine: ObservableObject {
             Task { await rig.stepDopplerNow() }
         }
         // Fresh waterfall state (safe: the analysis timer isn't running yet).
-        waterRows.removeAll(keepingCapacity: true); waterRowSlots.removeAll(keepingCapacity: true)
+        waterBytes.removeAll(keepingCapacity: true); waterRowSlots.removeAll(keepingCapacity: true); waterWidth = 0
         waterFloor = 0; wfAccum = []; wfAccumFrames = 0; wfTicks = 0
-        waterfallMarks = []
+        spectrum.setMarks([])
         preArmTask = nil; pttArmed = false; armedSlotIndex = -1; dialSteppedForSlot = -1
         scheduleSlotTimer()
         schedulePreArmTimer()
@@ -412,10 +444,11 @@ final class FT4Engine: ObservableObject {
         isRunning = false
         AudioActivity.end()
         AudioActivity.releaseCapture("FT4")
-        specLock.lock(); specWindow.removeAll(keepingCapacity: true); rxPeak = 0; specLock.unlock()
-        rxLevel = 0
+        specLock.lock(); specWrite = 0; specFilled = 0; rxPeak = 0; specLock.unlock()
+        meters.setLevel(0); meters.setTX(0)
         keptLock.withLock { keptSlot = nil }
         canDecodeDeep = false
+        qso?.flushFT4Traffic()          // write the session's activity log now (it's coalesced)
         status = "Idle"
     }
 
@@ -478,13 +511,50 @@ final class FT4Engine: ObservableObject {
 
     /// Accumulate the running spectrum window and RX peak (on the audio thread).
     private nonisolated func ingestAnalysis(_ frames: [Float]) {
+        guard !frames.isEmpty else { return }
         var peak: Float = 0
-        for s in frames { let a = abs(s); if a > peak { peak = a } }
+        vDSP_maxmgv(frames, 1, &peak, vDSP_Length(frames.count))
+        let cap = specCapacity
         specLock.lock()
-        specWindow.append(contentsOf: frames)
-        if specWindow.count > 8192 { specWindow.removeFirst(specWindow.count - 8192) }
+        frames.withUnsafeBufferPointer { src in
+            specRing.withUnsafeMutableBufferPointer { ring in
+                // Only the newest `cap` samples of a (rare) oversized buffer matter.
+                var from = max(0, src.count - cap)
+                while from < src.count {
+                    let n = min(src.count - from, cap - specWrite)
+                    (ring.baseAddress! + specWrite).update(from: src.baseAddress! + from, count: n)
+                    specWrite = (specWrite + n) % cap
+                    from += n
+                }
+            }
+        }
+        specFilled = min(cap, specFilled + frames.count)
         if peak > rxPeak { rxPeak = peak }
         specLock.unlock()
+    }
+
+    /// Copy the ring's valid samples, oldest first, into `specScratch` (analysisQueue).
+    private nonisolated func snapshotSpectrumWindow() -> Float {
+        let cap = specCapacity
+        if specScratch.capacity < cap { specScratch.reserveCapacity(cap) }
+        specLock.lock()
+        let filled = specFilled, w = specWrite
+        let peak = rxPeak; rxPeak = 0
+        specScratch.removeAll(keepingCapacity: true)
+        if filled == cap {
+            specScratch.append(contentsOf: specRing[w...])
+            specScratch.append(contentsOf: specRing[..<w])
+        } else {
+            let start = (w - filled + cap) % cap
+            if start + filled <= cap {
+                specScratch.append(contentsOf: specRing[start..<(start + filled)])
+            } else {
+                specScratch.append(contentsOf: specRing[start...])
+                specScratch.append(contentsOf: specRing[..<w])
+            }
+        }
+        specLock.unlock()
+        return peak
     }
 
     private nonisolated func scheduleAnalysisTimer() {
@@ -500,10 +570,8 @@ final class FT4Engine: ObservableObject {
     /// FFT frames (in linear power): two per tick at the fastest speed, one per tick at the
     /// slower ones — smoother lines without extra work.
     private nonisolated func analyze() {
-        specLock.lock()
-        let win = specWindow
-        let peak = rxPeak; rxPeak = 0
-        specLock.unlock()
+        let peak = snapshotSpectrumWindow()
+        let txPeakNow = txLock.withLock { () -> Float in let v = txPeak; txPeak = 0; return v }
         let rate = sampleRate
         let ticksPerLine = max(1, wfTicksPerLine)
 
@@ -511,22 +579,37 @@ final class FT4Engine: ObservableObject {
         var marks: [FT4WaterfallMark]?
         var clearHz: Double?
         let n = analyzer.n
-        if win.count >= n {
+        let count = specScratch.count
+        if count >= n {
             let binHz = rate / Double(n)
-            let frames = (ticksPerLine == 1 && win.count >= n + n / 2) ? 2 : 1
+            let frames = (ticksPerLine == 1 && count >= n + n / 2) ? 2 : 1
             for f in 0..<frames {
-                let db = analyzer.magnitudesDB(f == 0 ? win : Array(win.prefix(win.count - n / 2)))
-                guard !db.isEmpty else { continue }
-                let maxBin = max(1, min(db.count, Int(3000.0 / binHz)))
+                // Frame 0 is the newest `n` samples; frame 1 ends half a frame earlier.
+                let end = f == 0 ? count : count - n / 2
+                let maxBin = max(1, min(n / 2, Int(3000.0 / binHz)))
                 if wfAccum.count != maxBin { wfAccum = [Float](repeating: 0, count: maxBin); wfAccumFrames = 0 }
-                for k in 0..<maxBin { wfAccum[k] += powf(10, db[k] / 10) }
-                wfAccumFrames += 1
+                let ok = specScratch.withUnsafeBufferPointer { src in
+                    wfAccum.withUnsafeMutableBufferPointer { acc in
+                        analyzer.accumulatePower(src.baseAddress! + (end - n), into: acc.baseAddress!, bins: maxBin)
+                    }
+                }
+                if ok { wfAccumFrames += 1 }
             }
             wfTicks += 1
             if wfTicks >= ticksPerLine, wfAccumFrames > 0 {
-                let inv = 1 / Float(wfAccumFrames)
-                let row = wfAccum.map { 10 * log10f(max(1e-12, $0 * inv)) }
-                wfAccum = [Float](repeating: 0, count: row.count); wfAccumFrames = 0; wfTicks = 0
+                // Mean linear power → dB (floored at -120 dB), vectorized.
+                let m = wfAccum.count
+                var row = [Float](repeating: 0, count: m)
+                var inv = 1 / Float(wfAccumFrames)
+                var lowest: Float = 1e-12
+                vDSP_vsmul(wfAccum, 1, &inv, &row, 1, vDSP_Length(m))
+                vDSP_vthr(row, 1, &lowest, &row, 1, vDSP_Length(m))
+                var cnt = Int32(m)
+                vvlog10f(&row, row, &cnt)
+                var ten: Float = 10
+                vDSP_vsmul(row, 1, &ten, &row, 1, vDSP_Length(m))
+                vDSP_vclr(&wfAccum, 1, vDSP_Length(m))
+                wfAccumFrames = 0; wfTicks = 0
                 let slot = Int((Date().timeIntervalSince1970 / kFT4SlotSeconds).rounded(.down))
                 let out = appendWaterfall(row, slot: slot)
                 image = out.image; marks = out.marks
@@ -534,10 +617,12 @@ final class FT4Engine: ObservableObject {
             }
         }
         Task { @MainActor in
-            // Fast attack, slow release so the meter reads like a VU meter (no flash).
-            self.rxLevel = max(peak, self.rxLevel * 0.75)
-            if let image { self.waterfall = image }
-            if let marks, marks != self.waterfallMarks { self.waterfallMarks = marks }
+            self.meters.decayLevel(peak: peak)
+            // Live TX meter so the operator can confirm audio is going out (burst or tune)
+            // even without monitoring the rig; settles to 0 (no publish) when idle.
+            if self.isTransmitting { self.meters.decayTX(peak: txPeakNow) } else { self.meters.setTX(0) }
+            if let image { self.spectrum.image = image }
+            if let marks { self.spectrum.setMarks(marks) }
             if let clearHz { self.suggestedTxFreq = clearHz }
         }
     }
@@ -568,50 +653,57 @@ final class FT4Engine: ObservableObject {
         // bins). It moves 35% of the way to each new estimate, at most 6 dB per line, so a
         // gain change or band opening settles within a second or two without one loud line
         // yanking the palette.
-        var sortedRow = row; sortedRow.sort()
+        var sortedRow = row
+        vDSP.sort(&sortedRow, sortOrder: .ascending)
         let floorNow = sortedRow[min(sortedRow.count - 1, max(0, Int(Float(sortedRow.count) * 0.4)))]
         if waterFloor == 0 { waterFloor = floorNow }
         else { waterFloor += max(-6, min(6, (floorNow - waterFloor) * 0.35)) }
         let lo = waterFloor
         let range: Float = 55   // dB from noise floor to white; only strong signals go red
         // A width change (sample rate switch) invalidates the old rows.
-        if let first = waterRows.first, first.count != w * 4 { waterRows.removeAll(); waterRowSlots.removeAll() }
-        var rgba = [UInt8](repeating: 255, count: w * 4)
+        if waterWidth != w { waterBytes.removeAll(keepingCapacity: true); waterRowSlots.removeAll(); waterWidth = w }
         let boundary = wfSlotLines && waterRowSlots.last.map { $0 != slot } == true
-        for x in 0..<w {
-            var c = Heatmap.color((row[x] - lo) / range)
-            if boundary {
-                // Slot-start line: blend toward light gray so it reads without hiding signals.
-                c = (UInt8((Int(c.r) + 200) / 2), UInt8((Int(c.g) + 200) / 2), UInt8((Int(c.b) + 200) / 2))
+        // Drop the oldest row first (one memmove of the pixel buffer), then append the new one.
+        let rowBytes = w * 4
+        if waterRowSlots.count >= waterHeight {
+            let drop = waterRowSlots.count - waterHeight + 1
+            waterBytes.removeFirst(drop * rowBytes)
+            waterRowSlots.removeFirst(drop)
+        }
+        let base = waterBytes.count
+        waterBytes.append(contentsOf: repeatElement(255, count: rowBytes))
+        waterBytes.withUnsafeMutableBufferPointer { px in
+            for x in 0..<w {
+                var c = Heatmap.color((row[x] - lo) / range)
+                if boundary {
+                    // Slot-start line: blend toward light gray so it reads without hiding signals.
+                    c = (UInt8((Int(c.r) + 200) / 2), UInt8((Int(c.g) + 200) / 2), UInt8((Int(c.b) + 200) / 2))
+                }
+                let o = base + x * 4
+                px[o] = c.r; px[o + 1] = c.g; px[o + 2] = c.b
             }
-            let o = x * 4
-            rgba[o] = c.r; rgba[o + 1] = c.g; rgba[o + 2] = c.b
         }
-        waterRows.append(rgba); waterRowSlots.append(slot)
-        if waterRows.count > waterHeight {
-            waterRows.removeFirst(waterRows.count - waterHeight)
-            waterRowSlots.removeFirst(waterRowSlots.count - waterHeight)
-        }
-        let h = waterRows.count
-        var bytes = [UInt8](); bytes.reserveCapacity(w * h * 4)
-        for r in waterRows { bytes.append(contentsOf: r) }
+        waterRowSlots.append(slot)
+        let h = waterRowSlots.count
         var marks: [FT4WaterfallMark] = []
         if wfSlotLines {
             for i in 1..<max(1, h) where waterRowSlots[i] != waterRowSlots[i - 1] {
                 marks.append(FT4WaterfallMark(slot: waterRowSlots[i], position: Double(i) / Double(h)))
             }
         }
-        return (Self.imageFromRGBA(bytes, width: w, height: h), marks)
+        return (Self.imageFromRGBA(waterBytes, width: w, height: h), marks)
     }
 
+    /// An opaque RGBA image over a copy of `bytes` (alpha ignored). Built straight from a
+    /// data provider: no bitmap context to allocate and draw into.
     nonisolated static func imageFromRGBA(_ bytes: [UInt8], width: Int, height: Int) -> UIImage? {
         guard width > 0, height > 0, bytes.count == width * height * 4 else { return nil }
-        var data = bytes
-        let cs = CGColorSpaceCreateDeviceRGB()
-        let info = CGImageAlphaInfo.premultipliedLast.rawValue
-        guard let ctx = CGContext(data: &data, width: width, height: height, bitsPerComponent: 8,
-                                  bytesPerRow: width * 4, space: cs, bitmapInfo: info),
-              let cg = ctx.makeImage() else { return nil }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let cg = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                               bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                               bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                               provider: provider, decode: nil, shouldInterpolate: false,
+                               intent: .defaultIntent) else { return nil }
         return UIImage(cgImage: cg)
     }
 
@@ -649,7 +741,7 @@ final class FT4Engine: ObservableObject {
         }
 
         let first = Task { @MainActor in
-            if haveAudio { self.canDecodeDeep = true }
+            if haveAudio, !self.canDecodeDeep { self.canDecodeDeep = true }
             // Ensure any pre-arm (dial step + PTT) for this starting slot has settled, so a
             // retune is never in flight once the burst goes on the air.
             await self.preArmTask?.value
@@ -669,11 +761,9 @@ final class FT4Engine: ObservableObject {
             // Always report what the decoder saw this slot — distinguishes "no audio"
             // from "signal but no sync candidates" from "candidates but no decode".
             if !self.isTransmitting {
-                if !haveAudio {
-                    self.status = "No RX audio this slot"
-                } else {
-                    self.status = "\(found.count) decoded · \(result.candidates) cand · \(result.blocks) blk"
-                }
+                let s = haveAudio ? "\(found.count) decoded · \(result.candidates) cand · \(result.blocks) blk"
+                                  : "No RX audio this slot"
+                if self.status != s { self.status = s }
             }
 
             // TX watchdog: halt before deciding on this slot's transmission.
@@ -718,8 +808,13 @@ final class FT4Engine: ObservableObject {
 
     /// Show, log, report and act on one batch of decodes from `endedSlot`.
     private func handleDecodes(_ found: [FT4DSP.Decode], endedSlot endedSlotIndex: Int) {
-        for f in found { decodes.append(FT4DecodedMessage(f, atSlot: endedSlotIndex)) }
-        if decodes.count > 100 { decodes.removeFirst(decodes.count - 100) }
+        // One mutation (one publish) for the whole batch, trimmed before it's assigned.
+        if !found.isEmpty {
+            var list = decodes
+            list.append(contentsOf: found.map { FT4DecodedMessage($0, atSlot: endedSlotIndex) })
+            if list.count > 100 { list.removeFirst(list.count - 100) }
+            decodes = list
+        }
         advanceCalibration(found)
         guard !found.isEmpty else { return }
         // Anything addressed to us from another station feeds the TX watchdog.
@@ -1037,6 +1132,9 @@ final class FT4Engine: ObservableObject {
         return (FT4Engine.isCallToken(call) && call != "<...>" && call != myCallSeq) ? call : nil
     }
 
+    /// The operator's call as the sequencer uses it (for view equality checks).
+    var ownCall: String { myCallSeq }
+
     /// Whether a decode is addressed to us (for highlighting).
     func isToMe(_ text: String) -> Bool {
         guard let f = FT4Engine.parse(text), !f.isCQ else { return false }
@@ -1229,8 +1327,9 @@ final class FT4Engine: ObservableObject {
         guard let source, !isTransmitting else { return }
         // No uplink on the tracked transponder: don't key, and don't play TX audio either
         // (a radio on VOX would transmit it on the downlink).
-        if let why = rig?.pttBlockedReason {
+        if let why = rig?.pttBlockedReason ?? fmOnlyBlock {
             errorText = why
+            if fmOnlyBlock != nil { txEnabled = false }
             if pttAlreadyKeyed { Task { await rig?.setPTT(false) } }
             return
         }
@@ -1248,16 +1347,8 @@ final class FT4Engine: ObservableObject {
         if decodes.count > 100 { decodes.removeFirst(decodes.count - 100) }
         qso?.addFT4Traffic([FT4TrafficEntry(date: Date(timeIntervalSince1970: Double(txSlot) * kFT4SlotSeconds),
                                             sat: satName, text: txMessage, snr: 0, freqHz: Int(txAudioFreq), sent: true)])
-        // Live TX meter (reads the peak the render callback actually emitted) so the
-        // operator can confirm audio is going out even without monitoring the rig.
-        Task { @MainActor in
-            while self.isTransmitting {
-                let p = self.txLock.withLock { () -> Float in let v = self.txPeak; self.txPeak = 0; return v }
-                self.txLevel = max(p, self.txLevel * 0.75)
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
-            self.txLevel = 0
-        }
+        // The live TX meter (the peak the render callback actually emitted) is driven by
+        // the 0.1 s analysis tick — see `analyze` — rather than a main-actor sleep loop.
         // Transmission is a fixed length; end it on a timer so PTT always unkeys and
         // the UI clears even if the audio output node never pulls the buffer dry.
         Task {
@@ -1268,6 +1359,11 @@ final class FT4Engine: ObservableObject {
                 if !keyed, self.pttOverCAT {
                     self.errorText = rig.pttBlockedReason ?? "CAT PTT failed — burst not sent."
                     await self.endTransmit()
+                    return
+                }
+                // Stopped while PTT-on was in flight: the stop's PTT-off went out first.
+                if keyed, !self.isTransmitting || self.txSlotIndex != txSlot {
+                    if !self.isTransmitting { await rig.setPTT(false) }
                     return
                 }
             }
@@ -1349,6 +1445,9 @@ final class FT4Engine: ObservableObject {
         if isTuning { Task { await endTransmit() }; return }
         guard isRunning, !isTransmitting, let source else { return }
         if let why = rig?.pttBlockedReason { errorText = why; return }
+        if let why = fmOnlyBlock { errorText = why; return }
+        // Tune keys PTT itself; drop any pre-armed slot so its PTT state isn't orphaned.
+        preArmTask?.cancel(); preArmTask = nil; pttArmed = false; armedSlotIndex = -1
         let rate = source.sampleRate
         let n = Int(Self.tuneSeconds * rate)
         let dphi = 2 * Double.pi * txAudioFreq / rate
@@ -1375,8 +1474,14 @@ final class FT4Engine: ObservableObject {
                     self.errorText = rig.pttBlockedReason ?? "CAT PTT failed — tune not sent."
                     await self.endTransmit(); return
                 }
+                // Stop tapped while the PTT-on was still in flight: its PTT-off went out
+                // first, so unkey again rather than leave a carrier up.
+                if keyed, !self.isTuning || self.tuneGeneration != generation {
+                    if !self.isTransmitting { await rig.setPTT(false) }
+                    return
+                }
             }
-            guard self.isTuning else { return }
+            guard self.isTuning, self.tuneGeneration == generation else { return }
             do {
                 // The buffer running dry ends the tune (pullTX → endTransmit); the timer
                 // below is the backstop so PTT always drops.
@@ -1950,7 +2055,11 @@ final class FT4CallsignHashes: @unchecked Sendable {
     private var standard: [String] = []        // session only, newest last
     private var logCalls: [String] = []        // preloaded from the QSO log
     private var myCall = ""
-    private var byHash: [UInt32: String] = [:] // n22 → call (rebuilt on change)
+    private var byHash: [UInt32: String] = [:] // n22 → call (rebuilt lazily after a change)
+    /// The lists changed since `byHash` was built. ft8_lib saves every call it unpacks, so
+    /// rebuilding eagerly re-hashed ~350 calls per decoded message; now it's once per lookup
+    /// burst at most.
+    private var hashesStale = false
 
     init(persist: Bool = true) {
         self.persist = persist
@@ -1986,6 +2095,7 @@ final class FT4CallsignHashes: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         switch type {
         case FTX_CALLSIGN_HASH_22_BITS:
+            if hashesStale { rebuild() }
             return byHash[hash & 0x3F_FFFF]
         default:
             let shift: UInt32 = type == FTX_CALLSIGN_HASH_12_BITS ? 10 : 12
@@ -2005,12 +2115,12 @@ final class FT4CallsignHashes: @unchecked Sendable {
             if standard.last != call {
                 standard.removeAll { $0 == call }; standard.append(call)
                 if standard.count > Self.standardCap { standard.removeFirst(standard.count - Self.standardCap) }
-                rebuild()
+                hashesStale = true
             }
         } else if nonStandard.last != call {
             nonStandard.removeAll { $0 == call }; nonStandard.append(call)
             if nonStandard.count > Self.nonStandardCap { nonStandard.removeFirst(nonStandard.count - Self.nonStandardCap) }
-            rebuild()
+            hashesStale = true
             snapshot = nonStandard
         }
         lock.unlock()
@@ -2043,6 +2153,7 @@ final class FT4CallsignHashes: @unchecked Sendable {
         var map: [UInt32: String] = [:]
         for call in priorityOrder().reversed() { if let h = Self.hash22(call) { map[h] = call } }
         byHash = map
+        hashesStale = false
     }
 
     /// Uppercased, bracket-free call in ft8_lib's hash alphabet (A–Z 0–9 /), 3–11 chars.
@@ -2135,7 +2246,7 @@ enum FT4Settings {
     static let watchdogMinutesKey = "orbitdeck.ft4.txWatchdogMinutes"
     /// Waterfall slot-boundary lines with UTC labels (Bool, default on).
     static let waterfallSlotLinesKey = "orbitdeck.ft4.waterfallSlotLines"
-    /// Waterfall visible history in seconds (Int: 12 / 24 / 48, default 24).
+    /// Waterfall visible history in seconds (Int: 12 / 24 / 48, default 12).
     static let waterfallSecondsKey = "orbitdeck.ft4.waterfallSeconds"
     /// Drop decodes with |DT| > 1.5 s (Bool, default on).
     static let dtFilterKey = "orbitdeck.ft4.dtFilter"
@@ -3939,7 +4050,8 @@ final class PacketEngine: ObservableObject {
     @Published private(set) var heard: [PacketHeardStation] = []
     @Published private(set) var objects: [PacketObject] = []
     @Published private(set) var channelBusy = false
-    @Published private(set) var rxLevel: Float = 0
+    /// Live RX input level (0…1) for the meter.
+    let meters = LiveMeters()
     @Published private(set) var heardSelfViaSatellite = false
     @Published private(set) var stats = (sent: 0, digipeated: 0, medianDelay: 0.0)
     /// The last automatically logged QSO, for the card ("Logged W1AW at 14:05").
@@ -3962,7 +4074,10 @@ final class PacketEngine: ObservableObject {
     @Published private(set) var runningModem: PacketModem = .afsk1200
     /// We put the radio in its data sub-mode at start (undone at stop).
     private var engagedDataMode = false
+    /// RX peak since the last meter tick, kept under `peakLock` (written on the audio
+    /// thread) so the main-thread meter never waits on a busy demodulator queue.
     private nonisolated(unsafe) var peak: Float = 0
+    private nonisolated let peakLock = NSLock()
     private let txLock = NSLock()
     private nonisolated(unsafe) var txBuffer: [Float] = []
     private nonisolated(unsafe) var txIndex = 0
@@ -4130,8 +4245,10 @@ final class PacketEngine: ObservableObject {
     /// network audio. With a USB interface or the phone-mic fallback the phone's
     /// output IS the TX path (VOX would key on it), so nothing is played.
     var phoneAudioIsSafe: Bool {
-        if settings.transport.isKISS { return true }
-        return !(audio?.usbConnected ?? true) && rig?.icomAudioTransport != nil
+        // A connected USB interface takes the app's output route even when packet itself
+        // runs on KISS (FT4/SSTV/voice on another radio), so nothing plays then.
+        guard !(audio?.usbConnected ?? true) else { return false }
+        return settings.transport.isKISS || rig?.icomAudioTransport != nil
     }
 
     // MARK: Start / stop
@@ -4187,7 +4304,7 @@ final class PacketEngine: ObservableObject {
         pendingMessages.removeAll()
         satgate.stop()
         endSession()
-        isTransmitting = false; isRunning = false; channelBusy = false; rxLevel = 0
+        isTransmitting = false; isRunning = false; channelBusy = false; meters.setLevel(0)
         status = "Idle"
         AudioActivity.end()
         AudioActivity.releaseMode("Packet")
@@ -4233,10 +4350,11 @@ final class PacketEngine: ObservableObject {
     }
 
     private nonisolated func ingest(_ frames: [Float]) {
-        let p = frames.reduce(Float(0)) { max($0, abs($1)) }
+        var p: Float = 0
+        if !frames.isEmpty { vDSP_maxmgv(frames, 1, &p, vDSP_Length(frames.count)) }
+        peakLock.withLock { if p > peak { peak = p } }
         demodQueue.async { [weak self] in
             guard let self, let demod = self.demod else { return }
-            if p > self.peak { self.peak = p }
             let decoded = demod.process(frames)
             let busy = demod.channelBusy
             // Hop to the main actor only when something changed: a Task per audio buffer
@@ -4254,8 +4372,8 @@ final class PacketEngine: ObservableObject {
     private func startMeter() {
         meterTimer = Self.mainTimer(every: 0.1) { [weak self] in
             guard let self else { return }
-            let p = self.demodQueue.sync { () -> Float in let v = self.peak; self.peak = 0; return v }
-            self.rxLevel = max(p, self.rxLevel * 0.75)
+            let p = self.peakLock.withLock { () -> Float in let v = self.peak; self.peak = 0; return v }
+            self.meters.decayLevel(peak: p)
         }
     }
 
@@ -4419,7 +4537,8 @@ final class PacketEngine: ObservableObject {
                         if settings.alertDigipeated {
                             alert(key: "digi", title: "Digipeated",
                                   body: String(format: "Your frame came back through %@ after %.1f s.",
-                                               frame.digipeaters[frame.repeatingDigiIndex ?? 0].call, delay))
+                                               frame.repeatingDigiIndex.map { frame.digipeaters[$0].call }
+                                                   ?? frame.digipeaters.first?.call ?? "the satellite", delay))
                         }
                     }
                 } else {
@@ -4792,7 +4911,8 @@ final class PacketEngine: ObservableObject {
                 if let logID = send(info: APRS.message(to: addressee, text: body, id: id)),
                    let i = log.firstIndex(where: { $0.id == logID }) {
                     log[i].awaitingAck = true
-                    pendingMessages[id] = PacketMessageRetry(id: id, logID: logID, frame: log[i].frame, firstSent: Date())
+                    pendingMessages[id] = PacketMessageRetry(id: id, logID: logID, frame: log[i].frame, firstSent: Date(),
+                                                             satelliteID: store?.selectedSatellite?.id)
                 }
             } else {
                 send(info: APRS.message(to: addressee, text: body))
@@ -5030,9 +5150,14 @@ final class PacketEngine: ObservableObject {
     private func housekeeping() {
         guard isRunning else { return }
         let now = Date()
-        let up = satelliteUp
+        // Unknown elevation counts as down, like beacons.
+        let up = satelliteUpForBeacon
+        let currentSat = store?.selectedSatellite?.id
         for (id, var p) in pendingMessages {
-            switch p.action(now: now, satelliteUp: up, enabled: settings.retryMessages) {
+            // The frame carries the old satellite's path: never resend it on another bird.
+            let action: PacketMessageRetry.Action = p.satelliteID != currentSat ? .giveUp
+                : p.action(now: now, satelliteUp: up, enabled: settings.retryMessages)
+            switch action {
             case .wait:
                 continue
             case .resend:
@@ -5179,11 +5304,14 @@ struct PacketMessageRetry: Equatable, Sendable {
     let logID: UUID
     let frame: AX25Frame
     let firstSent: Date
+    /// The satellite it was sent through (its via path is baked into `frame`).
+    var satelliteID: UInt? = nil
     var retries = 0
     var nextAt: Date
 
-    init(id: String, logID: UUID, frame: AX25Frame, firstSent: Date) {
+    init(id: String, logID: UUID, frame: AX25Frame, firstSent: Date, satelliteID: UInt? = nil) {
         self.id = id; self.logID = logID; self.frame = frame; self.firstSent = firstSent
+        self.satelliteID = satelliteID
         nextAt = firstSent.addingTimeInterval(Self.interval)
     }
 
@@ -6449,8 +6577,10 @@ final class CWDecoder: ObservableObject {
     @Published private(set) var snrDb: Double = 0
     @Published private(set) var markOn = false
     /// Scrolling spectrum of the search range (newest row at the bottom).
-    @Published private(set) var waterfall: UIImage?
-    @Published private(set) var inputLevel: Float = 0
+    /// Live input level (0…1).
+    let meters = LiveMeters()
+    /// The spectrum strip (separate so level ticks don't redraw it).
+    let spectrum = LiveMeters()
 
     /// Freeze the pitch where it is (no automatic search, no AFC).
     @Published var pitchLocked = false {
@@ -6523,7 +6653,7 @@ final class CWDecoder: ObservableObject {
         source?.stop(); source = nil
         publishTimer?.cancel(); publishTimer = nil
         isRunning = false
-        acquired = false; markOn = false; inputLevel = 0
+        acquired = false; markOn = false; meters.setLevel(0); spectrum.image = nil
         AudioActivity.end()
         // Print the character in progress, then drop the session.
         work.async { [weak self] in
@@ -6638,7 +6768,7 @@ final class CWDecoder: ObservableObject {
         levelSmoothed = max(p, levelSmoothed * 0.75)      // fast attack, slow release
         let level = levelSmoothed
         guard let d = demod else {
-            Task { @MainActor in if self.isRunning { self.inputLevel = level } }
+            Task { @MainActor in if self.isRunning { self.meters.setLevel(level) } }
             return
         }
         let text = d.drainText()
@@ -6647,12 +6777,17 @@ final class CWDecoder: ObservableObject {
         let image = rows.isEmpty ? nil : renderWaterfall(rows)
         Task { @MainActor in
             guard self.isRunning || !text.isEmpty else { return }
-            self.inputLevel = level
+            if self.isRunning { self.meters.setLevel(level) }
             self.append(text)
             if self.isRunning {
-                self.pitchHz = snap.pitchHz; self.acquired = snap.acquired
-                self.wpm = snap.wpm; self.snrDb = snap.snrDb; self.markOn = snap.markOn
-                if let image { self.waterfall = image }
+                // Assign only on change: each @Published set re-renders the CW card.
+                // (Pitch, speed and SNR are shown rounded, so compare at that resolution.)
+                if self.pitchHz.rounded() != snap.pitchHz.rounded() { self.pitchHz = snap.pitchHz }
+                if self.acquired != snap.acquired { self.acquired = snap.acquired }
+                if self.wpm.rounded() != snap.wpm.rounded() { self.wpm = snap.wpm }
+                if self.snrDb.rounded() != snap.snrDb.rounded() { self.snrDb = snap.snrDb }
+                if self.markOn != snap.markOn { self.markOn = snap.markOn }
+                if let image { self.spectrum.image = image }
             }
         }
     }

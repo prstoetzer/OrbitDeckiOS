@@ -19,8 +19,10 @@ import Combine
 @MainActor
 final class PassRecorder: ObservableObject {
     @Published private(set) var isRecording = false
+    /// Whole seconds recorded (published once a second — the card shows seconds).
     @Published private(set) var elapsed: TimeInterval = 0
-    @Published private(set) var level: Float = 0        // 0…1 peak meter
+    /// The 0…1 peak meter, on its own object so its 10 Hz updates only redraw the meter.
+    let meters = LiveMeters()
     /// Recording input gain (linear); scales the captured audio into the file. Persisted.
     @Published var inputGain: Float {
         didSet { source?.inputGain = inputGain; AudioGainStore.save(gainKey, inputGain) }
@@ -123,7 +125,7 @@ final class PassRecorder: ObservableObject {
         source = nil
         if activityHeld { AudioActivity.end(); activityHeld = false }
         meterTimer?.cancel(); meterTimer = nil
-        let duration = elapsed
+        let duration = startDate.map { Date().timeIntervalSince($0) } ?? elapsed
         let sat = self.sat, filename = self.filename, start = startDate ?? Date()
         let isMemo = self.isMemo, stub = memoStub
         memoStub = nil
@@ -136,7 +138,7 @@ final class PassRecorder: ObservableObject {
             DispatchQueue.main.async {
                 self?.isRecording = false
                 self?.stopping = false
-                self?.level = 0
+                self?.meters.setLevel(0)
                 if duration >= 0.5, exists {
                     let entry = RecordingEntry(sat: sat, start: start, duration: duration, filename: filename,
                                                isMemo: isMemo ? true : nil)
@@ -206,10 +208,11 @@ final class PassRecorder: ObservableObject {
         t.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100))
         t.setEventHandler { [weak self] in
             guard let self, let start = self.startDate else { return }
-            self.elapsed = Date().timeIntervalSince(start)
+            let now = Date().timeIntervalSince(start)
+            if now.rounded(.down) != self.elapsed { self.elapsed = now.rounded(.down) }
             self.peakLock.lock(); let p = self.peak; self.peak = 0; self.peakLock.unlock()
-            self.level = max(p, self.level * 0.75)   // fast attack, slow release
-            if self.isMemo, self.elapsed >= Self.memoCap { self.stop() }
+            self.meters.decayLevel(peak: p)
+            if self.isMemo, now >= Self.memoCap { self.stop() }
         }
         t.resume()
         meterTimer = t

@@ -124,7 +124,7 @@ final class SSTVDecoder: ObservableObject {
         didSet { source?.inputGain = inputGain; AudioGainStore.save("orbitdeck.sstv.inputGain", inputGain) }
     }
     /// Live input level (0…1) for the level meter.
-    @Published private(set) var inputLevel: Float = 0
+    private(set) lazy var meters = LiveMeters()   // lazy: the init is nonisolated
     private nonisolated(unsafe) var inPeak: Float = 0
     private nonisolated(unsafe) var levelSmoothed: Float = 0
     private nonisolated(unsafe) var levelTimer: DispatchSourceTimer?
@@ -325,7 +325,7 @@ final class SSTVDecoder: ObservableObject {
             let p = self.lock.withLock { () -> Float in let v = self.inPeak; self.inPeak = 0; return v }
             self.levelSmoothed = max(p, self.levelSmoothed * 0.75)   // fast attack, slow release
             let v = self.levelSmoothed
-            Task { @MainActor in self.inputLevel = v }
+            Task { @MainActor in self.meters.setLevel(v) }
         }
         t.resume()
         levelTimer = t
@@ -335,7 +335,7 @@ final class SSTVDecoder: ObservableObject {
         guard isListening else { return }
         source?.stop(); source = nil
         levelTimer?.cancel(); levelTimer = nil
-        levelSmoothed = 0; inputLevel = 0
+        levelSmoothed = 0; meters.setLevel(0)
         isListening = false
         autoStarted = false
         autoRunningSatellite = nil

@@ -195,17 +195,35 @@ private let navGroups: [NavGroup] = [
     NavGroup(id: "catalog", title: "CATALOG & CONFIGURATION", items: [.satellites, .newlaunch, .sites, .calibrations, .autoswitch, .settings, .help, .about])
 ]
 
-struct RootView: View {
-    @EnvironmentObject private var store: OrbitStore
-    @EnvironmentObject private var notifications: NotificationRouter
-    @EnvironmentObject private var rig: RigController
-    @EnvironmentObject private var rotator: RotatorController
-    // Receive/transmit sessions that keep the screen awake while they run (read-only).
+/// Reports whether any receive/transmit session that shouldn't be interrupted by
+/// auto-lock is running: FT4, SSTV listening, packet, CW decoding or a pass recording.
+/// A separate leaf view so only it re-renders when the engines publish.
+private struct SessionActivityProbe: View {
     @EnvironmentObject private var ft4: FT4Engine
     @EnvironmentObject private var sstv: SSTVDecoder
     @EnvironmentObject private var packet: PacketEngine
     @EnvironmentObject private var cw: CWDecoder
     @EnvironmentObject private var recorder: PassRecorder
+    @Binding var running: Bool
+
+    private var anyRunning: Bool {
+        ft4.isRunning || sstv.isListening || packet.isRunning || cw.isRunning || recorder.isRecording
+    }
+
+    var body: some View {
+        Color.clear
+            .onChange(of: anyRunning, initial: true) { _, now in if running != now { running = now } }
+    }
+}
+
+struct RootView: View {
+    @EnvironmentObject private var store: OrbitStore
+    @EnvironmentObject private var notifications: NotificationRouter
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var rotator: RotatorController
+    // Whether a receive/transmit session runs (reported by SessionActivityProbe, which
+    // observes the engines so their 10 Hz meter updates don't re-render the whole app).
+    @State private var sessionRunning = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var autoLocation = LocationProvider()
@@ -348,6 +366,7 @@ struct RootView: View {
             updateLocationFollow(); applyIdleTimer(active: scenePhase == .active)
         }
         .onChange(of: keepScreenAwakeHome) { _, _ in applyIdleTimer(active: scenePhase == .active) }
+        .background(SessionActivityProbe(running: $sessionRunning))
         .onChange(of: sessionRunning) { _, _ in applyIdleTimer(active: scenePhase == .active) }
         .onChange(of: notifications.openHomeRequested) { _, requested in
             if requested { selection = .home; notifications.openHomeRequested = false }
@@ -400,12 +419,6 @@ struct RootView: View {
         guard store.locationMode == .currentLocation else { autoLocation.stopFollowing(); return }
         autoLocation.setPrecise(false)
         autoLocation.startFollowing()
-    }
-
-    /// Any receive/transmit session that shouldn't be interrupted by auto-lock: FT4,
-    /// SSTV listening, packet, CW decoding or a pass recording.
-    private var sessionRunning: Bool {
-        ft4.isRunning || sstv.isListening || packet.isRunning || cw.isRunning || recorder.isRecording
     }
 
     /// Keep the display awake while the app is foreground-active and either a

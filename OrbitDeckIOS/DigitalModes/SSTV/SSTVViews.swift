@@ -83,11 +83,13 @@ struct HomeSSTVCard: View {
 
                 // Level meter + calibration tucked into a disclosure so the card stays
                 // uncluttered (mirrors the FT4 card).
-                DisclosureGroup("Setup & calibration", isExpanded: $showSetup) {
+                SetupDisclosure("Setup & calibration", isExpanded: $showSetup) {
                     VStack(alignment: .leading, spacing: 8) {
                         // Always available so the operator can set the level before decoding
                         // (persisted across launches); the meter reads 0 until listening.
-                        AudioLevelControl(title: "Input level", gain: $decoder.inputGain, level: decoder.inputLevel)
+                        LiveMetersReader(meters: decoder.meters) { m in
+                            AudioLevelControl(title: "Input level", gain: $decoder.inputGain, level: m.level)
+                        }
                         Text("SSTV is FM — level doesn't set the colors, but keep the meter out of the red and off the floor for a clean decode.")
                             .font(.caption2).foregroundStyle(ODTheme.muted)
                         compensation
@@ -139,33 +141,33 @@ struct HomeSSTVCard: View {
             }
             .toggleStyle(.switch)
             HStack {
-                Text("Slant").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 46, alignment: .leading)
+                Text("Slant").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%+.3f%%", decoder.slant * 100))
                     .font(.caption2.monospacedDigit())
             }
             FineSlider(value: $decoder.slant, range: -0.02...0.02, step: 0.0005)
             HStack {
-                Text("Tuning").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 46, alignment: .leading)
+                Text("Tuning").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%+.0f Hz", decoder.tuningHz))
                     .font(.caption2.monospacedDigit())
             }
             FineSlider(value: $decoder.tuningHz, range: -400...400, step: 5)
             HStack {
-                Text("H-shift").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 62, alignment: .leading)
+                Text("H-shift").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%+.1f ms", decoder.hShiftMs)).font(.caption2.monospacedDigit())
             }
             FineSlider(value: $decoder.hShiftMs, range: -60...60, step: 0.5)
             HStack {
-                Text("Contrast").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 62, alignment: .leading)
+                Text("Contrast").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%.2f×", decoder.contrast)).font(.caption2.monospacedDigit())
             }
             FineSlider(value: $decoder.contrast, range: 0.5...2.5, step: 0.05)
             HStack {
-                Text("Saturation").font(.caption2).foregroundStyle(ODTheme.muted).frame(width: 62, alignment: .leading)
+                Text("Saturation").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%.2f×", decoder.saturation)).font(.caption2.monospacedDigit())
             }

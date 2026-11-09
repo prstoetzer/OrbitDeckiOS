@@ -217,8 +217,11 @@ final class RigController: ObservableObject {
     private func resolveEngagement() {
         guard let store, let sel = store.selectedSatellite else { return }
         guard let current = engagedNorad, current != sel.id else {
-            engagedNorad = sel.id
-            pendingSwitchNorad = nil; dismissedSwitchNorad = nil
+            // Runs every Doppler tick: assign the @Published values only on change, or
+            // each tick would re-render every view observing the rig controller.
+            if engagedNorad != sel.id { engagedNorad = sel.id }
+            if pendingSwitchNorad != nil { pendingSwitchNorad = nil }
+            dismissedSwitchNorad = nil
             Self.automaticSelectionNorad = nil
             return
         }
@@ -912,6 +915,11 @@ final class RigController: ObservableObject {
     /// one extra tick. Skipped while a rigctld-server client holds the dial
     /// (`externalHold`), so FT4's per-slot step never overwrites a client-set frequency.
     func stepDopplerNow() async {
+        guard connected, !externalHold else { return }
+        // Wait briefly for an in-flight tick or RF-power read instead of skipping: FT4
+        // marks the slot as stepped before calling, so a skip would leave the dial a slot stale.
+        var waited = 0
+        while isTicking, waited < 1500 { await pace(20); waited += 20 }
         guard connected, !isTicking, !externalHold else { return }
         isTicking = true
         await tick()
@@ -1049,7 +1057,8 @@ final class RigController: ObservableObject {
                                                           uplinkCalibrationHz: Double(config.tuning.calUplinkHz))
         // Transverter LO: the rig tunes (real − LO).
         let rxReal = corrected.rx, txReal = corrected.tx
-        downlinkDialHz = rxReal; uplinkDialHz = txReal
+        if downlinkDialHz != rxReal { downlinkDialHz = rxReal }
+        if uplinkDialHz != txReal { uplinkDialHz = txReal }
         let rxRig = rxReal - config.tuning.xvtrDownlinkHz
         let txRig = txReal - config.tuning.xvtrUplinkHz
         lastTargetTx = uplink > 0 ? txRig : 0
@@ -1847,6 +1856,8 @@ final class RigController: ObservableObject {
     /// `\power2mW`). nil when the radio can't say, isn't connected, or a tick is busy —
     /// callers then say nothing. Never blocks transmitting.
     func readRFPowerWatts() async -> Double? {
+        var waited = 0
+        while isTicking, waited < 1500 { await pace(20); waited += 20 }
         guard connected, !isTicking, !externalHold,
               let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else { return nil }
         isTicking = true

@@ -129,9 +129,44 @@ final class QSOStore: ObservableObject {
         guard !entries.isEmpty else { return }
         ft4Traffic.append(contentsOf: entries)
         if ft4Traffic.count > Self.ft4TrafficCap { ft4Traffic.removeFirst(ft4Traffic.count - Self.ft4TrafficCap) }
-        save(ft4Traffic, "FT4Traffic.json")
+        scheduleFT4TrafficSave()
     }
-    func clearFT4Traffic() { ft4Traffic.removeAll(); save(ft4Traffic, "FT4Traffic.json") }
+    func clearFT4Traffic() {
+        ft4Traffic.removeAll()
+        ft4TrafficSavePending = true
+        flushFT4Traffic()
+    }
+
+    // FT4 activity persistence is coalesced and written off the main thread: encoding up to
+    // `ft4TrafficCap` lines on every slot (two or three batches per slot with TX and
+    // subtraction) stalled the UI for tens of milliseconds each time.
+    private var ft4TrafficSavePending = false
+    /// Serial, so background writes land in the order they were queued.
+    private nonisolated static let ioQueue = DispatchQueue(label: "org.orbitdeck.qsostore.io", qos: .utility)
+
+    private func scheduleFT4TrafficSave() {
+        guard !ft4TrafficSavePending else { return }
+        ft4TrafficSavePending = true
+        PacketEngine.mainAfter(3) { [weak self] in self?.flushFT4Traffic() }
+    }
+
+    /// Write any pending FT4 activity now (encoded and written in the background).
+    func flushFT4Traffic() {
+        guard ft4TrafficSavePending else { return }
+        ft4TrafficSavePending = false
+        guard !FactoryResetService.didReset else { return }
+        Self.writeInBackground(ft4Traffic, to: Self.appSupport.appendingPathComponent("FT4Traffic.json"))
+    }
+
+    private nonisolated static func writeInBackground<T: Encodable & Sendable>(_ value: T, to url: URL) {
+        ioQueue.async {
+            guard let data = try? JSONEncoder().encode(value) else { return }
+            // A factory reset may have run while this was encoding: don't write erased data back.
+            let reset = DispatchQueue.main.sync { MainActor.assumeIsolated { FactoryResetService.didReset } }
+            guard !reset else { return }
+            try? data.write(to: url, options: .atomic)
+        }
+    }
 
     func addSSTVImage(_ s: SSTVImageEntry) { sstvImages.insert(s, at: 0); save(sstvImages, "SSTVImages.json") }
     func deleteSSTVImage(_ s: SSTVImageEntry) {

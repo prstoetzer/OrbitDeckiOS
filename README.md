@@ -23,9 +23,9 @@ OrbitDeck is a companion to the OrbitDeck desktop app and CardSat by Paul Stoetz
 - **Digital modes & audio** — over a USB audio interface or an Icom network-audio radio:
   - **Pass recording.**
   - **CW decoder:** automatic tone tracking, adaptive speed, prosigns, tap-to-log callsigns.
-  - **Packet / APRS:** built-in 1200 and 9600 (G3RUH) baud modems or a BLE KISS TNC; APRS messages and beacons through satellites and the ISS; heard-station map with symbols; automatic QSO logging.
-  - **SSTV:** Doppler-aware auto-tune, damaged-header fallback, line repair, combined copies, a gallery with re-decode, auto start/stop by elevation.
-  - **Full-duplex FT4** on a linear transponder: Doppler-corrected, late start, wait-and-pounce, CQ block list, automatic transponder calibration from your own signal, PTT over CAT.
+  - **Packet / APRS:** built-in 1200 and 9600 (G3RUH) baud modems, a BLE KISS TNC or KISS over TCP (Direwolf, soundmodem); APRS messages (with retries) and position/status beacons through satellites and the ISS, gated by minimum elevation; objects, items, weather and third-party packets; heard-station map with symbols; alerts and a watch list; a saved per-pass log with TNC2/CSV export; an opt-in receive-only RF → APRS-IS satgate; automatic QSO logging.
+  - **SSTV:** Martin, Scottie (incl. M3/M4/S3/S4), Robot and PD modes; Doppler-aware auto-tune, damaged-header fallback, line repair, combined copies, a gallery with re-decode, auto start/stop by elevation.
+  - **Full-duplex FT4** on a linear transponder: Doppler-corrected, late start, wait-and-pounce, CQ block list, signal subtraction and deep re-decode, DT column, new-call/grid highlighting, a waterfall, a Tune button, a TX watchdog, automatic transponder calibration from your own signal, PTT over CAT. Not offered on FM-only transponders.
   - **Audio health:** stalled or silent input is detected and recovered.
   - FT4 uses the MIT [ft8_lib](https://github.com/kgoba/ft8_lib). FT4 is ~100% duty cycle — limit power.
 - **Logging, LoTW & awards** — on-device QSO log with a Home quick-log card and voice memos that become QSO entries.
@@ -84,7 +84,7 @@ OrbitDeck retrieves publicly available data and identifies itself politely:
 | SatNOGS | Transponder database and new-launch discovery |
 | hams.at | Upcoming satellite activations; posting your own alerts with your API key (optional) |
 | Open-Meteo | Weather and cloud cover for planning (location rounded to about 1 km) |
-| APRS-IS (optional) | Receive-only nearby APRS stations, logged in with your callsign |
+| APRS-IS (optional) | Receive-only nearby APRS stations, logged in with your callsign; if you turn on the satgate, packets heard over the satellite are uploaded with your callsign and passcode |
 | DX cluster (optional) | DX spots from a cluster you choose |
 | ADS-B (optional) | Aircraft from your own receiver on your network |
 | QRZ (optional) | Callsign lookup and name/state fill, if you provide credentials |

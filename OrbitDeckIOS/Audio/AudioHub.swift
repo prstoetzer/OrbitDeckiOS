@@ -397,7 +397,9 @@ final class AudioHub: ObservableObject {
     }
 
     // MARK: Shared input-level meter (for the monitor/voice card)
-    @Published private(set) var inputLevel: Float = 0
+    // Not published: only RemoteVoiceController polls it (into its own micLevel); a 10 Hz
+    // publish here would re-render every card that observes the hub.
+    private(set) var inputLevel: Float = 0
     private nonisolated(unsafe) var levelPeak: Float = 0
     private nonisolated(unsafe) let levelLock = NSLock()
     private var levelTimer: DispatchSourceTimer?

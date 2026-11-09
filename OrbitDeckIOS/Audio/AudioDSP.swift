@@ -120,6 +120,39 @@ final class SpectrumAnalyzer: @unchecked Sendable {
     }
     deinit { vDSP_destroy_fftsetup(setup) }
 
+    // Reused work buffers for `accumulatePower` (the FT4 waterfall runs it 10–20×/s).
+    private lazy var workWindowed = [Float](repeating: 0, count: n)
+    private lazy var workReal = [Float](repeating: 0, count: half)
+    private lazy var workImag = [Float](repeating: 0, count: half)
+    private lazy var workMags = [Float](repeating: 0, count: half)
+
+    /// Add the linear power of bins 0..<`bins` for the `n` samples at `src` into `acc`
+    /// (same scale and 1e-9 floor as `magnitudesDB`, before the dB conversion). No
+    /// allocations. Returns false if `bins` is out of range.
+    @discardableResult
+    func accumulatePower(_ src: UnsafePointer<Float>, into acc: UnsafeMutablePointer<Float>, bins: Int) -> Bool {
+        guard bins > 0, bins <= half else { return false }
+        vDSP_vmul(src, 1, window, 1, &workWindowed, 1, vDSP_Length(n))
+        workReal.withUnsafeMutableBufferPointer { r in
+            workImag.withUnsafeMutableBufferPointer { i in
+                var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
+                workWindowed.withUnsafeBufferPointer { w in
+                    w.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: half) { c in
+                        vDSP_ctoz(c, 2, &split, 1, vDSP_Length(half))
+                    }
+                }
+                vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                workMags.withUnsafeMutableBufferPointer { m in
+                    vDSP_zvmags(&split, 1, m.baseAddress!, 1, vDSP_Length(bins))
+                    var floorv: Float = 1e-9
+                    vDSP_vsadd(m.baseAddress!, 1, &floorv, m.baseAddress!, 1, vDSP_Length(bins))
+                    vDSP_vadd(acc, 1, m.baseAddress!, 1, acc, 1, vDSP_Length(bins))
+                }
+            }
+        }
+        return true
+    }
+
     /// Per-bin magnitude in dB for the most recent `n` samples of `input`
     /// (returns `half` bins spanning DC…Nyquist). Empty if too little data.
     func magnitudesDB(_ input: [Float]) -> [Float] {

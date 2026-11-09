@@ -68,6 +68,7 @@ struct OrbitDeckIOSApp: App {
                         Task { await liveActivity.refresh() }
                     case .background:
                         liveActivity.didEnterBackground()
+                        qsoLog.flushFT4Traffic()   // the coalesced FT4 activity write
                     default:
                         break
                     }

@@ -211,94 +211,104 @@ struct HomeView: View {
 
                 if let satellite = store.selectedSatellite {
                     liveTrack(satellite)
-                    transponderCard(satellite)
-                    HomeRigControlCard(satellite: satellite,
-                                       selectedTransponderID: selectedTransponder(satellite)?.id,
-                                       passbandOffsetHz: $passbandOffsetHz,
-                                       selectTransponder: { selectedTransponderID = $0 })
-                    HomeRotatorCard(satellite: satellite)
-                    HomeQuickLogCard(satellite: satellite)
-                    HomeRemoteAudioCard(satellite: satellite)
-                    HomeRecordingCard(satellite: satellite)
-                    HomeSSTVCard(satellite: satellite)
-                    HomeFT4Card(satellite: satellite)
-                    HomeCWCard(satellite: satellite)
-                    HomePacketCard(satellite: satellite)
-                    HomeAmsatQuickReport(satellite: satellite)
+                    // Inset the cards from the screen edges (like the live readouts above)
+                    // so trailing controls — switches, menus, buttons — sit clear of the
+                    // vertical scroll indicator. `Group` applies the padding to each card.
+                    Group {
+                        transponderCard(satellite)
+                        HomeRigControlCard(satellite: satellite,
+                                           selectedTransponderID: selectedTransponder(satellite)?.id,
+                                           passbandOffsetHz: $passbandOffsetHz,
+                                           selectTransponder: { selectedTransponderID = $0 })
+                        HomeRotatorCard(satellite: satellite)
+                        HomeQuickLogCard(satellite: satellite)
+                        HomeRemoteAudioCard(satellite: satellite)
+                        HomeRecordingCard(satellite: satellite)
+                        HomeSSTVCard(satellite: satellite)
+                        HomeFT4Card(satellite: satellite)
+                        HomeCWCard(satellite: satellite)
+                        HomePacketCard(satellite: satellite)
+                        HomeAmsatQuickReport(satellite: satellite)
+                    }
+                    .padding(.horizontal)
                 }
 
-                fleetDashboard
+                Group { fleetDashboard }
+                    .padding(.horizontal)
 
                 if let satellite = store.selectedSatellite {
-                    SectionCard("Station") {
-                        MetricRow("Name", store.preferences.observer.name)
-                        MetricRow(
-                            "Coordinates",
-                            String(
-                                format: "%.5f°, %.5f°",
-                                store.preferences.observer.latitude,
-                                store.preferences.observer.longitude
-                            )
-                        )
-                        MetricRow("Grid", store.operatorGrid6)
-                        let vucc = store.operatorVuccGrids
-                        if vucc.count > 1 {
+                    Group {
+                        SectionCard("Station") {
+                            MetricRow("Name", store.preferences.observer.name)
                             MetricRow(
-                                vucc.count >= 4 ? "On grid corner — VUCC grids" : "On grid line — VUCC grids",
-                                vucc.joined(separator: ", "),
-                                valueColor: ODTheme.good
+                                "Coordinates",
+                                String(
+                                    format: "%.5f°, %.5f°",
+                                    store.preferences.observer.latitude,
+                                    store.preferences.observer.longitude
+                                )
                             )
-                        }
-                        // In current-location mode, annotate with the reverse-geocoded
-                        // DXCC entity and administrative subdivisions.
-                        CurrentLocationEntityInfo { info in
-                            MetricRow("DXCC", info.dxccLabel ?? "—", valueColor: ODTheme.good)
-                            if let primary = info.primarySubdivision {
-                                MetricRow("Primary subdivision", primary)
+                            MetricRow("Grid", store.operatorGrid6)
+                            let vucc = store.operatorVuccGrids
+                            if vucc.count > 1 {
+                                MetricRow(
+                                    vucc.count >= 4 ? "On grid corner — VUCC grids" : "On grid line — VUCC grids",
+                                    vucc.joined(separator: ", "),
+                                    valueColor: ODTheme.good
+                                )
                             }
-                            if let secondary = info.secondarySubdivision {
-                                MetricRow("Secondary subdivision", secondary)
-                            }
-                        }
-                        MetricRow("Altitude", ODFormat.units(String(format: "%.0f m", store.preferences.observer.altitudeMeters)))
-                        MetricRow("Minimum elevation", ODFormat.angle(store.preferences.minElevation))
-                    }
-
-                    SectionCard("Next qualifying pass") {
-                        if let pass = nextPass {
-                            MetricRow("AOS", ODFormat.utc.string(from: pass.aos), valueColor: ODTheme.good)
-                            MetricRow("TCA", ODFormat.utc.string(from: pass.tca))
-                            MetricRow("LOS", ODFormat.utc.string(from: pass.los), valueColor: ODTheme.warning)
-                            MetricRow("Maximum elevation", ODFormat.angle(pass.maxElevation, decimals: 1))
-                            MetricRow(
-                                "AOS → LOS",
-                                "\(ODFormat.compass(pass.aosAzimuth)) \(ODFormat.angle(pass.aosAzimuth, decimals: 0)) → \(ODFormat.compass(pass.losAzimuth)) \(ODFormat.angle(pass.losAzimuth, decimals: 0))"
-                            )
-                            if pass.aos > Date() {
-                                HStack {
-                                    Spacer()
-                                    PassAlarmButton(satellite: satellite, pass: pass,
-                                                    observer: store.preferences.observer,
-                                                    leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)
+                            // In current-location mode, annotate with the reverse-geocoded
+                            // DXCC entity and administrative subdivisions.
+                            CurrentLocationEntityInfo { info in
+                                MetricRow("DXCC", info.dxccLabel ?? "—", valueColor: ODTheme.good)
+                                if let primary = info.primarySubdivision {
+                                    MetricRow("Primary subdivision", primary)
+                                }
+                                if let secondary = info.secondarySubdivision {
+                                    MetricRow("Secondary subdivision", secondary)
                                 }
                             }
-                        } else if let passError {
-                            Text(passError)
-                                .foregroundStyle(ODTheme.warning)
-                        } else {
-                            ProgressView()
+                            MetricRow("Altitude", ODFormat.units(String(format: "%.0f m", store.preferences.observer.altitudeMeters)))
+                            MetricRow("Minimum elevation", ODFormat.angle(store.preferences.minElevation))
+                        }
+
+                        SectionCard("Next qualifying pass") {
+                            if let pass = nextPass {
+                                MetricRow("AOS", ODFormat.utc.string(from: pass.aos), valueColor: ODTheme.good)
+                                MetricRow("TCA", ODFormat.utc.string(from: pass.tca))
+                                MetricRow("LOS", ODFormat.utc.string(from: pass.los), valueColor: ODTheme.warning)
+                                MetricRow("Maximum elevation", ODFormat.angle(pass.maxElevation, decimals: 1))
+                                MetricRow(
+                                    "AOS → LOS",
+                                    "\(ODFormat.compass(pass.aosAzimuth)) \(ODFormat.angle(pass.aosAzimuth, decimals: 0)) → \(ODFormat.compass(pass.losAzimuth)) \(ODFormat.angle(pass.losAzimuth, decimals: 0))"
+                                )
+                                if pass.aos > Date() {
+                                    HStack {
+                                        Spacer()
+                                        PassAlarmButton(satellite: satellite, pass: pass,
+                                                        observer: store.preferences.observer,
+                                                        leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)
+                                    }
+                                }
+                            } else if let passError {
+                                Text(passError)
+                                    .foregroundStyle(ODTheme.warning)
+                            } else {
+                                ProgressView()
+                            }
+                        }
+
+                        SectionCard("Elements") {
+                            MetricRow("NORAD", "\(satellite.id)")
+                            MetricRow("International", satellite.internationalDesignator.isEmpty ? "—" : satellite.internationalDesignator)
+                            MetricRow("Epoch", ODFormat.utc.string(from: satellite.epoch))
+                            MetricRow("Period", String(format: "%.2f min", satellite.periodMinutes))
+                            MetricRow("Inclination", ODFormat.angle(satellite.inclinationDeg, decimals: 3))
+                            MetricRow("Perigee", ODFormat.units(String(format: "%.0f km", satellite.perigeeKm)))
+                            MetricRow("Apogee", ODFormat.units(String(format: "%.0f km", satellite.apogeeKm)))
                         }
                     }
-
-                    SectionCard("Elements") {
-                        MetricRow("NORAD", "\(satellite.id)")
-                        MetricRow("International", satellite.internationalDesignator.isEmpty ? "—" : satellite.internationalDesignator)
-                        MetricRow("Epoch", ODFormat.utc.string(from: satellite.epoch))
-                        MetricRow("Period", String(format: "%.2f min", satellite.periodMinutes))
-                        MetricRow("Inclination", ODFormat.angle(satellite.inclinationDeg, decimals: 3))
-                        MetricRow("Perigee", ODFormat.units(String(format: "%.0f km", satellite.perigeeKm)))
-                        MetricRow("Apogee", ODFormat.units(String(format: "%.0f km", satellite.apogeeKm)))
-                    }
+                    .padding(.horizontal)
                 } else {
                     LoadingOrError(
                         isLoading: store.isRefreshingGP,
@@ -538,6 +548,7 @@ struct HomeView: View {
                 Text("Propagation is unavailable for the selected element set.")
                     .foregroundStyle(ODTheme.warning)
             }
+            .padding(.horizontal)
         }
     }
 
@@ -597,6 +608,7 @@ struct HomeView: View {
 
                 if let look, let transponder = selectedTransponder(satellite) {
                     dopplerCard(satellite: satellite, transponder: transponder, rangeRateKmS: look.rangeRateKmS)
+                        .padding(.horizontal)
                 }
             }
         }

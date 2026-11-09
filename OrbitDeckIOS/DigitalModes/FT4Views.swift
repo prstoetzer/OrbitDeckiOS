@@ -32,6 +32,48 @@ struct AudioLevelBar: View {
     }
 }
 
+/// The collapsible setup section of a Home mode card. Used instead of `DisclosureGroup`,
+/// whose automatic style outside a List insets its content so trailing controls (switches,
+/// menus) ran past the card edge, under the scroll indicator. Content gets exactly the
+/// card's width.
+struct SetupDisclosure<Content: View>: View {
+    let title: String
+    @Binding var isExpanded: Bool
+    @ViewBuilder let content: () -> Content
+
+    init(_ title: String, isExpanded: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self._isExpanded = isExpanded
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
+            } label: {
+                HStack {
+                    Text(title).foregroundStyle(.primary)
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tint)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint(isExpanded ? "Hides the setup options" : "Shows the setup options")
+            if isExpanded {
+                content()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// A slider flanked by −/＋ nudge buttons for precise adjustment. Generic over any
 /// BinaryFloatingPoint bound so both Float (gains) and Double (slant/tuning) work.
 struct FineSlider<V: BinaryFloatingPoint>: View where V.Stride: BinaryFloatingPoint {
@@ -158,7 +200,7 @@ struct HomeFT4Card: View {
 
                 // Secondary setup (TX frequency, manual message, audio levels) tucked
                 // behind a disclosure so the card stays uncluttered during operation.
-                DisclosureGroup("Setup & audio levels", isExpanded: $showSetup) {
+                SetupDisclosure("Setup & audio levels", isExpanded: $showSetup) {
                     VStack(alignment: .leading, spacing: 10) {
                         if ft4.isRunning { audioControls }
                         txSetup
@@ -234,7 +276,9 @@ struct HomeFT4Card: View {
             }
             HStack(spacing: 8) {
                 Text("TX audio").font(.caption2).foregroundStyle(ODTheme.muted)
-                ProgressView(value: Double(min(1, ft4.txLevel))).tint(ODTheme.good)
+                LiveMetersReader(meters: ft4.meters) { m in
+                    ProgressView(value: Double(min(1, m.txLevel))).tint(ODTheme.good)
+                }
             }
             Text("TX audio is sent out the audio interface to the radio — monitor the rig, not the phone.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
@@ -327,23 +371,28 @@ struct HomeFT4Card: View {
         VStack(alignment: .leading, spacing: 2) {
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
-                    if let img = ft4.waterfall {
-                        Image(uiImage: img).resizable()
-                            .frame(width: geo.size.width, height: 130)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    } else {
-                        RoundedRectangle(cornerRadius: 6).fill(ODTheme.panel)
-                            .overlay(Text("Waterfall").font(.caption2).foregroundStyle(ODTheme.muted))
-                    }
-                    // Slot-start lines (drawn into the image) get their UTC time here.
-                    if ft4.waterfallSlotLines {
-                        ForEach(ft4.waterfallMarks) { m in
-                            Text(Self.utcShort.string(from: m.date))
-                                .font(.system(size: 8, weight: .semibold).monospacedDigit())
-                                .foregroundStyle(.white.opacity(0.85))
-                                .padding(.horizontal, 2)
-                                .background(Color.black.opacity(0.45))
-                                .offset(x: 2, y: max(0, min(118, 130 * m.position - 10)))
+                    // Only this reader re-renders per waterfall line, not the whole card.
+                    LiveMetersReader(meters: ft4.spectrum) { meters in
+                        ZStack(alignment: .topLeading) {
+                            if let img = meters.image {
+                                Image(uiImage: img).resizable().interpolation(.low)
+                                    .frame(width: geo.size.width, height: 130)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                            } else {
+                                RoundedRectangle(cornerRadius: 6).fill(ODTheme.panel)
+                                    .overlay(Text("Waterfall").font(.caption2).foregroundStyle(ODTheme.muted))
+                            }
+                            // Slot-start lines (drawn into the image) get their UTC time here.
+                            if ft4.waterfallSlotLines {
+                                ForEach(meters.marks) { m in
+                                    Text(Self.utcShort.string(from: m.date))
+                                        .font(.system(size: 8, weight: .semibold).monospacedDigit())
+                                        .foregroundStyle(.white.opacity(0.85))
+                                        .padding(.horizontal, 2)
+                                        .background(Color.black.opacity(0.45))
+                                        .offset(x: 2, y: max(0, min(118, 130 * m.position - 10)))
+                                }
+                            }
                         }
                     }
                     // TX frequency marker (0–3 kHz spans the full width).
@@ -385,15 +434,17 @@ struct HomeFT4Card: View {
     private static let utcShort: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; f.timeZone = TimeZone(identifier: "UTC"); return f
     }()
-    private static let utcCompact: DateFormatter = {
+    static let utcCompact: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HHmmss"; f.timeZone = TimeZone(identifier: "UTC"); return f
     }()
 
     /// RX/TX audio level controls.
     private var audioControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            AudioLevelControl(title: "Input (RX)", gain: $ft4.inputGain, level: ft4.rxLevel)
-            AudioLevelControl(title: "Output (TX)", gain: $ft4.outputGain, level: min(1, ft4.txLevel * ft4.outputGain), range: 0...1)
+            LiveMetersReader(meters: ft4.meters) { m in
+                AudioLevelControl(title: "Input (RX)", gain: $ft4.inputGain, level: m.level)
+                AudioLevelControl(title: "Output (TX)", gain: $ft4.outputGain, level: min(1, m.txLevel * ft4.outputGain), range: 0...1)
+            }
             Text("Set input so the meter peaks in the green on a decode; keep TX modest — FT4 is ~100% duty cycle.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
         }
@@ -408,6 +459,7 @@ struct HomeFT4Card: View {
                 HStack {
                     Label("Band Activity", systemImage: "waveform.badge.magnifyingglass")
                         .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
+                        .lineLimit(1).minimumScaleFactor(0.8)
                     Spacer()
                     legendDot(ODTheme.good, "CQ"); legendDot(ODTheme.accent, "you")
                     legendDot(.orange, "TX"); legendDot(.cyan, "self")
@@ -428,22 +480,12 @@ struct HomeFT4Card: View {
 
             Divider().overlay(ODTheme.muted.opacity(0.3))
 
-            ScrollView {
-                let items = Array(filteredDecodes.suffix(60))
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, d in
-                        // Separate transmit periods with a faint rule (like WSJT-X).
-                        if idx > 0 && items[idx - 1].atSlot != d.atSlot {
-                            Divider().overlay(ODTheme.muted.opacity(0.35))
-                        }
-                        decodeRow(d)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 8).padding(.vertical, 4)
-            }
-            .frame(height: 200)
-            .defaultScrollAnchor(.bottom)
+            // Its own Equatable view: re-rendered only when the rows or their shading
+            // inputs change, not on every publish from the card's other observed objects.
+            FT4DecodeList(items: Array(filteredDecodes.suffix(60)), workedCalls: workedCalls,
+                          workedGrids: workedGrids, ownCall: ft4.ownCall, pounceTargets: ft4.pounceTargets,
+                          blockList: ft4.cqBlockList, ft4: ft4)
+                .equatable()
 
             Divider().overlay(ODTheme.muted.opacity(0.3))
             Text("Tap a station to work it · long-press to pounce or block").font(.system(size: 10)).foregroundStyle(ODTheme.muted)
@@ -478,19 +520,6 @@ struct HomeFT4Card: View {
         .fixedSize()
     }
 
-    /// Whether a decode's sender (or grid) is one of the pounce targets.
-    private func isTarget(_ f: FT4Engine.FT4Fields?) -> Bool {
-        guard let f else { return false }
-        for t in ft4.pounceTokens {
-            if FT4Engine.isGrid(t) {
-                if FT4Engine.isGrid(f.extra), f.extra.uppercased().hasPrefix(String(t.prefix(4))) { return true }
-            } else if FT4Engine.callMatches(f.de, t) || (f.de.isEmpty && FT4Engine.callMatches(f.to, t)) {
-                return true
-            }
-        }
-        return false
-    }
-
     private func legendDot(_ c: Color, _ label: String) -> some View {
         HStack(spacing: 2) {
             Circle().fill(c).frame(width: 6, height: 6)
@@ -498,84 +527,43 @@ struct HomeFT4Card: View {
         }
     }
 
-    private func decodeRow(_ d: FT4DecodedMessage) -> some View {
-        let f = FT4Engine.parse(d.text)
-        let toMe = ft4.isToMe(d.text)
-        let isCQ = f?.isCQ == true
-        let color: Color
-        if d.kind == .sent { color = .orange }                 // my transmitted message
-        else if ft4.isFromMe(d.text) { color = .cyan }         // my own signal heard via full duplex
-        else if toMe { color = ODTheme.accent }                // someone calling me
-        else if isCQ { color = ODTheme.good }                  // CQ
-        else { color = .white }
-        // "New" shading for received stations not yet in the log: a new grid (VUCC) wins
-        // over a new call. Our own messages and echoes are never shaded.
-        var shade: Color = .clear
-        if d.kind == .received, let f, !ft4.isFromMe(d.text) {
-            let sender = f.de.isEmpty || f.de == "<...>" ? "" : f.de.uppercased()
-            if FT4Engine.isGrid(f.extra), !workedGrids.contains(String(f.extra.uppercased().prefix(4))) {
-                shade = Self.newGridShade
-            } else if !sender.isEmpty, !workedCalls.contains(sender),
-                      !sender.split(separator: "/").contains(where: { workedCalls.contains(String($0)) }) {
-                shade = Self.newCallShade
-            }
-        }
-        let target = d.kind == .received && isTarget(f)
-        // WSJT-X row: time · dB · DT · freq · message, monospaced and aligned.
-        let db = d.kind == .sent ? " TX" : String(format: "%3d", d.snr)
-        let dt = d.kind == .sent ? "    " : String(format: "%4.1f", d.dt)
-        return Button { if d.kind != .sent { ft4.work(d) } } label: {
-            HStack(spacing: 5) {
-                Text(Self.utcCompact.string(from: d.slotDate)).foregroundStyle(color.opacity(0.7))
-                Text(db).foregroundStyle(color.opacity(0.9))
-                Text(dt).foregroundStyle(color.opacity(0.7))
-                Text(String(format: "%4d", Int(d.freqHz))).foregroundStyle(color.opacity(0.7))
-                Text(d.text).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.6)
-                Spacer(minLength: 0)
-                if target { rowTag("Target", .orange) }
-                if d.deep { rowTag("deep", .cyan) } else if d.subtracted { rowTag("sub", .gray) }
-            }
-            .font(.system(size: 12, weight: (toMe || isCQ) ? .semibold : .regular).monospaced())
-            .padding(.vertical, 3)
-            .background(shade)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            if d.kind != .sent, let call = ft4.otherStation(d) {
-                Button { ft4.work(d) } label: { Label("Work \(call)", systemImage: "arrowshape.turn.up.right") }
-                Button { ft4.pounce(on: d) } label: { Label("Pounce on this station", systemImage: "scope") }
-                if ft4.isBlocked(call) {
-                    Button { ft4.unblock(call) } label: { Label("Allow auto-reply to \(call)", systemImage: "checkmark.circle") }
-                } else {
-                    Button(role: .destructive) { ft4.block(call) } label: {
-                        Label("Block from auto-reply", systemImage: "hand.raised")
-                    }
-                }
-            }
-        }
+    /// Transmit + auto-sequence switches at their natural width (for the one-row layouts).
+    @ViewBuilder private var txToggles: some View {
+        Toggle("Transmit", isOn: $ft4.txEnabled).fixedSize()
+        Toggle("Auto-seq", isOn: $ft4.autoSequence).fixedSize()
     }
 
-    private func rowTag(_ text: String, _ c: Color) -> some View {
-        Text(text).font(.system(size: 8, weight: .bold)).foregroundStyle(c)
-            .padding(.horizontal, 3).padding(.vertical, 1)
-            .overlay(RoundedRectangle(cornerRadius: 3).stroke(c.opacity(0.7), lineWidth: 1))
-            .fixedSize()
+    /// Steady carrier at the TX audio frequency (≤ 10 s) to set drive/ALC; only while running.
+    @ViewBuilder private var tuneButton: some View {
+        if ft4.isRunning {
+            Button(ft4.isTuning ? "Stop" : "Tune") { ft4.toggleTune() }
+                .buttonStyle(.bordered).tint(ft4.isTuning ? ODTheme.warning : nil)
+                .disabled(fmOnlyReason != nil || (ft4.isTransmitting && !ft4.isTuning))
+                .accessibilityHint("Transmits a steady tone for up to 10 seconds to set the drive level")
+        }
     }
 
     /// The essentials, always visible: enable TX, auto-sequence, and the big Call CQ.
     private var txControlsPrimary: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Toggle("Transmit", isOn: $ft4.txEnabled).fixedSize()
-                Toggle("Auto-seq", isOn: $ft4.autoSequence).fixedSize()
-                Spacer()
-                if ft4.isRunning {
-                    // Steady carrier at the TX audio frequency (≤ 10 s) to set drive/ALC.
-                    Button(ft4.isTuning ? "Stop" : "Tune") { ft4.toggleTune() }
-                        .buttonStyle(.bordered).tint(ft4.isTuning ? ODTheme.warning : nil)
-                        .disabled(fmOnlyReason != nil || (ft4.isTransmitting && !ft4.isTuning))
-                        .accessibilityHint("Transmits a steady tone for up to 10 seconds to set the drive level")
+            // Two switches plus Tune don't fit one row on a narrow phone (or at larger
+            // text sizes) — the fixed-size switches ran past the card edge, under the
+            // scroll indicator. Fall back to a row of switches with Tune below, then to
+            // full-width switch rows.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    txToggles
+                    Spacer()
+                    tuneButton
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) { txToggles; Spacer(minLength: 0) }
+                    tuneButton
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Transmit", isOn: $ft4.txEnabled)
+                    Toggle("Auto-seq", isOn: $ft4.autoSequence)
+                    tuneButton
                 }
             }
             Button {
@@ -738,6 +726,12 @@ struct HomeFT4Card: View {
             rig.setDigitalDataMode(false)     // restore the rig's plain SSB mode
         } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
             let transponder = rig.transponder(for: satellite)
+            // Re-checked before every burst: a switch to an FM transponder mid-session stops TX.
+            let fallbackSat = satellite
+            ft4.fmOnlyCheck = { [weak store, weak rig] in
+                guard let rig else { return nil }
+                return FT4Engine.fmOnlyReason(rig.transponder(for: store?.selectedSatellite ?? fallbackSat))
+            }
             ft4.dopplerProvider = Self.makeDopplerProvider(satellite: satellite,
                                                            observer: store.preferences.observer,
                                                            transponder: transponder)
@@ -902,9 +896,11 @@ struct HomePacketCard: View {
 
                 if packet.isRunning {
                     if packet.settings.transport == .builtInModem {
-                        AudioLevelControl(title: "RX level", gain: Binding(
-                            get: { packet.settings.inputGain },
-                            set: { packet.settings.inputGain = $0 }), level: packet.rxLevel)
+                        LiveMetersReader(meters: packet.meters) { m in
+                            AudioLevelControl(title: "RX level", gain: Binding(
+                                get: { packet.settings.inputGain },
+                                set: { packet.settings.inputGain = $0 }), level: m.level)
+                        }
                     }
                     statsLine
                     quickMessages
@@ -927,7 +923,7 @@ struct HomePacketCard: View {
                 }
                 .font(.caption).buttonStyle(.borderless)
 
-                DisclosureGroup("Setup", isExpanded: $showSetup) { setup.padding(.top, 4) }
+                SetupDisclosure("Setup", isExpanded: $showSetup) { setup.padding(.top, 4) }
                     .font(.subheadline).tint(ODTheme.accent)
             }
             .task(id: satellite.id) {
@@ -1219,10 +1215,16 @@ struct HomePacketCard: View {
 
     @ViewBuilder private var setup: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Connection", selection: $packet.settings.transport) {
-                ForEach(PacketSettings.Transport.allCases) { Text($0.label).tag($0) }
+            // A menu rather than a segmented control: "Built-in modem · BLE KISS · KISS TCP"
+            // truncated (and crowded the card edge) on a narrow phone.
+            HStack {
+                Text("Connection").lineLimit(1).minimumScaleFactor(0.8)
+                Spacer(minLength: 8)
+                Picker("Connection", selection: $packet.settings.transport) {
+                    ForEach(PacketSettings.Transport.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.menu).labelsHidden().fixedSize()
             }
-            .pickerStyle(.segmented)
             .disabled(packet.isRunning)
 
             if packet.settings.transport == .bleKISS {
@@ -1955,7 +1957,7 @@ struct HomeCWCard: View {
 
                 if cw.isRunning {
                     statusLine
-                    AudioLevelBar(level: cw.inputLevel)
+                    LiveMetersReader(meters: cw.meters) { m in AudioLevelBar(level: m.level) }
                     spectrumStrip
                 }
                 if cw.isRunning || !cw.lines.isEmpty { transcript }
@@ -1963,7 +1965,7 @@ struct HomeCWCard: View {
                     Label(handOff, systemImage: "book.closed").font(.caption).foregroundStyle(ODTheme.good)
                 }
 
-                DisclosureGroup("Setup", isExpanded: $showSetup) { setup.padding(.top, 4) }
+                SetupDisclosure("Setup", isExpanded: $showSetup) { setup.padding(.top, 4) }
                     .font(.subheadline).tint(ODTheme.accent)
 
                 Text("Decodes Morse from your USB (or network) audio interface: CW beacons and CW on linear transponders. Runs alongside pass recording and keeps decoding with the screen locked.")
@@ -2003,7 +2005,8 @@ struct HomeCWCard: View {
                     .foregroundStyle(cw.acquired && cw.snrDb >= cw.settings.squelchDb ? ODTheme.good : ODTheme.muted)
             }
             .font(.caption.monospacedDigit())
-            Spacer()
+            .lineLimit(1).minimumScaleFactor(0.75)
+            Spacer(minLength: 4)
             Button {
                 cw.pitchLocked.toggle()
             } label: {
@@ -2025,12 +2028,14 @@ struct HomeCWCard: View {
             GeometryReader { geo in
                 let w = geo.size.width
                 ZStack(alignment: .topLeading) {
-                    if let img = cw.waterfall {
-                        Image(uiImage: img).resizable().interpolation(.none)
-                            .frame(width: w, height: 64)
-                    } else {
-                        Rectangle().fill(ODTheme.panel)
-                            .overlay(Text("Spectrum").font(.caption2).foregroundStyle(ODTheme.muted))
+                    LiveMetersReader(meters: cw.spectrum) { m in
+                        if let img = m.image {
+                            Image(uiImage: img).resizable().interpolation(.none)
+                                .frame(width: w, height: 64)
+                        } else {
+                            Rectangle().fill(ODTheme.panel)
+                                .overlay(Text("Spectrum").font(.caption2).foregroundStyle(ODTheme.muted))
+                        }
                     }
                     if cw.acquired {
                         let x = w * CGFloat(min(1, max(0, (cw.pitchHz - lo) / span)))
@@ -2168,7 +2173,9 @@ struct HomeCWCard: View {
     private var setup: some View {
         let s = settingsBinding
         return VStack(alignment: .leading, spacing: 10) {
-            AudioLevelControl(title: "Input level", gain: $cw.inputGain, level: cw.inputLevel)
+            LiveMetersReader(meters: cw.meters) { m in
+                AudioLevelControl(title: "Input level", gain: $cw.inputGain, level: m.level)
+            }
             Text("Keep the meter out of the red; the decoder adapts to the level, but clipping smears the tone.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
 
@@ -2252,4 +2259,125 @@ struct HomeCWCard: View {
             cw.errorText = "No audio interface available."
         }
     }
+}
+
+/// Observes a `LiveMeters` so only its content re-renders on each meter/waterfall update.
+struct LiveMetersReader<Content: View>: View {
+    @ObservedObject var meters: LiveMeters
+    @ViewBuilder let content: (LiveMeters) -> Content
+    var body: some View { content(meters) }
+}
+
+/// The Band Activity rows. Equatable on its inputs so SwiftUI skips re-evaluating the
+/// rows (each parses its message) unless the decodes or their highlighting inputs change.
+private struct FT4DecodeList: View, @MainActor Equatable {
+    let items: [FT4DecodedMessage]
+    let workedCalls: Set<String>
+    let workedGrids: Set<String>
+    let ownCall: String
+    let pounceTargets: String
+    let blockList: [String]
+    let ft4: FT4Engine
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.items.map(\.id) == b.items.map(\.id) && a.ownCall == b.ownCall && a.pounceTargets == b.pounceTargets
+            && a.blockList == b.blockList && a.workedCalls == b.workedCalls && a.workedGrids == b.workedGrids
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { idx, d in
+                    // Separate transmit periods with a faint rule (like WSJT-X).
+                    if idx > 0 && items[idx - 1].atSlot != d.atSlot {
+                        Divider().overlay(ODTheme.muted.opacity(0.35))
+                    }
+                    decodeRow(d)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+        }
+        .frame(height: 200)
+        .defaultScrollAnchor(.bottom)
+    }
+
+    /// Whether a decode's sender (or grid) is one of the pounce targets.
+    private func isTarget(_ f: FT4Engine.FT4Fields?) -> Bool {
+        guard let f else { return false }
+        for t in ft4.pounceTokens {
+            if FT4Engine.isGrid(t) {
+                if FT4Engine.isGrid(f.extra), f.extra.uppercased().hasPrefix(String(t.prefix(4))) { return true }
+            } else if FT4Engine.callMatches(f.de, t) || (f.de.isEmpty && FT4Engine.callMatches(f.to, t)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func decodeRow(_ d: FT4DecodedMessage) -> some View {
+        let f = FT4Engine.parse(d.text)
+        let toMe = ft4.isToMe(d.text)
+        let isCQ = f?.isCQ == true
+        let color: Color
+        if d.kind == .sent { color = .orange }                 // my transmitted message
+        else if ft4.isFromMe(d.text) { color = .cyan }         // my own signal heard via full duplex
+        else if toMe { color = ODTheme.accent }                // someone calling me
+        else if isCQ { color = ODTheme.good }                  // CQ
+        else { color = .white }
+        // "New" shading for received stations not yet in the log: a new grid (VUCC) wins
+        // over a new call. Our own messages and echoes are never shaded.
+        var shade: Color = .clear
+        if d.kind == .received, let f, !ft4.isFromMe(d.text) {
+            let sender = f.de.isEmpty || f.de == "<...>" ? "" : f.de.uppercased()
+            if FT4Engine.isGrid(f.extra), !workedGrids.contains(String(f.extra.uppercased().prefix(4))) {
+                shade = HomeFT4Card.newGridShade
+            } else if !sender.isEmpty, !workedCalls.contains(sender),
+                      !sender.split(separator: "/").contains(where: { workedCalls.contains(String($0)) }) {
+                shade = HomeFT4Card.newCallShade
+            }
+        }
+        let target = d.kind == .received && isTarget(f)
+        // WSJT-X row: time · dB · DT · freq · message, monospaced and aligned.
+        let db = d.kind == .sent ? " TX" : String(format: "%3d", d.snr)
+        let dt = d.kind == .sent ? "    " : String(format: "%4.1f", d.dt)
+        return Button { if d.kind != .sent { ft4.work(d) } } label: {
+            HStack(spacing: 5) {
+                Text(HomeFT4Card.utcCompact.string(from: d.slotDate)).foregroundStyle(color.opacity(0.7))
+                Text(db).foregroundStyle(color.opacity(0.9))
+                Text(dt).foregroundStyle(color.opacity(0.7))
+                Text(String(format: "%4d", Int(d.freqHz))).foregroundStyle(color.opacity(0.7))
+                Text(d.text).foregroundStyle(color).lineLimit(1).minimumScaleFactor(0.6)
+                Spacer(minLength: 0)
+                if target { rowTag("Target", .orange) }
+                if d.deep { rowTag("deep", .cyan) } else if d.subtracted { rowTag("sub", .gray) }
+            }
+            .font(.system(size: 12, weight: (toMe || isCQ) ? .semibold : .regular).monospaced())
+            .padding(.vertical, 3)
+            .background(shade)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            if d.kind != .sent, let call = ft4.otherStation(d) {
+                Button { ft4.work(d) } label: { Label("Work \(call)", systemImage: "arrowshape.turn.up.right") }
+                Button { ft4.pounce(on: d) } label: { Label("Pounce on this station", systemImage: "scope") }
+                if ft4.isBlocked(call) {
+                    Button { ft4.unblock(call) } label: { Label("Allow auto-reply to \(call)", systemImage: "checkmark.circle") }
+                } else {
+                    Button(role: .destructive) { ft4.block(call) } label: {
+                        Label("Block from auto-reply", systemImage: "hand.raised")
+                    }
+                }
+            }
+        }
+    }
+
+    private func rowTag(_ text: String, _ c: Color) -> some View {
+        Text(text).font(.system(size: 8, weight: .bold)).foregroundStyle(c)
+            .padding(.horizontal, 3).padding(.vertical, 1)
+            .overlay(RoundedRectangle(cornerRadius: 3).stroke(c.opacity(0.7), lineWidth: 1))
+            .fixedSize()
+    }
+
 }
