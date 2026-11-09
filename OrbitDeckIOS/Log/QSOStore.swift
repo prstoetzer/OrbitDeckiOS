@@ -10,6 +10,13 @@ import Combine
 //  success. Secrets stay in the Keychain (OrbitSecretStore).
 // ===========================================================================
 
+/// A callsign (and the mode it was heard in) for the Home quick-log card to pick up.
+struct QuickLogPrefill: Equatable, Identifiable {
+    let id = UUID()
+    let call: String
+    let mode: String
+}
+
 @MainActor
 final class QSOStore: ObservableObject {
     @Published var qsos: [QSORecord] = []
@@ -17,6 +24,9 @@ final class QSOStore: ObservableObject {
     @Published var sstvImages: [SSTVImageEntry] = []
     @Published var ft4Traffic: [FT4TrafficEntry] = []
     @Published var config = LoggingConfig()
+    /// One-shot hand-off to the Home quick-log card (a callsign tapped in a decoder's
+    /// transcript). The card takes it and clears it. Not persisted.
+    @Published var quickLogPrefill: QuickLogPrefill?
 
     /// Cap on the persisted FT4 activity log (oldest lines drop off).
     private static let ft4TrafficCap = 4000
@@ -52,6 +62,11 @@ final class QSOStore: ObservableObject {
         if let data = try? JSONEncoder().encode(config) {
             UserDefaults.standard.set(data, forKey: Self.configKey)
         }
+    }
+
+    /// Put `call` in the Home quick-log card's Call field, logged as `mode`.
+    func prefillQuickLog(call: String, mode: String) {
+        quickLogPrefill = QuickLogPrefill(call: call.uppercased(), mode: mode)
     }
 
     // MARK: QSOs

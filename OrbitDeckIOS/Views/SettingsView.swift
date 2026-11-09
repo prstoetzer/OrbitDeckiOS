@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage(FeatureVisibility.sstvKey) private var featureSSTV = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.ft4Key) private var featureFT4 = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.packetKey) private var featurePacket = FeatureVisibility.auto
+    @AppStorage(FeatureVisibility.cwKey) private var featureCW = FeatureVisibility.auto
     @AppStorage(FeatureVisibility.remoteAudioKey) private var featureRemoteAudio = FeatureVisibility.auto
     @AppStorage(PSKReporterSettings.enabledKey) private var pskReporterEnabled = false
     @AppStorage(FT4Settings.dataModeKey) private var ft4DataMode = true
@@ -252,6 +253,10 @@ struct SettingsView: View {
                 Picker(selection: $featurePacket) {
                     ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
                 } label: { Label("Packet / APRS", systemImage: "envelope.badge") }
+                .pickerStyle(.menu)
+                Picker(selection: $featureCW) {
+                    ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
+                } label: { Label("CW decode", systemImage: "textformat.abc.dottedunderline") }
                 .pickerStyle(.menu)
                 Picker(selection: $featureRemoteAudio) {
                     ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
@@ -534,6 +539,7 @@ struct BackupRestoreSection: View {
     @EnvironmentObject private var qsoLog: QSOStore
     @EnvironmentObject private var ft4: FT4Engine
     @EnvironmentObject private var sstv: SSTVDecoder
+    @EnvironmentObject private var cw: CWDecoder
     @EnvironmentObject private var recorder: PassRecorder
     @State private var includeLog = false
     @State private var exportDocument: OrbitBackupDocument?
@@ -646,6 +652,7 @@ struct BackupRestoreSection: View {
         }
         if let auto = decode(AutoSwitchSettings.self, "OrbitDeckIOS.autoSwitch") { autoSwitch.settings = auto }
         if let pkt = decode(PacketSettings.self, "orbitdeck.packet") { packet.settings = pkt }
+        if let cwSettings = decode(CWSettings.self, CWSettings.key) { cw.settings = cwSettings.normalized }
         if var logging = decode(LoggingConfig.self, "orbitdeck.loggingConfig") {
             logging.hasLoTWCredential = LoTW.hasCredential()
             qsoLog.config = logging
@@ -657,6 +664,7 @@ struct BackupRestoreSection: View {
         if keys.contains("orbitdeck.ft4.outputGain") { ft4.outputGain = AudioGainStore.load("orbitdeck.ft4.outputGain") }
         if keys.contains("orbitdeck.sstv.inputGain") { sstv.inputGain = AudioGainStore.load("orbitdeck.sstv.inputGain") }
         if keys.contains("orbitdeck.recorder.inputGain") { recorder.inputGain = AudioGainStore.load("orbitdeck.recorder.inputGain") }
+        if keys.contains("orbitdeck.cw.inputGain") { cw.inputGain = AudioGainStore.load("orbitdeck.cw.inputGain") }
         if let v = d.object(forKey: "orbitdeck.sstv.chromaSmoothing") as? Bool, v != sstv.chromaSmoothing { sstv.chromaSmoothing = v }
         if keys.contains("orbitdeck.sstv.autoArm") { let v = d.bool(forKey: "orbitdeck.sstv.autoArm"); if v != sstv.autoArm { sstv.autoArm = v } }
         if let v = d.object(forKey: "orbitdeck.sstv.autoMinElevation") as? Double, v != sstv.autoMinElevation { sstv.autoMinElevation = v }

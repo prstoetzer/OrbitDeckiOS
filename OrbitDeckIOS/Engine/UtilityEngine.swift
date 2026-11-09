@@ -664,9 +664,9 @@ enum HelpLibrary {
         4. Open Home for live look angles and your next pass.
         Settings → Station readiness shows a checklist of what is set up and what is missing, with a tap to fix each item.
         """),
-        .init(id: "audio", title: "Where are the audio features? (recording, SSTV, FT4, packet, remote voice)", area: "Audio", body: """
+        .init(id: "audio", title: "Where are the audio features? (recording, SSTV, FT4, packet, CW, remote voice)", area: "Audio", body: """
         The audio cards on Home are hidden by default until an audio interface is connected — a USB audio interface or an Icom radio over the network. With nothing attached they don't appear at all, so the features can look missing.
-        To show them anyway, open Settings → Audio features and set any of Pass recording, SSTV decode, FT4, Packet / APRS or Remote audio to Always. The card then appears on Home and, with no interface attached, uses the device's built-in microphone. Hidden turns a card off even with an interface.
+        To show them anyway, open Settings → Audio features and set any of Pass recording, SSTV decode, FT4, Packet / APRS, CW decode or Remote audio to Always. The card then appears on Home and, with no interface attached, uses the device's built-in microphone. Hidden turns a card off even with an interface.
         Try it: Settings → Audio features → Pass recording → Always, then go to Home and start a recording. Recording, SSTV and FT4 decoding keep running with the screen locked or while you switch apps, so a pass isn't lost partway through.
         """),
         .init(id: "home", title: "Home screen", area: "Home", body: """
@@ -706,6 +706,14 @@ enum HelpLibrary {
         """),
         .init(id: "sstv", title: "SSTV images", area: "SSTV", body: """
         The SSTV card decodes slow-scan TV (for example ISS ARISS events) from the received audio; images land in the SSTV Images gallery with Photos export. It can arm automatically for passes above a chosen elevation. Show the card without an interface via Settings → Audio features → SSTV decode → Always.
+        """),
+        .init(id: "cw", title: "CW decoder", area: "CW", body: """
+        The CW decoder card turns Morse from the received audio into text: CW beacons and telemetry, and CW contacts on linear transponders. It appears on Home with an audio interface, or set Settings → Audio features → CW decode → Always (with no interface it listens through the built-in microphone). It only receives, so it runs alongside pass recording, FT4, SSTV or remote voice.
+        Tap Start. The decoder searches the tone range (300–1200 Hz by default) for the strongest steady carrier, locks onto it and follows it as it drifts (AFC). The spectrum strip shows the range with the decoder's pitch and filter width in orange; tap any trace to tune to that signal instead. Lock freezes the pitch, so it neither searches nor follows. The status line shows the pitch, the measured speed (WPM) and the tone's SNR.
+        On a linear transponder, set the mode to CW on the Live Doppler card (so the radio uses CW mode and its CW filter), then tune so the CW note sits inside the search range — about 600–800 Hz is typical. With CAT Doppler tuning on, the pitch barely moves; without it the Doppler residual walks the tone and AFC follows it, so keep AFC on and use the 100 or 200 Hz filter.
+        Setup: the search range; the filter bandwidth (50 Hz rejects the most noise and neighbors, 200 Hz suits fast code and quick drift); the squelch (lower it for weak signals, raise it if noise prints stray letters); a speed range or a fixed speed; AFC; and UTC timestamps on each line. Settings are kept between launches.
+        The transcript scrolls as text arrives and starts a new line after a pause. Prosigns appear as <AR>, <SK>, <BT>, <KN>, <AS>, <BK>, <CL> (and <HH> for the error sign); an unreadable character prints as *. Callsigns are underlined: tap one to put it in the Log QSO card with mode CW. Copy and Share export the transcript.
+        Tips: set the input level so the meter stays out of the red; a weak or fading downlink copies better with a narrower filter and a lower squelch; if two signals are close, tap the one you want and lock it.
         """),
         .init(id: "logging", title: "Logging, LoTW and awards", area: "Logging", body: """
         The Home Log QSO card prefills the satellite, mode and your grid; the Log screen lists, edits and exports QSOs (ADIF, PDF). Log settings (gear icon on the Log screen) hold your LoTW station location and callsign certificate (.p12) — OrbitDeck signs and uploads to LoTW on the device — and your Cloudlog/Wavelog URL and API key.

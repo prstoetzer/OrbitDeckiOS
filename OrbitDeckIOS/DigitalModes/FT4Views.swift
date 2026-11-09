@@ -1369,3 +1369,340 @@ struct APRSSymbol {
         "0": ("circle.fill", "Circle"),
     ]
 }
+
+// ###########################################################################
+//  CW DECODER (Home card)
+//
+//  Kept in this file for the same reason as the packet card: it's already in the
+//  Xcode target. The engine (`CWDecoder` / `CWDemodulator`) is in FT4Engine.swift.
+// ###########################################################################
+
+struct HomeCWCard: View {
+    @EnvironmentObject private var audio: AudioHub
+    @EnvironmentObject private var cw: CWDecoder
+    @EnvironmentObject private var rig: RigController
+    @EnvironmentObject private var qso: QSOStore
+    @AppStorage(FeatureVisibility.cwKey) private var visibility = FeatureVisibility.auto
+    @State private var showSetup = false
+    @State private var handOff: String?
+    @State private var copied = false
+    let satellite: SatelliteRecord
+
+    private var visible: Bool {
+        switch visibility { case .auto: audio.audioAvailable || cw.isRunning; case .always: true; case .off: false }
+    }
+
+    var body: some View {
+        if visible {
+            SectionCard("CW decoder") {
+                AudioHealthBanner(active: cw.isRunning)
+                if !cw.errorText.isEmpty {
+                    Text(cw.errorText).font(.caption).foregroundStyle(ODTheme.warning)
+                }
+                HStack(spacing: 10) {
+                    Circle().fill(cw.isRunning ? (cw.markOn ? ODTheme.accent : (cw.acquired ? ODTheme.good : ODTheme.warning)) : ODTheme.muted)
+                        .frame(width: 10, height: 10)
+                    Text(headline).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Spacer()
+                    Button(cw.isRunning ? "Stop" : "Start") { toggle() }
+                        .buttonStyle(.bordered)
+                }
+                SatelliteStatusLine(satellite: satellite)
+                DopplerFrequencyLine(satellite: satellite, transponderOverride: rig.transponder(for: satellite))
+                tuningHint
+
+                if cw.isRunning {
+                    statusLine
+                    AudioLevelBar(level: cw.inputLevel)
+                    spectrumStrip
+                }
+                if cw.isRunning || !cw.lines.isEmpty { transcript }
+                if let handOff {
+                    Label(handOff, systemImage: "book.closed").font(.caption).foregroundStyle(ODTheme.good)
+                }
+
+                DisclosureGroup("Setup", isExpanded: $showSetup) { setup.padding(.top, 4) }
+                    .font(.subheadline).tint(ODTheme.accent)
+
+                Text("Decodes Morse from your USB (or network) audio interface: CW beacons and CW on linear transponders. Runs alongside pass recording and keeps decoding with the screen locked.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+        }
+    }
+
+    private var headline: String {
+        guard cw.isRunning else { return cw.lines.isEmpty ? "Idle" : "Stopped" }
+        let s = cw.settings
+        if cw.pitchLocked { return "Locked at \(Int(cw.pitchHz.rounded())) Hz" }
+        return cw.acquired ? "Tracking \(Int(cw.pitchHz.rounded())) Hz"
+                           : "Searching \(Int(s.searchLowHz))–\(Int(s.searchHighHz)) Hz…"
+    }
+
+    /// On a linear transponder the radio needs CW mode and the pitch in the passband.
+    @ViewBuilder private var tuningHint: some View {
+        if let tp = rig.transponder(for: satellite), tp.isLinear {
+            if !rig.config.tuning.linearCW {
+                Text("On a linear transponder, set the mode to CW on the Live Doppler card so the radio uses its CW filter, then tune so the CW tone (pitch) falls inside the search range below.")
+                    .font(.caption2).foregroundStyle(ODTheme.warning)
+            } else {
+                Text("Tune so the CW pitch falls inside the \(Int(cw.settings.searchLowHz))–\(Int(cw.settings.searchHighHz)) Hz search range; tap the spectrum to pick a signal.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+        }
+    }
+
+    /// Pitch · speed · SNR, plus the pitch lock.
+    private var statusLine: some View {
+        HStack(spacing: 8) {
+            Group {
+                Text(cw.acquired ? "\(Int(cw.pitchHz.rounded())) Hz" : "— Hz")
+                Text(cw.acquired ? String(format: "%.0f WPM", cw.wpm) : "— WPM")
+                Text(cw.acquired ? String(format: "SNR %.0f dB", cw.snrDb) : "SNR —")
+                    .foregroundStyle(cw.acquired && cw.snrDb >= cw.settings.squelchDb ? ODTheme.good : ODTheme.muted)
+            }
+            .font(.caption.monospacedDigit())
+            Spacer()
+            Button {
+                cw.pitchLocked.toggle()
+            } label: {
+                Label(cw.pitchLocked ? "Locked" : "Lock", systemImage: cw.pitchLocked ? "lock.fill" : "lock.open")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .tint(cw.pitchLocked ? ODTheme.warning : ODTheme.accent)
+            .accessibilityLabel(cw.pitchLocked ? "Unlock pitch" : "Lock pitch")
+        }
+    }
+
+    /// Spectrum waterfall over the search range with the detector passband marked; tap
+    /// to tune the detector to a signal.
+    private var spectrumStrip: some View {
+        let lo = cw.settings.searchLowHz, hi = cw.settings.searchHighHz
+        let span = max(1, hi - lo)
+        return VStack(alignment: .leading, spacing: 2) {
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .topLeading) {
+                    if let img = cw.waterfall {
+                        Image(uiImage: img).resizable().interpolation(.none)
+                            .frame(width: w, height: 64)
+                    } else {
+                        Rectangle().fill(ODTheme.panel)
+                            .overlay(Text("Spectrum").font(.caption2).foregroundStyle(ODTheme.muted))
+                    }
+                    if cw.acquired {
+                        let x = w * CGFloat(min(1, max(0, (cw.pitchHz - lo) / span)))
+                        let bw = max(2, w * CGFloat(cw.settings.bandwidthHz / span))
+                        Rectangle().fill(Color.orange.opacity(0.18)).frame(width: bw, height: 64).offset(x: x - bw / 2)
+                        Rectangle().fill(.orange).frame(width: 2, height: 64).offset(x: x - 1)
+                    }
+                }
+                .frame(width: w, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+                .onTapGesture(coordinateSpace: .local) { p in
+                    cw.setPitch(lo + span * Double(min(1, max(0, p.x / max(1, w)))))
+                }
+            }
+            .frame(height: 64)
+            .accessibilityLabel("CW spectrum")
+            .accessibilityHint("Tap a signal to tune the decoder to it")
+            HStack {
+                Text("\(Int(lo)) Hz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
+                Spacer(); Text("Tap a trace to tune").font(.system(size: 8)).foregroundStyle(ODTheme.muted)
+                Spacer(); Text("\(Int(hi)) Hz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
+            }
+        }
+    }
+
+    /// Framed, self-scrolling monospaced transcript (newest at the bottom). Callsigns are
+    /// links that hand the call to the Log QSO card.
+    private var transcript: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Label("Decoded", systemImage: "text.alignleft")
+                    .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
+                Spacer()
+                Button(copied ? "Copied" : "Copy") {
+                    UIPasteboard.general.string = cw.transcriptText
+                    copied = true
+                    Task { try? await Task.sleep(nanoseconds: 1_500_000_000); copied = false }
+                }
+                .disabled(cw.lines.isEmpty)
+                ShareLink(item: cw.transcriptText) { Image(systemName: "square.and.arrow.up") }
+                    .disabled(cw.lines.isEmpty)
+                    .accessibilityLabel("Share transcript")
+                Button("Clear") { cw.clear() }.disabled(cw.lines.isEmpty)
+            }
+            .font(.caption).buttonStyle(.borderless)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Color.white.opacity(0.06))
+
+            Divider().overlay(ODTheme.muted.opacity(0.3))
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if cw.lines.isEmpty {
+                        Text(cw.acquired ? "Listening…" : "Waiting for a CW signal…")
+                            .font(.caption).foregroundStyle(ODTheme.muted)
+                    }
+                    ForEach(cw.lines) { line in
+                        transcriptRow(line)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+            }
+            .frame(height: 150)
+            .defaultScrollAnchor(.bottom)
+            .environment(\.openURL, OpenURLAction { url in
+                guard url.scheme == Self.callScheme,
+                      let call = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                        .queryItems?.first(where: { $0.name == "call" })?.value,
+                      !call.isEmpty else { return .systemAction }
+                takeCall(call.uppercased())
+                return .handled
+            })
+
+            Divider().overlay(ODTheme.muted.opacity(0.3))
+            Text(qso.config.enabled ? "Tap an underlined callsign to put it in the Log QSO card (mode CW)."
+                                    : "Turn on logging (Log settings) to log tapped callsigns.")
+                .font(.system(size: 10)).foregroundStyle(ODTheme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(LinearGradient(colors: [Color.black.opacity(0.9), Color(white: 0.06)],
+                                     startPoint: .top, endPoint: .bottom))
+        )
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ODTheme.muted.opacity(0.35), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private static let callScheme = "orbitdeck-cw"
+
+    /// In-card link for a spotted callsign (handled by the transcript's openURL action).
+    private static func callURL(_ call: String) -> URL? {
+        var c = URLComponents()
+        c.scheme = callScheme; c.host = "log"
+        c.queryItems = [URLQueryItem(name: "call", value: call)]
+        return c.url
+    }
+
+    private func transcriptRow(_ line: CWTranscriptLine) -> some View {
+        var text = AttributedString()
+        if cw.settings.timestamps {
+            var ts = AttributedString(CWDecoder.utc.string(from: line.date) + "  ")
+            ts.foregroundColor = ODTheme.muted
+            text += ts
+        }
+        let words = line.text.split(separator: " ", omittingEmptySubsequences: false)
+        for (i, w) in words.enumerated() {
+            if i > 0 { text += AttributedString(" ") }
+            var run = AttributedString(String(w))
+            if qso.config.enabled, CWMorse.isCallsign(String(w)), let url = Self.callURL(String(w)) {
+                run.link = url
+                run.underlineStyle = .single
+                run.foregroundColor = ODTheme.accent
+            }
+            text += run
+        }
+        return Text(text)
+            .font(.system(size: 13).monospaced())
+            .foregroundStyle(.white)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func takeCall(_ call: String) {
+        qso.prefillQuickLog(call: call, mode: "CW")
+        handOff = "\(call) is in the Log QSO card (mode CW)."
+        Task { try? await Task.sleep(nanoseconds: 3_000_000_000); handOff = nil }
+    }
+
+    private var settingsBinding: Binding<CWSettings> { $cw.settings }
+
+    private var setup: some View {
+        let s = settingsBinding
+        return VStack(alignment: .leading, spacing: 10) {
+            AudioLevelControl(title: "Input level", gain: $cw.inputGain, level: cw.inputLevel)
+            Text("Keep the meter out of the red; the decoder adapts to the level, but clipping smears the tone.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+
+            HStack {
+                Text("Search").font(.caption).foregroundStyle(ODTheme.muted)
+                Picker("From", selection: s.searchLowHz) {
+                    ForEach([200.0, 300, 400, 500, 600, 800], id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+                }
+                .pickerStyle(.menu)
+                Text("to").font(.caption).foregroundStyle(ODTheme.muted)
+                Picker("To", selection: s.searchHighHz) {
+                    ForEach([900.0, 1000, 1200, 1500, 2000], id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+                }
+                .pickerStyle(.menu)
+                Spacer()
+            }
+            .font(.caption)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Filter bandwidth").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
+                Picker("Bandwidth", selection: s.bandwidthHz) {
+                    ForEach(CWSettings.bandwidths, id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Text("Narrower rejects more noise and neighbors; wider follows fast code (over ~30 WPM use 200 Hz) and Doppler better.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text("Squelch").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
+                    Spacer()
+                    Text(String(format: "%.0f dB", s.wrappedValue.squelchDb)).font(.caption2.monospacedDigit())
+                }
+                FineSlider(value: s.squelchDb, range: 0...20, step: 1)
+                Text("Only prints while the tone stands this far above the noise. Lower it for weak signals; raise it if noise prints as stray letters.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+
+            Toggle("Fixed speed", isOn: s.fixedSpeed).font(.subheadline).toggleStyle(.switch)
+            if s.wrappedValue.fixedSpeed {
+                Stepper(value: s.fixedWPM, in: 5...50, step: 1) {
+                    Text("\(Int(s.wrappedValue.fixedWPM)) WPM").font(.subheadline.monospacedDigit())
+                }
+            } else {
+                Stepper(value: s.minWPM, in: 5...(s.wrappedValue.maxWPM - 5), step: 1) {
+                    Text("Slowest \(Int(s.wrappedValue.minWPM)) WPM").font(.subheadline.monospacedDigit())
+                }
+                Stepper(value: s.maxWPM, in: (s.wrappedValue.minWPM + 5)...60, step: 1) {
+                    Text("Fastest \(Int(s.wrappedValue.maxWPM)) WPM").font(.subheadline.monospacedDigit())
+                }
+                Text("The speed is measured from the code itself, within this range. Farnsworth-spaced code is handled.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+
+            Toggle(isOn: s.afc) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("AFC (follow drift)").font(.subheadline)
+                    Text("Follows the tone as Doppler or your dial moves it. Lock the pitch to stop both searching and AFC.")
+                        .font(.caption2).foregroundStyle(ODTheme.muted)
+                }
+            }
+            .toggleStyle(.switch)
+            Toggle("Timestamps (UTC) on each line", isOn: s.timestamps).font(.subheadline).toggleStyle(.switch)
+            Button("Restore defaults") { cw.settings = CWSettings() }
+                .font(.caption).buttonStyle(.borderless)
+        }
+    }
+
+    private func toggle() {
+        if cw.isRunning {
+            cw.stop()
+        } else if let source = audio.makeSource(allowMicFallback: visibility == .always) {
+            cw.start(source: source)
+        } else {
+            cw.errorText = "No audio interface available."
+        }
+    }
+}

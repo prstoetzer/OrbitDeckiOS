@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import UIKit
 import Network
+import Accelerate
 
 // ===========================================================================
 //  FT4Engine.swift — full-duplex FT4 over an AudioSource, using ft8_lib (MIT)
@@ -3708,5 +3709,965 @@ final class PacketEngine: ObservableObject {
                 if (self.satelliteElevation() ?? -1) >= 0 { self.sendPosition() }
             }
         }
+    }
+}
+
+// ###########################################################################
+// MARK: - CW decoder
+//
+//  Receive-only Morse decoder for the Home CW card. Kept in this file (rather than
+//  its own) because new source files have to be added to the Xcode target by hand.
+// ###########################################################################
+//
+//  Signal path (all on the decoder's work queue, never the main thread):
+//   1. Decimate the shared capture (48 kHz USB / 16 kHz network) to ~8 kHz with an
+//      FIR low-pass (vDSP_desamp).
+//   2. A 1024-point FFT (128 ms, 7.8 Hz bins) every 64 ms feeds the waterfall strip
+//      and the tone search. A bin qualifies as a carrier when it is keyed 10 dB
+//      above the floor in a good share of recent frames (noise almost never is); the
+//      strongest qualifying bin that holds still is acquired as the pitch. The last
+//      second of audio is then replayed through the detector so the first characters
+//      of an over aren't lost to the acquisition delay. AFC nudges the pitch toward
+//      the peak of each keyed frame (satellite Doppler residual, the operator's dial).
+//      The tone's averaged SNR against the median floor is the squelch.
+//   3. Tone detector: a complex NCO mixes the pitch to DC; a 4th-order Butterworth
+//      low-pass on I and Q (cutoff = bandwidth/2) is the narrow band-pass, and |I+jQ|
+//      decimated to a 1 ms envelope is the keying waveform.
+//   4. Adaptive threshold between running signal and noise-floor estimates, with
+//      hysteresis and a debounce of ~¼ dit; nothing keys while the squelch is shut.
+//   5. Timing: mark durations are clustered (2-means on log duration) into dits and
+//      dahs for the speed estimate; inter-character gaps are clustered separately to
+//      place the word-space threshold, which keeps Farnsworth-spaced code readable.
+//
+//  The demodulator is a plain class driven by sample count only (no clocks), so the
+//  unit tests feed it synthesized audio directly.
+
+/// International (ITU-R M.1677) Morse code, plus the common prosigns.
+enum CWMorse {
+    /// Character → code. `+`, `=`, `(` and `&` share their codes with the AR, BT, KN and
+    /// AS prosigns; those decode as the prosign, which is how hams send them.
+    static let codes: [Character: String] = [
+        "A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.", "G": "--.",
+        "H": "....", "I": "..", "J": ".---", "K": "-.-", "L": ".-..", "M": "--", "N": "-.",
+        "O": "---", "P": ".--.", "Q": "--.-", "R": ".-.", "S": "...", "T": "-", "U": "..-",
+        "V": "...-", "W": ".--", "X": "-..-", "Y": "-.--", "Z": "--..",
+        "0": "-----", "1": ".----", "2": "..---", "3": "...--", "4": "....-",
+        "5": ".....", "6": "-....", "7": "--...", "8": "---..", "9": "----.",
+        ".": ".-.-.-", ",": "--..--", "?": "..--..", "'": ".----.", "!": "-.-.--",
+        "/": "-..-.", "(": "-.--.", ")": "-.--.-", "&": ".-...", ":": "---...",
+        ";": "-.-.-.", "=": "-...-", "+": ".-.-.", "-": "-....-", "_": "..--.-",
+        "\"": ".-..-.", "$": "...-..-", "@": ".--.-."
+    ]
+
+    /// Prosigns (sent as one run-together character) → code. HH is the error sign.
+    static let prosigns: [String: String] = [
+        "AR": ".-.-.", "SK": "...-.-", "BT": "-...-", "KN": "-.--.", "AS": ".-...",
+        "BK": "-...-.-", "CL": "-.-..-..", "HH": "........"
+    ]
+
+    /// Shown for an element sequence that isn't in the table.
+    static let unknown = "*"
+
+    private static let table: [String: String] = {
+        var t: [String: String] = [:]
+        for (ch, code) in codes { t[code] = String(ch) }
+        for (name, code) in prosigns { t[code] = "<\(name)>" }
+        return t
+    }()
+
+    /// Decode one character's elements (`.` / `-`). A run of 8 or more dits is the
+    /// error sign; anything else not in the table is `unknown`.
+    static func decode(_ elements: String) -> String {
+        if let s = table[elements] { return s }
+        if elements.count >= 8, elements.allSatisfy({ $0 == "." }) { return "<HH>" }
+        return unknown
+    }
+
+    /// Element codes for `text`, one per character, with `<AR>`-style prosigns and `" "`
+    /// for each word break. Characters with no Morse code are skipped.
+    static func encode(_ text: String) -> [String] {
+        var out: [String] = []
+        var rest = Substring(text.uppercased())
+        while let c = rest.first {
+            if c == "<", let close = rest.firstIndex(of: ">"),
+               let code = prosigns[String(rest[rest.index(after: rest.startIndex)..<close])] {
+                out.append(code); rest = rest[rest.index(after: close)...]; continue
+            }
+            if c == " " {
+                if let last = out.last, last != " " { out.append(" ") }
+            } else if let code = codes[c] {
+                out.append(code)
+            }
+            rest = rest.dropFirst()
+        }
+        while out.last == " " { out.removeLast() }
+        return out
+    }
+
+    /// Whether a decoded word looks like an amateur callsign (`N8HM`, `2E0ABC`,
+    /// `VE3/K1ABC`, `K1ABC/P`): FT4's callsign-token rules, and a base call of an optional
+    /// 1–3 character prefix, a digit, and a 1–4 letter suffix. Rules out reports such as
+    /// 5NN / 599 and grid squares.
+    static func isCallsign(_ word: String) -> Bool {
+        guard word != "<...>", FT4Engine.isCallToken(word) else { return false }
+        let parts = word.components(separatedBy: "/")
+        let base = parts.max { $0.count < $1.count } ?? word
+        let chars = Array(base)
+        guard (3...8).contains(chars.count) else { return false }
+        // Last digit splits prefix / suffix; the suffix is all letters.
+        guard let d = chars.lastIndex(where: { $0.isNumber }), d >= 1, d < chars.count - 1 else { return false }
+        let prefix = chars[..<d], suffix = chars[(d + 1)...]
+        guard prefix.count <= 3, (1...4).contains(suffix.count) else { return false }
+        guard suffix.allSatisfy({ $0.isLetter }) else { return false }
+        // A prefix that is only digits isn't a callsign (e.g. "55N").
+        return prefix.contains { $0.isLetter }
+    }
+}
+
+/// CW decoder settings (persisted as one JSON blob; every field decodes tolerantly so
+/// settings saved by an older or newer build still load).
+struct CWSettings: Codable, Equatable, Sendable {
+    /// Tone search range (Hz of audio).
+    var searchLowHz: Double = 300
+    var searchHighHz: Double = 1200
+    /// Detector bandwidth (Hz): 50, 100 or 200.
+    var bandwidthHz: Double = 100
+    /// Minimum envelope SNR (dB) before marks are decoded.
+    var squelchDb: Double = 8
+    /// Speed range for the adaptive estimate (WPM).
+    var minWPM: Double = 5
+    var maxWPM: Double = 50
+    /// Decode at a fixed speed instead of estimating it.
+    var fixedSpeed = false
+    var fixedWPM: Double = 20
+    /// Track the pitch as it drifts.
+    var afc = true
+    /// Show a UTC time at the start of each transcript line.
+    var timestamps = false
+
+    static let key = "orbitdeck.cw.settings"
+    static let bandwidths: [Double] = [50, 100, 200]
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = CWSettings()
+        searchLowHz = (try? c.decodeIfPresent(Double.self, forKey: .searchLowHz)) ?? d.searchLowHz
+        searchHighHz = (try? c.decodeIfPresent(Double.self, forKey: .searchHighHz)) ?? d.searchHighHz
+        bandwidthHz = (try? c.decodeIfPresent(Double.self, forKey: .bandwidthHz)) ?? d.bandwidthHz
+        squelchDb = (try? c.decodeIfPresent(Double.self, forKey: .squelchDb)) ?? d.squelchDb
+        minWPM = (try? c.decodeIfPresent(Double.self, forKey: .minWPM)) ?? d.minWPM
+        maxWPM = (try? c.decodeIfPresent(Double.self, forKey: .maxWPM)) ?? d.maxWPM
+        fixedSpeed = (try? c.decodeIfPresent(Bool.self, forKey: .fixedSpeed)) ?? d.fixedSpeed
+        fixedWPM = (try? c.decodeIfPresent(Double.self, forKey: .fixedWPM)) ?? d.fixedWPM
+        afc = (try? c.decodeIfPresent(Bool.self, forKey: .afc)) ?? d.afc
+        timestamps = (try? c.decodeIfPresent(Bool.self, forKey: .timestamps)) ?? d.timestamps
+    }
+
+    static func load() -> CWSettings {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let s = try? JSONDecoder().decode(CWSettings.self, from: data) else { return CWSettings() }
+        return s
+    }
+
+    func save() {
+        if let data = try? JSONEncoder().encode(self) { UserDefaults.standard.set(data, forKey: Self.key) }
+    }
+
+    /// Sanitized copy: ordered, in-range values (a hand-edited or partial blob can't
+    /// produce an empty search range or an inverted speed range).
+    var normalized: CWSettings {
+        var s = self
+        s.searchLowHz = min(max(100, s.searchLowHz), 2400)
+        s.searchHighHz = min(max(s.searchLowHz + 100, s.searchHighHz), 2500)
+        s.bandwidthHz = min(max(25, s.bandwidthHz), 400)
+        s.squelchDb = min(max(0, s.squelchDb), 30)
+        s.minWPM = min(max(5, s.minWPM), 45)
+        s.maxWPM = min(max(s.minWPM + 5, s.maxWPM), 60)
+        s.fixedWPM = min(max(5, s.fixedWPM), 60)
+        return s
+    }
+}
+
+/// One RBJ biquad section (Direct Form I), Double precision.
+private struct CWBiquad {
+    private var b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0
+    private var x1 = 0.0, x2 = 0.0, y1 = 0.0, y2 = 0.0
+
+    init() {}
+    /// Low-pass at `fc` Hz with quality `q`.
+    init(lowpass fc: Double, q: Double, rate: Double) {
+        let w0 = 2 * Double.pi * fc / rate
+        let alpha = sin(w0) / (2 * q), cw = cos(w0), a0 = 1 + alpha
+        b0 = (1 - cw) / 2 / a0; b1 = (1 - cw) / a0; b2 = b0
+        a1 = -2 * cw / a0; a2 = (1 - alpha) / a0
+    }
+    mutating func process(_ x: Double) -> Double {
+        let y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        x2 = x1; x1 = x; y2 = y1; y1 = y
+        return y
+    }
+}
+
+/// The CW signal chain: decimation → tone search/AFC → narrow detector → adaptive
+/// threshold → timing → text. Not thread-safe; drive it from one queue.
+final class CWDemodulator: @unchecked Sendable {
+    struct Snapshot: Equatable, Sendable {
+        var pitchHz: Double
+        var acquired: Bool
+        var wpm: Double
+        var snrDb: Double
+        var markOn: Bool
+    }
+
+    let inputRate: Double
+    /// Rate after decimation (~8 kHz).
+    let rate: Double
+    private(set) var settings: CWSettings
+
+    // Decimation.
+    private let decim: Int
+    private let taps: [Float]
+    private var carry: [Float] = []
+
+    // Spectrum / tone search.
+    static let fftSize = 1024
+    private let hop = 512
+    private let analyzer = SpectrumAnalyzer(n: CWDemodulator.fftSize)
+    private var specBuf: [Float] = []
+    private var sinceFFT = 0
+    private var avgPow: [Float] = []
+    private var hitRate: [Float] = []
+    private var candidateBin = -1
+    private var candidateFrames = 0
+    private var weakFrames = 0
+    private var rows: [[Float]] = []
+    var binHz: Double { rate / Double(Self.fftSize) }
+
+    // Pre-roll replayed into the detector on acquisition.
+    private var preroll: [Float]
+    private var prerollIndex = 0
+    private var prerollCount = 0
+
+    // Tone detector.
+    private(set) var pitchHz: Double = 700
+    private(set) var acquired = false
+    /// Freeze the pitch: no automatic acquisition and no AFC.
+    var pitchLocked = false {
+        didSet { if pitchLocked && !acquired { beginTracking(replay: false) } }
+    }
+    private var phase = 0.0
+    private var lpI = (CWBiquad(), CWBiquad()), lpQ = (CWBiquad(), CWBiquad())
+    private let envDecim: Int
+    private let envMs: Double
+    private var envCount = 0
+
+    // Levels.
+    private var noise = 0.0, sig = 0.0
+    private var levelsReady = false
+    private var warmup: [Double] = []
+    private var rawMark = false
+    /// Tone SNR (dB): averaged spectrum at the pitch over the median floor.
+    private(set) var toneDb = 0.0
+    private var gateOpen = false
+    /// Envelope collected while the pre-roll is replayed (nil when not replaying).
+    private var replayEnv: [Double]?
+
+    // Timing (ms of envelope time).
+    private var t = 0.0
+    private var mark = false
+    private var stateStart = 0.0
+    private var pendingSince: Double?
+    /// Mark durations (ms) of the character in progress. They're classified into dits
+    /// and dahs only when the character ends, against the speed estimate as it stands
+    /// then — so the first character of an over isn't misread while the estimate is
+    /// still converging.
+    private var symbol: [Double] = []
+    private(set) var ditMs = 60.0
+    private var marks: [Double] = []
+    private var elementGaps: [Double] = []
+    private var gaps: [Double] = []
+    private var wordGapDits = 5.0
+    private var wordSpaceDone = true
+    private var lineDone = true
+    private var printedOnLine = false
+    private var output: [String] = []
+
+    init(inputRate: Double, settings: CWSettings = CWSettings()) {
+        self.inputRate = inputRate
+        let d = max(1, Int(inputRate / 8000))
+        decim = d
+        rate = inputRate / Double(d)
+        self.settings = settings.normalized
+        // Windowed-sinc low-pass at 3 kHz for the decimator (Hamming window).
+        if d > 1 {
+            let n = 8 * d + 1, fc = 3000.0 / inputRate, mid = Double(n - 1) / 2
+            var h = (0..<n).map { i -> Double in
+                let x = Double(i) - mid
+                let sinc = x == 0 ? 2 * fc : sin(2 * Double.pi * fc * x) / (Double.pi * x)
+                return sinc * (0.54 - 0.46 * cos(2 * Double.pi * Double(i) / Double(n - 1)))
+            }
+            let sum = h.reduce(0, +); h = h.map { $0 / sum }
+            taps = h.map(Float.init)
+        } else {
+            taps = [1]
+        }
+        envDecim = max(1, Int((rate / 1000).rounded()))
+        envMs = Double(envDecim) / rate * 1000
+        preroll = [Float](repeating: 0, count: Int(rate * 1.0))
+        pitchHz = (self.settings.searchLowHz + self.settings.searchHighHz) / 2
+        ditMs = 1200 / (self.settings.fixedSpeed ? self.settings.fixedWPM : 20)
+        clampDit()
+        designFilters()
+    }
+
+    // MARK: Control
+
+    func update(_ s: CWSettings) {
+        let s = s.normalized
+        let old = settings
+        settings = s
+        if s.bandwidthHz != old.bandwidthHz { designFilters() }
+        if s.fixedSpeed { ditMs = 1200 / s.fixedWPM }
+        clampDit()
+        if s.searchLowHz != old.searchLowHz || s.searchHighHz != old.searchHighHz {
+            avgPow = []
+            if pitchHz < s.searchLowHz || pitchHz > s.searchHighHz {
+                pitchHz = min(max(pitchHz, s.searchLowHz), s.searchHighHz)
+                if !pitchLocked { release() }
+            }
+        }
+    }
+
+    /// Manually set the pitch (a tap on the spectrum). Tracking starts there at once.
+    func setPitch(_ hz: Double) {
+        pitchHz = min(max(hz, settings.searchLowHz), settings.searchHighHz)
+        candidateFrames = 0
+        beginTracking(replay: false)
+    }
+
+    /// Characters decoded since the last call: single characters / `<AR>` prosigns,
+    /// `" "` for a word space and `"\n"` after a long silence.
+    func drainText() -> [String] {
+        defer { output.removeAll(keepingCapacity: true) }
+        return output
+    }
+
+    /// Spectrum rows (dB, search range only, oldest first) since the last call.
+    func drainRows() -> [[Float]] {
+        defer { rows.removeAll(keepingCapacity: true) }
+        return rows
+    }
+
+    /// Bin range of the search window in the spectrum rows.
+    var searchBins: ClosedRange<Int> {
+        let half = Self.fftSize / 2
+        let lo = max(1, Int((settings.searchLowHz / binHz).rounded(.up)))
+        let hi = min(half - 2, Int(settings.searchHighHz / binHz))
+        return lo...max(lo, hi)
+    }
+
+    var snapshot: Snapshot {
+        Snapshot(pitchHz: pitchHz, acquired: acquired, wpm: 1200 / ditMs,
+                 snrDb: acquired ? toneDb : 0, markOn: mark)
+    }
+
+    /// Decode whatever is still in progress (on stop).
+    func flush() {
+        if !symbol.isEmpty { emitSymbol() }
+    }
+
+    // MARK: Processing
+
+    func process(_ input: [Float]) {
+        guard !input.isEmpty else { return }
+        let block: [Float]
+        if decim == 1 {
+            block = input
+        } else {
+            carry.append(contentsOf: input)
+            let L = taps.count
+            guard carry.count >= L else { return }
+            let n = (carry.count - L) / decim + 1
+            var out = [Float](repeating: 0, count: n)
+            carry.withUnsafeBufferPointer { src in
+                vDSP_desamp(src.baseAddress!, vDSP_Stride(decim), taps, &out, vDSP_Length(n), vDSP_Length(L))
+            }
+            carry.removeFirst(n * decim)
+            block = out
+        }
+        for y in block { step(y) }
+    }
+
+    private func step(_ y: Float) {
+        preroll[prerollIndex] = y
+        prerollIndex = (prerollIndex + 1) % preroll.count
+        prerollCount = min(preroll.count, prerollCount + 1)
+        specBuf.append(y)
+        sinceFFT += 1
+        if sinceFFT >= hop {
+            sinceFFT = 0
+            if specBuf.count > Self.fftSize { specBuf.removeFirst(specBuf.count - Self.fftSize) }
+            let wasAcquired = acquired
+            spectrumFrame()
+            // Just acquired: the pre-roll (which already holds `y`) was replayed.
+            if acquired && !wasAcquired { return }
+        }
+        if acquired { detect(y) }
+    }
+
+    /// One FFT frame: waterfall row, tone search, AFC, loss of signal.
+    private func spectrumFrame() {
+        guard specBuf.count >= Self.fftSize else { return }
+        let db = analyzer.magnitudesDB(specBuf)
+        guard !db.isEmpty else { return }
+        let bins = searchBins
+        rows.append(Array(db[bins]))
+        if rows.count > 32 { rows.removeFirst(rows.count - 32) }
+
+        let pow = db.map { powf(10, $0 / 10) }
+        var instSorted = Array(pow[bins]); instSorted.sort()
+        let instFloor = max(1e-12, instSorted[instSorted.count / 2])
+        if avgPow.count != pow.count {
+            avgPow = pow
+            hitRate = [Float](repeating: 0, count: pow.count)
+        } else {
+            for k in bins {
+                avgPow[k] += (pow[k] - avgPow[k]) * 0.15
+                // How often this bin is keyed well clear (10 dB) of the floor. Noise
+                // alone almost never does that, so it's what qualifies a carrier.
+                hitRate[k] += ((pow[k] >= instFloor * 10 ? 1 : 0) - hitRate[k]) * 0.2
+            }
+        }
+        var sorted = Array(avgPow[bins]); sorted.sort()
+        let floor = max(1e-12, sorted[sorted.count / 2])
+
+        // Tone SNR at the pitch (averaged power vs the median floor): the squelch.
+        let pk = min(bins.upperBound, max(bins.lowerBound, Int((pitchHz / binHz).rounded())))
+        let near = max(bins.lowerBound, pk - 1)...min(bins.upperBound, pk + 1)
+        let here = near.map { avgPow[$0] }.max() ?? 0
+        toneDb = Double(10 * log10(max(here, 1e-12) / floor))
+        if toneDb >= settings.squelchDb { gateOpen = true } else if toneDb < settings.squelchDb - 2 { gateOpen = false }
+        guard !pitchLocked else { return }
+
+        if !acquired {
+            // The strongest qualifying carrier, if it holds still for a few frames.
+            var best = -1
+            for k in bins where hitRate[k] >= 0.25 && (best < 0 || avgPow[k] > avgPow[best]) { best = k }
+            if best >= 0, 10 * log10(avgPow[best] / floor) >= Float(max(6, settings.squelchDb)) {
+                if abs(best - candidateBin) <= 2 { candidateFrames += 1 } else { candidateBin = best; candidateFrames = 1 }
+            } else {
+                candidateFrames = 0
+            }
+            if candidateFrames >= 2 {
+                pitchHz = interpolatedHz(db, best)
+                toneDb = Double(10 * log10(avgPow[best] / floor))
+                gateOpen = toneDb >= settings.squelchDb
+                beginTracking(replay: true)
+            }
+            return
+        }
+
+        // ~8 s without the tone: let go and search again.
+        weakFrames = toneDb >= 4 ? 0 : weakFrames + 1
+        if weakFrames > Int(8 * rate / Double(hop)) { release(); return }
+
+        // AFC: follow the peak of each keyed frame within the detector passband.
+        if settings.afc {
+            let w = max(2, Int((settings.bandwidthHz / 2) / binHz) + 1)
+            let lo = max(bins.lowerBound, pk - w), hi = min(bins.upperBound, pk + w)
+            guard lo < hi else { return }
+            var k = lo
+            for j in lo...hi where pow[j] > pow[k] { k = j }
+            if pow[k] >= instFloor * 10 {
+                let f = interpolatedHz(db, k)
+                pitchHz += max(-6, min(6, (f - pitchHz) * 0.3))
+                pitchHz = min(max(pitchHz, settings.searchLowHz), settings.searchHighHz)
+            }
+        }
+    }
+
+    /// Parabolic peak interpolation on the dB spectrum.
+    private func interpolatedHz(_ db: [Float], _ k: Int) -> Double {
+        guard k > 0, k < db.count - 1 else { return Double(k) * binHz }
+        let a = Double(db[k - 1]), b = Double(db[k]), c = Double(db[k + 1])
+        let den = a - 2 * b + c
+        let off = den == 0 ? 0 : max(-0.5, min(0.5, 0.5 * (a - c) / den))
+        return (Double(k) + off) * binHz
+    }
+
+    private func beginTracking(replay: Bool) {
+        acquired = true
+        weakFrames = 0
+        levelsReady = false
+        warmup.removeAll(keepingCapacity: true)
+        rawMark = false
+        mark = false; pendingSince = nil
+        stateStart = t
+        symbol = []
+        lpI = (CWBiquad(), CWBiquad()); lpQ = (CWBiquad(), CWBiquad())
+        designFilters()
+        guard replay else { return }
+        // Run the pre-roll through the detector, collecting its envelope. It mostly
+        // holds noise from before the over, so rather than let a still-settling
+        // threshold print that, seed the levels from it (floor = before the onset,
+        // signal = the peak) and start keying at the first clear onset.
+        replayEnv = []
+        let n = prerollCount, cap = preroll.count
+        let start = (prerollIndex - n + cap) % cap
+        for i in 0..<n { detect(preroll[(start + i) % cap]) }
+        let env = replayEnv ?? []
+        replayEnv = nil
+        let settle = min(env.count, Int(20 / envMs))         // filter start-up transient
+        guard env.count > settle + 10, let peak = env[settle...].max(), peak > 0,
+              let onset = env[settle...].firstIndex(where: { $0 > peak * 0.5 }) else { return }
+        var before = Array(env[settle..<onset]); before.sort()
+        let floorSeed = before.count >= 10 ? before[before.count / 2] : peak * 0.1
+        guard peak > floorSeed * 3 else { return }              // no clear onset: start live
+        noise = max(floorSeed, 1e-9); sig = peak * 0.9
+        levelsReady = true
+        stateStart = t
+        for e in env[max(settle, onset - 5)...] { envelope(e) }
+    }
+
+    private func release() {
+        flush()
+        acquired = false
+        candidateFrames = 0
+        mark = false; pendingSince = nil
+    }
+
+    private func designFilters() {
+        // 4th-order Butterworth low-pass as two biquads (Q = 0.5412, 1.3066).
+        let fc = settings.bandwidthHz / 2
+        lpI = (CWBiquad(lowpass: fc, q: 0.5412, rate: rate), CWBiquad(lowpass: fc, q: 1.3066, rate: rate))
+        lpQ = lpI
+    }
+
+    /// Mix to DC, filter, and hand a 1 ms envelope sample to the keying detector.
+    private func detect(_ y: Float) {
+        phase += 2 * Double.pi * pitchHz / rate
+        if phase > 2 * Double.pi { phase -= 2 * Double.pi }
+        let x = Double(y)
+        let i = lpI.1.process(lpI.0.process(x * cos(phase)))
+        let q = lpQ.1.process(lpQ.0.process(-x * sin(phase)))
+        envCount += 1
+        guard envCount >= envDecim else { return }
+        envCount = 0
+        envelope(2 * (i * i + q * q).squareRoot())
+    }
+
+    private func envelope(_ e: Double) {
+        if replayEnv != nil { replayEnv?.append(e); return }
+        t += envMs
+        let k = envMs   // per-ms rates below scale with the envelope step
+        if !levelsReady {
+            // Let the filters settle, then seed the floor from ~60 ms of envelope (the
+            // pre-roll normally starts before the signal; if not, the floor falls fast).
+            warmup.append(e)
+            guard Double(warmup.count) * envMs >= 60 else { return }
+            let skip = warmup.count / 3
+            let seed = warmup[skip...].reduce(0, +) / Double(warmup.count - skip)
+            noise = max(seed, 1e-9); sig = noise * 4
+            levelsReady = true
+            stateStart = t
+        }
+        // Noise floor: falls quickly, rises slowly and only between marks.
+        if e < noise { noise += (e - noise) * min(1, 0.01 * k) }
+        else if !rawMark { noise += (e - noise) * min(1, 0.004 * k) }
+        noise = max(noise, 1e-9)
+        let span = max(sig - noise, noise * 1.6)
+        let hi = noise + 0.5 * span, lo = noise + 0.35 * span
+        if rawMark { if e < lo { rawMark = false } } else if e > hi { rawMark = true }
+        // Signal level: follows marks, and relaxes toward the floor (~3 s) in silence
+        // so a fade doesn't leave the threshold stranded above the signal.
+        if rawMark { sig += (e - sig) * min(1, 0.03 * k) } else { sig += (noise - sig) * min(1, 0.0003 * k) }
+        sig = max(sig, noise)
+
+        let wantMark = rawMark && gateOpen
+        let debounce = min(15, max(3, ditMs * 0.25))
+        if wantMark == mark {
+            pendingSince = nil
+        } else if let since = pendingSince {
+            if t - since >= debounce { transition(toMark: wantMark, at: since) }
+        } else {
+            pendingSince = t
+        }
+        if !mark { spaceTimers() }
+    }
+
+    private func transition(toMark: Bool, at t0: Double) {
+        pendingSince = nil
+        let dur = t0 - stateStart
+        if toMark {
+            // Inter-character / word gaps, for the word-space threshold.
+            if dur >= 2 * ditMs && dur < lineBreakMs && printedOnLine { noteGap(dur) }
+            // Gaps inside a character are one dit long.
+            if !symbol.isEmpty && dur < 2 * ditMs && !settings.fixedSpeed {
+                elementGaps.append(dur)
+                if elementGaps.count > 24 { elementGaps.removeFirst(elementGaps.count - 24) }
+            }
+        } else {
+            if dur <= 1000 {               // longer is a tuning carrier, not an element
+                noteMark(dur)
+                symbol.append(dur)
+                if symbol.count > 12 { symbol.removeFirst(symbol.count - 12) }
+            } else {
+                symbol = []
+            }
+            wordSpaceDone = false; lineDone = false
+        }
+        mark = toMark
+        stateStart = t0
+    }
+
+    private var lineBreakMs: Double { max(3000, 30 * ditMs) }
+
+    private func spaceTimers() {
+        let el = t - stateStart
+        if !symbol.isEmpty && el >= 2 * ditMs {
+            emitSymbol()
+        }
+        if !wordSpaceDone && symbol.isEmpty && el >= wordGapDits * ditMs {
+            if printedOnLine { emit(" ") }
+            wordSpaceDone = true
+        }
+        if !lineDone && el >= lineBreakMs {
+            if printedOnLine { emit("\n") }
+            lineDone = true
+        }
+    }
+
+    private func emitSymbol() {
+        let elements = String(symbol.map { $0 < 2 * ditMs ? "." : "-" })
+        symbol = []
+        emit(CWMorse.decode(elements))
+    }
+
+    private func emit(_ s: String) {
+        if s == "\n" {
+            printedOnLine = false
+        } else if s != " " {
+            printedOnLine = true
+        }
+        output.append(s)
+    }
+
+    // MARK: Speed
+
+    private func clampDit() {
+        if settings.fixedSpeed { ditMs = 1200 / settings.fixedWPM; return }
+        ditMs = min(max(ditMs, 1200 / settings.maxWPM), 1200 / settings.minWPM)
+    }
+
+    private func noteMark(_ d: Double) {
+        guard !settings.fixedSpeed else { return }
+        marks.append(d)
+        if marks.count > 24 { marks.removeFirst(marks.count - 24) }
+        if let (short, long) = Self.twoMeans(marks), long.mean / short.mean >= 2, long.mean / short.mean <= 5 {
+            let fromMarks = (short.mean * Double(short.n) + long.mean / 3 * Double(long.n)) / Double(short.n + long.n)
+            // Keying shaping and the threshold shorten marks and lengthen spaces by the
+            // same amount, so averaging in the element gaps cancels that bias.
+            let g = elementGaps.count >= 4 ? elementGaps.reduce(0, +) / Double(elementGaps.count) : 0
+            ditMs = g > fromMarks * 0.5 && g < fromMarks * 2 ? (fromMarks + g) / 2 : fromMarks
+        } else {
+            // One cluster: all dits or all dahs, judged against the current estimate.
+            let m = marks.reduce(0, +) / Double(marks.count)
+            let cand = m < 2 * ditMs ? m : m / 3
+            ditMs += (cand - ditMs) * 0.3
+        }
+        clampDit()
+    }
+
+    private func noteGap(_ g: Double) {
+        gaps.append(g)
+        if gaps.count > 20 { gaps.removeFirst(gaps.count - 20) }
+        guard gaps.count >= 3 else { return }
+        if let (short, long) = Self.twoMeans(gaps), long.mean / short.mean >= 1.6 {
+            wordGapDits = (short.mean * long.mean).squareRoot() / ditMs
+        } else {
+            // Only one kind of gap seen so far.
+            // Character gaps run ~3 dits and word gaps ~7, so a single cluster below
+            // ~8.5 dits uses the standard threshold; longer ones are Farnsworth
+            // character spacing, so words need a clearly longer gap.
+            let m = gaps.reduce(0, +) / Double(gaps.count) / ditMs
+            wordGapDits = m < 8.5 ? 5 : m * 1.5
+        }
+        wordGapDits = min(max(wordGapDits, 4), 40)
+    }
+
+    /// Two-cluster split of durations in the log domain (minimum within-cluster
+    /// variance). Returns nil for fewer than two values.
+    static func twoMeans(_ values: [Double]) -> (short: (mean: Double, n: Int), long: (mean: Double, n: Int))? {
+        guard values.count >= 2 else { return nil }
+        let v = values.map { log(max($0, 1e-3)) }.sorted()
+        var bestK = 1, bestCost = Double.infinity
+        for k in 1..<v.count {
+            let a = v[..<k], b = v[k...]
+            let ma = a.reduce(0, +) / Double(a.count), mb = b.reduce(0, +) / Double(b.count)
+            let cost = a.reduce(0) { $0 + ($1 - ma) * ($1 - ma) } + b.reduce(0) { $0 + ($1 - mb) * ($1 - mb) }
+            if cost < bestCost { bestCost = cost; bestK = k }
+        }
+        let raw = values.sorted()
+        let s = raw[..<bestK], l = raw[bestK...]
+        return ((s.reduce(0, +) / Double(s.count), s.count), (l.reduce(0, +) / Double(l.count), l.count))
+    }
+}
+
+/// A transcript line: decoded text since the last long silence, with the UTC time its
+/// first character arrived.
+struct CWTranscriptLine: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let date: Date
+    var text: String
+}
+
+/// Home CW card engine: runs a `CWDemodulator` on the shared capture (off the main
+/// thread) and publishes text, pitch, speed, SNR and a spectrum strip at ~10 Hz.
+/// Receive-only, so it doesn't claim the exclusive operating mode: it decodes
+/// alongside pass recording, FT4, SSTV or remote voice on the same capture.
+@MainActor
+final class CWDecoder: ObservableObject {
+    @Published private(set) var isRunning = false
+    @Published var errorText = ""
+    @Published private(set) var lines: [CWTranscriptLine] = []
+    @Published private(set) var pitchHz: Double = 0
+    @Published private(set) var acquired = false
+    @Published private(set) var wpm: Double = 0
+    @Published private(set) var snrDb: Double = 0
+    @Published private(set) var markOn = false
+    /// Scrolling spectrum of the search range (newest row at the bottom).
+    @Published private(set) var waterfall: UIImage?
+    @Published private(set) var inputLevel: Float = 0
+
+    /// Freeze the pitch where it is (no automatic search, no AFC).
+    @Published var pitchLocked = false {
+        didSet { let v = pitchLocked; work.async { [weak self] in self?.applyLock(v) } }
+    }
+    @Published var settings: CWSettings = CWSettings.load().normalized {
+        didSet {
+            guard settings != oldValue else { return }
+            settings.save()
+            let s = settings
+            work.async { [weak self] in self?.applySettings(s) }
+        }
+    }
+    /// Receive level for this decoder (per-subscriber on the shared capture). Persisted.
+    @Published var inputGain: Float = AudioGainStore.load("orbitdeck.cw.inputGain") {
+        didSet { source?.inputGain = inputGain; AudioGainStore.save("orbitdeck.cw.inputGain", inputGain) }
+    }
+
+    static let maxLines = 300
+
+    private var source: AudioSource?
+    /// The next character starts a new line (after a long silence or on start).
+    private var lineOpen = false
+
+    // Work-queue state (DSP + rendering); never touched on the main thread.
+    private let work = DispatchQueue(label: "org.orbitdeck.cw.decode", qos: .userInitiated)
+    private nonisolated(unsafe) var demod: CWDemodulator?
+    private nonisolated(unsafe) var activeMirror = false
+    private nonisolated(unsafe) var settingsMirror = CWSettings()
+    private nonisolated(unsafe) var lockedMirror = false
+    private nonisolated(unsafe) var rateMirror: Double = 48_000
+    private nonisolated(unsafe) var publishTimer: DispatchSourceTimer?
+    private nonisolated(unsafe) var waterRows: [[Float]] = []
+    private nonisolated(unsafe) var waterFloor: Float = 0
+    private nonisolated(unsafe) var levelSmoothed: Float = 0
+    private let waterHeight = 48
+    // Audio-thread peak for the level meter.
+    private let peakLock = NSLock()
+    private nonisolated(unsafe) var inPeak: Float = 0
+
+    // MARK: Lifecycle
+
+    func start(source: AudioSource) {
+        guard !isRunning else { return }
+        errorText = ""
+        self.source = source
+        source.inputGain = inputGain
+        source.onError = { [weak self] m in self?.errorText = m }
+        let s = settings, locked = pitchLocked
+        work.async { [weak self] in self?.resetSession(rate: nil, settings: s, locked: locked) }
+        do {
+            try source.start(onFrames: { [weak self] frames in self?.ingest(frames) })
+        } catch {
+            errorText = error.localizedDescription; self.source = nil
+            return
+        }
+        // The shared-hub facade reports its true rate only once attached (16 kHz for
+        // network audio), so build the demodulator after start(). Frames queued before
+        // this block run through a 48 kHz default that it then replaces.
+        let rate = source.sampleRate
+        work.async { [weak self] in self?.resetSession(rate: rate, settings: s, locked: locked) }
+        lineOpen = false
+        isRunning = true
+        AudioActivity.begin()
+        schedulePublishTimer()
+    }
+
+    func stop() {
+        guard isRunning else { return }
+        source?.stop(); source = nil
+        publishTimer?.cancel(); publishTimer = nil
+        isRunning = false
+        acquired = false; markOn = false; inputLevel = 0
+        AudioActivity.end()
+        // Print the character in progress, then drop the session.
+        work.async { [weak self] in
+            guard let self else { return }
+            self.demod?.flush()
+            let text = self.demod?.drainText() ?? []
+            self.demod = nil; self.activeMirror = false
+            self.levelSmoothed = 0
+            Task { @MainActor in self.append(text) }
+        }
+    }
+
+    func clear() { lines = []; lineOpen = false }
+
+    /// Tune the detector to `hz` (a tap on the spectrum strip).
+    func setPitch(_ hz: Double) {
+        pitchHz = hz; acquired = true
+        work.async { [weak self] in self?.demod?.setPitch(hz) }
+    }
+
+    /// The transcript as plain text (for Copy / Share), with UTC times when enabled.
+    var transcriptText: String {
+        lines.map { line in
+            settings.timestamps ? "\(Self.utc.string(from: line.date))  \(line.text)" : line.text
+        }
+        .joined(separator: "\n")
+    }
+
+    static let utc: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; f.timeZone = TimeZone(identifier: "UTC"); return f
+    }()
+
+    // MARK: Transcript (main actor)
+
+    private func append(_ tokens: [String]) {
+        guard !tokens.isEmpty else { return }
+        var ls = lines
+        for tok in tokens {
+            if tok == "\n" { lineOpen = false; continue }
+            if tok == " " {
+                if lineOpen, let last = ls.last, !last.text.isEmpty, !last.text.hasSuffix(" ") {
+                    // Wrap a very long line at a word break.
+                    if last.text.count > 160 { lineOpen = false } else { ls[ls.count - 1].text += " " }
+                }
+                continue
+            }
+            if !lineOpen || ls.isEmpty {
+                ls.append(CWTranscriptLine(date: Date(), text: "")); lineOpen = true
+            }
+            ls[ls.count - 1].text += tok
+        }
+        if ls.count > Self.maxLines { ls.removeFirst(ls.count - Self.maxLines) }
+        lines = ls
+    }
+
+    // MARK: Work queue
+
+    private nonisolated func ingest(_ frames: [Float]) {
+        var peak: Float = 0
+        for s in frames { let a = abs(s); if a > peak { peak = a } }
+        peakLock.lock(); if peak > inPeak { inPeak = peak }; peakLock.unlock()
+        work.async { [weak self] in self?.process(frames) }
+    }
+
+    private nonisolated func process(_ frames: [Float]) {
+        guard activeMirror else { return }
+        if demod == nil {
+            let d = CWDemodulator(inputRate: rateMirror, settings: settingsMirror)
+            d.pitchLocked = lockedMirror
+            demod = d
+        }
+        demod?.process(frames)
+    }
+
+    private nonisolated func resetSession(rate: Double?, settings: CWSettings, locked: Bool) {
+        settingsMirror = settings; lockedMirror = locked; activeMirror = true
+        waterRows = []; waterFloor = 0
+        if let rate {
+            rateMirror = rate
+            let d = CWDemodulator(inputRate: rate, settings: settings)
+            d.pitchLocked = locked
+            demod = d
+        } else {
+            demod = nil
+        }
+    }
+
+    private nonisolated func applySettings(_ s: CWSettings) {
+        settingsMirror = s
+        let rangeChanged = demod.map { $0.settings.searchLowHz != s.searchLowHz || $0.settings.searchHighHz != s.searchHighHz } ?? false
+        demod?.update(s)
+        if rangeChanged { waterRows = []; waterFloor = 0 }
+    }
+
+    private nonisolated func applyLock(_ locked: Bool) {
+        lockedMirror = locked
+        demod?.pitchLocked = locked
+    }
+
+    /// ~10 Hz publish on the work queue (a GCD timer made in a nonisolated method, so
+    /// its handler isn't main-actor isolated).
+    private nonisolated func schedulePublishTimer() {
+        let t = DispatchSource.makeTimerSource(queue: work)
+        t.schedule(deadline: .now() + 0.1, repeating: 0.1)
+        t.setEventHandler { [weak self] in self?.publish() }
+        t.resume()
+        publishTimer = t
+    }
+
+    private nonisolated func publish() {
+        peakLock.lock(); let p = inPeak; inPeak = 0; peakLock.unlock()
+        levelSmoothed = max(p, levelSmoothed * 0.75)      // fast attack, slow release
+        let level = levelSmoothed
+        guard let d = demod else {
+            Task { @MainActor in if self.isRunning { self.inputLevel = level } }
+            return
+        }
+        let text = d.drainText()
+        let snap = d.snapshot
+        let rows = d.drainRows()
+        let image = rows.isEmpty ? nil : renderWaterfall(rows)
+        Task { @MainActor in
+            guard self.isRunning || !text.isEmpty else { return }
+            self.inputLevel = level
+            self.append(text)
+            if self.isRunning {
+                self.pitchHz = snap.pitchHz; self.acquired = snap.acquired
+                self.wpm = snap.wpm; self.snrDb = snap.snrDb; self.markOn = snap.markOn
+                if let image { self.waterfall = image }
+            }
+        }
+    }
+
+    /// Append spectrum rows and render the strip (newest at the bottom), with the
+    /// palette scaled from an EMA of the noise floor like the FT4 waterfall.
+    private nonisolated func renderWaterfall(_ rows: [[Float]]) -> UIImage? {
+        for r in rows {
+            if let w = waterRows.first?.count, w != r.count { waterRows = [] }
+            waterRows.append(r)
+        }
+        if waterRows.count > waterHeight { waterRows.removeFirst(waterRows.count - waterHeight) }
+        guard let last = waterRows.last, !last.isEmpty else { return nil }
+        let w = last.count, h = waterRows.count
+        var sorted = last; sorted.sort()
+        let floorNow = sorted[min(sorted.count - 1, Int(Float(sorted.count) * 0.4))]
+        waterFloor = waterFloor == 0 ? floorNow : waterFloor * 0.9 + floorNow * 0.1
+        let range: Float = 40
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        for (y, r) in waterRows.enumerated() {
+            for x in 0..<min(w, r.count) {
+                let c = Heatmap.color((r[x] - waterFloor) / range)
+                let o = (y * w + x) * 4
+                rgba[o] = c.r; rgba[o + 1] = c.g; rgba[o + 2] = c.b; rgba[o + 3] = 255
+            }
+        }
+        return FT4Engine.imageFromRGBA(rgba, width: w, height: h)
     }
 }

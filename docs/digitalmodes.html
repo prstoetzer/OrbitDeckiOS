@@ -25,7 +25,7 @@
 
     <section class="container">
         <h1>Digital Modes &amp; Audio</h1>
-        <p class="section-intro">OrbitDeck can record a pass, decode SSTV, and work full-duplex FT4 on a linear transponder — all from the received audio of a <strong>USB audio interface</strong> or, experimentally, an <strong>Icom network-audio</strong> radio.</p>
+        <p class="section-intro">OrbitDeck can record a pass, decode SSTV and CW, and work full-duplex FT4 on a linear transponder — all from the received audio of a <strong>USB audio interface</strong> or, experimentally, an <strong>Icom network-audio</strong> radio.</p>
 
         <div class="doc">
             <aside class="toc">
@@ -34,6 +34,7 @@
                 <a href="#recording">Pass recording</a>
                 <a href="#sstv">SSTV</a>
                 <a href="#ft4">Full-duplex FT4</a>
+                <a href="#cw">CW decoder</a>
                 <a href="#doppler">Doppler compensation — deep dive</a>
                 <a href="#ptt">PTT for FT4</a>
                 <a href="#status">Maturity &amp; testing</a>
@@ -46,7 +47,7 @@
                 <div class="note">iOS treats a USB audio input as a microphone, so the first time you record or decode, iOS asks for microphone permission.</div>
 
                 <h3>Choosing which cards appear</h3>
-                <p>In <strong>Settings &rarr; Audio features</strong> each of the three cards (Pass recording, SSTV, FT4) has an independent setting:</p>
+                <p>In <strong>Settings &rarr; Audio features</strong> each audio card (Pass recording, SSTV, FT4, Packet / APRS, CW decode, Remote audio) has an independent setting:</p>
                 <ul>
                     <li><strong>Auto</strong> (default) — the card appears only when an audio interface is connected.</li>
                     <li><strong>Always show</strong> — the card appears even without an interface, using the phone's <strong>built-in microphone</strong> (hold the phone near your receiver's speaker to decode/record acoustically).</li>
@@ -84,6 +85,15 @@
 
                 <h3 id="pskreporter">PSKReporter reception reports</h3>
                 <p>OrbitDeck can upload the FT4 stations it decodes to <a href="https://pskreporter.info" rel="noopener">PSKReporter</a> so they show on its public map. This is <strong>opt-in</strong> — turn on <strong>Settings &rarr; PSKReporter &rarr; Upload FT4 reception reports</strong> (your callsign and grid must be set). The reported frequency is the absolute downlink RF — the Doppler-corrected downlink dial from CAT when connected, otherwise the transponder's downlink center — plus the decode's audio offset. Nothing is sent unless you enable it; see the <a href="privacy.html">privacy policy</a>.</p>
+
+                <h2 id="cw">CW decoder</h2>
+                <p>The Home <strong>CW decoder</strong> card turns Morse code in the received audio into text — CW beacons and telemetry, and CW contacts on linear transponders. It only listens, so it runs alongside pass recording, FT4, SSTV or remote voice on the same audio interface. Show it without an interface (built-in microphone) with <strong>Settings &rarr; Audio features &rarr; CW decode &rarr; Always</strong>.</p>
+                <p>Tap <strong>Start</strong> and the decoder searches the tone range (300–1200&nbsp;Hz by default) for the strongest steady carrier, locks onto it, and follows it with <strong>AFC</strong> as Doppler or your dial moves it. A compact <strong>spectrum strip</strong> shows the range with the decoder's pitch and filter width marked; <strong>tap a trace</strong> to tune to that signal, or <strong>Lock</strong> the pitch so it stays put. The status line shows the pitch, the measured speed in WPM, and the tone's SNR. Speed is estimated from the code itself (5–50&nbsp;WPM by default, or set a fixed speed), and Farnsworth-spaced code is handled.</p>
+                <p>The transcript scrolls in a monospaced panel and starts a new line after a pause, with optional UTC timestamps. Prosigns show as <code>&lt;AR&gt;</code>, <code>&lt;SK&gt;</code>, <code>&lt;BT&gt;</code>, <code>&lt;KN&gt;</code>, <code>&lt;AS&gt;</code>, <code>&lt;BK&gt;</code> and <code>&lt;CL&gt;</code>; an unreadable character prints as <code>*</code>. <strong>Callsigns are underlined — tap one</strong> to put it in the Home <a href="logging.html">Log QSO</a> card with mode CW. Copy and Share export the transcript.</p>
+                <p><strong>Setup</strong> has the input level, search range, filter bandwidth (50/100/200&nbsp;Hz), squelch, speed range or fixed speed, AFC, and timestamps; settings are kept between launches.</p>
+                <div class="note">
+                    <strong>On a linear transponder</strong>, set the mode to <strong>CW</strong> on the Live Doppler card so the radio uses CW mode and its CW filter, then tune so the CW note falls inside the search range (about 600–800&nbsp;Hz is typical). With CAT Doppler tuning the pitch barely moves; without it, keep AFC on and use the 100 or 200&nbsp;Hz filter so the tone stays in the passband as the Doppler residual walks it.
+                </div>
 
                 <h2 id="doppler">Doppler compensation — deep dive</h2>
                 <p class="section-intro">How OrbitDeck keeps a coherent FT4 burst readable through the fast Doppler of a low-earth-orbit pass. This section is for the curious; you don't need any of it to operate.</p>
@@ -129,7 +139,7 @@
                 <p>When a CAT radio is connected, OrbitDeck keys transmit over CAT automatically — CI-V, Yaesu, Kenwood, <a href="catcontrol.html">rigctld</a>, and Icom network. If your radio has no CAT PTT, use <strong>VOX</strong> or key manually: the FT4 card shows a prominent <em>TRANSMIT NOW</em> indicator at the start of each of your slots so you key in time.</p>
 
                 <h2 id="status">Maturity &amp; testing</h2>
-                <p>These features are new in 0.9.14. SSTV and FT4 decode from a USB audio interface have been validated on-air; the SSTV calibration controls help with marginal or slanted pictures. The <strong>Icom network-audio path is experimental</strong> and best validated on your own radio — it now re-establishes automatically if the RS-BA1 link drops and reconnects mid-pass, rather than going silent for the rest of the pass. Feedback from on-air use is welcome.</p>
+                <p>These features are new in 0.9.14. SSTV and FT4 decode from a USB audio interface have been validated on-air; the SSTV calibration controls help with marginal or slanted pictures. The <strong>Icom network-audio path is experimental</strong> and best validated on your own radio — it now re-establishes automatically if the RS-BA1 link drops and reconnects mid-pass, rather than going silent for the rest of the pass. The <strong>CW decoder</strong> is new in 1.1 and has been exercised against synthesized, noisy, drifting CW; on-air reports are especially welcome. Feedback from on-air use is welcome.</p>
 
                 <h2 id="privacy">Permissions &amp; privacy</h2>
                 <p>Audio is captured only while you record or decode, and stays on your device (SSTV images are saved to the app; you choose when to export to Photos). See the <a href="privacy.html">privacy policy</a>.</p>

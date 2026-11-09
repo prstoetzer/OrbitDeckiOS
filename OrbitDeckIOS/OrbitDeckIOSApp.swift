@@ -14,6 +14,7 @@ struct OrbitDeckIOSApp: App {
     @StateObject private var voice = RemoteVoiceController()
     @StateObject private var autoSwitch = AutoSwitchController()
     @StateObject private var packet = PacketEngine()
+    @StateObject private var cw = CWDecoder()
     @StateObject private var liveActivity = LiveActivityController()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -32,6 +33,7 @@ struct OrbitDeckIOSApp: App {
                 .environmentObject(voice)
                 .environmentObject(autoSwitch)
                 .environmentObject(packet)
+                .environmentObject(cw)
                 .environmentObject(liveActivity)
                 .preferredColorScheme(.dark)
                 .task {

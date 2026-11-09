@@ -57,6 +57,9 @@ struct HomeQuickLogCard: View {
     @State private var rstRcvd = ""
     @State private var theirGrid = ""
     @State private var justLogged = false
+    /// Mode set by a decoder hand-off (e.g. CW when a call is tapped in the CW
+    /// transcript); overrides the transponder mode for the next QSO.
+    @State private var modeOverride: String?
 
     var body: some View {
         if qso.config.enabled {
@@ -64,6 +67,14 @@ struct HomeQuickLogCard: View {
                 MetricRow("Satellite", satellite.name)
                 TextField("Call", text: $call)
                     .textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.odField)
+                if let modeOverride {
+                    HStack(spacing: 6) {
+                        Label("Mode \(modeOverride)", systemImage: "waveform").font(.caption).foregroundStyle(ODTheme.accent)
+                        Spacer()
+                        Button("Use transponder mode") { self.modeOverride = nil; resetRst() }
+                            .font(.caption).buttonStyle(.borderless)
+                    }
+                }
                 HStack {
                     TextField("RST sent", text: $rstSent).textFieldStyle(.odField).frame(maxWidth: .infinity)
                     TextField("RST rcvd", text: $rstRcvd).textFieldStyle(.odField).frame(maxWidth: .infinity)
@@ -83,13 +94,25 @@ struct HomeQuickLogCard: View {
             }
             // Don't clobber a report the operator typed when they come back to this tab.
             .onAppear { if rstSent.isEmpty && rstRcvd.isEmpty { resetRst() } }
-            .onChange(of: satellite.id) { _, _ in resetRst() }
+            .onChange(of: satellite.id) { _, _ in modeOverride = nil; resetRst() }
             .onChange(of: rig.config.tuning.linearCW) { _, _ in resetRst() }
+            .onAppear { takePrefill() }
+            .onChange(of: qso.quickLogPrefill) { _, _ in takePrefill() }
         }
+    }
+
+    /// Pick up a callsign handed over by a decoder (see `QSOStore.prefillQuickLog`).
+    private func takePrefill() {
+        guard let p = qso.quickLogPrefill else { return }
+        qso.quickLogPrefill = nil
+        call = p.call
+        modeOverride = p.mode
+        resetRst()
     }
 
     /// The default report for the current transponder's mode (59 voice, 599 CW/data).
     private var defaultRst: String {
+        if let modeOverride { return qso.config.rst(for: modeOverride) }
         let mode = linearCW ? "CW" : (rig.transponder(for: satellite).map { QSORecord.adifMode($0.mode) } ?? "SSB")
         return qso.config.rst(for: mode)
     }
@@ -106,11 +129,15 @@ struct HomeQuickLogCard: View {
                                     myGrid: store.operatorGrid6, myCall: qso.config.myCall,
                                     defaultRst: qso.config.defaultRst)
         q.call = call.trimmingCharacters(in: .whitespaces).uppercased()
-        if linearCW { q.mode = "CW"; q.uplinkMode = nil; q.downlinkMode = nil }
+        if let modeOverride {
+            q.mode = modeOverride; q.uplinkMode = nil; q.downlinkMode = nil
+        } else if linearCW {
+            q.mode = "CW"; q.uplinkMode = nil; q.downlinkMode = nil
+        }
         q.rstSent = rstSent; q.rstRcvd = rstRcvd
         q.grid = theirGrid.trimmingCharacters(in: .whitespaces).uppercased()
         qso.add(q)
-        call = ""; theirGrid = ""; resetRst()
+        call = ""; theirGrid = ""; modeOverride = nil; resetRst()
         justLogged = true
         Task { try? await Task.sleep(nanoseconds: 1_500_000_000); justLogged = false }
     }
