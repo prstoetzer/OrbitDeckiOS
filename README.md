@@ -79,4 +79,15 @@ Please consider joining or donating to [AMSAT](https://www.amsat.org) — the Ra
 
 ## License and credits
 
-© 2026 Paul Stoetzer, N8HM. [SatelliteKit](https://github.com/gavineadie/SatelliteKit) is a separate Swift package under its own license.
+© 2026 Paul Stoetzer, N8HM. [SatelliteKit](https://github.com/gavineadie/SatelliteKit) is a separate Swift package under its own license. Other third-party code and data (ft8_lib, d3-celestial constellation lines, Natural Earth, the Yale Bright Star Catalog, Open-Meteo) are credited in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and in the app under Settings → About → Acknowledgments.
+
+### Contributors
+
+Thank you to everyone whose pull requests have been merged into OrbitDeck:
+
+- **Filip Melik** ([@filipmelik](https://github.com/filipmelik))
+  - [#5](https://github.com/prstoetzer/OrbitDeckiOS/pull/5) — Next Passes screen interaction fixes
+  - [#8](https://github.com/prstoetzer/OrbitDeckiOS/pull/8) — Home screen fixes: stale data refreshed on return from the background, and in-progress passes moved to Overhead Now with their LOS time
+  - [#9](https://github.com/prstoetzer/OrbitDeckiOS/pull/9) — Native Bluetooth CAT for the IC-705 and IC-905 (sign-in protocol behavior per K7MDL2's IC-705 BLE example)
+
+Contributions are welcome — open an issue or a pull request.
