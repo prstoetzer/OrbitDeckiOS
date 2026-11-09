@@ -668,7 +668,7 @@ struct HomePacketCard: View {
     @State private var messageTo = "CQ"
     @State private var messageText = ""
     @State private var tab = 0
-    @State private var onlyMine = false
+    @State private var showSessions = false
     @State private var horizonEvent: NextEvent?
     /// AOS of the pass in progress (kept after LOS), for the map's "This pass" filter.
     @State private var passStart: Date?
@@ -689,6 +689,7 @@ struct HomePacketCard: View {
             }
             let reachable = audio.audioAvailable
                 || (packet.settings.transport == .bleKISS && !packet.settings.bleIdentifier.isEmpty)
+                || (packet.settings.transport == .tcpKISS && !packet.settings.kissHost.isEmpty)
             return hasPacket && reachable
         }
     }
@@ -739,6 +740,11 @@ struct HomePacketCard: View {
                     }
                 }
 
+                Button { showSessions = true } label: {
+                    Label("Pass log", systemImage: "list.bullet.rectangle")
+                }
+                .font(.caption).buttonStyle(.borderless)
+
                 DisclosureGroup("Setup", isExpanded: $showSetup) { setup.padding(.top, 4) }
                     .font(.subheadline).tint(ODTheme.accent)
             }
@@ -758,6 +764,9 @@ struct HomePacketCard: View {
                     }.value
                     if let pass, pass.aos <= Date() { passStart = pass.aos }
                 }
+            }
+            .sheet(isPresented: $showSessions) {
+                NavigationStack { PacketSessionsView() }
             }
             .sheet(isPresented: $pickingAdapter) {
                 NavigationStack {
@@ -803,6 +812,12 @@ struct HomePacketCard: View {
                 Label("Logged \(logged.call) at \(ODFormat.primaryClock(logged.date))", systemImage: "book.closed.fill")
                     .font(.caption).foregroundStyle(ODTheme.good)
             }
+            let minEl = packet.minElevation(for: satellite.id)
+            if minEl > 0 {
+                Text("Sending and beacons only above \(Int(minEl))° elevation.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+            if packet.isRunning && packet.settings.satgateEnabled { PacketSatgateStatus(satgate: packet.satgate) }
         }
     }
 
@@ -832,6 +847,15 @@ struct HomePacketCard: View {
                 }
             }
             HStack {
+                Text("Minimum elevation").font(.caption).foregroundStyle(ODTheme.muted)
+                Picker("Minimum elevation", selection: profile.minElevationDeg) {
+                    Text("Global (\(Int(packet.settings.minElevationDeg))°)").tag(Double?.none)
+                    ForEach([0.0, 5, 10, 15, 20, 30], id: \.self) { Text("\(Int($0))°").tag(Double?.some($0)) }
+                }
+                .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
+                Spacer(minLength: 0)
+            }
+            HStack {
                 Text("Path").font(.caption).foregroundStyle(ODTheme.muted)
                 TextField("ARISS", text: profile.path)
                     .textInputAutocapitalization(.characters).autocorrectionDisabled()
@@ -853,8 +877,14 @@ struct HomePacketCard: View {
     private var statsLine: some View {
         let s = packet.stats
         let pct = s.sent > 0 ? Int((Double(s.digipeated) / Double(s.sent) * 100).rounded()) : 0
-        return Text("Sent \(s.sent) · digipeated \(s.digipeated) (\(pct)%)" + (s.digipeated > 0 ? String(format: " · median delay %.1f s", s.medianDelay) : ""))
-            .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("Sent \(s.sent) · digipeated \(s.digipeated) (\(pct)%)" + (s.digipeated > 0 ? String(format: " · median delay %.1f s", s.medianDelay) : ""))
+            if let session = packet.currentSession {
+                let st = session.stats
+                Text("This pass: \(st.framesHeard) frames · \(st.stationsHeard) stations · " + String(format: "%.1f/min", st.framesPerMinute))
+            }
+        }
+        .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
     }
 
     private var quickMessages: some View {
@@ -907,21 +937,16 @@ struct HomePacketCard: View {
     }
 
     private var monitor: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Toggle("Only my traffic", isOn: $onlyMine).font(.caption).toggleStyle(.switch).fixedSize()
-                Spacer()
-                if !packet.log.isEmpty { Button("Clear") { packet.clearLog() }.font(.caption).buttonStyle(.borderless) }
-            }
-            let entries = packet.log.filter { e in
-                !onlyMine || e.direction == .sent || e.ownDigipeated || e.toMe
-            }
+        let filter = packet.settings.monitorFilter
+        let entries = packet.log.filter(filter.matches)
+        return VStack(alignment: .leading, spacing: 6) {
+            PacketFilterBar(filter: $packet.settings.monitorFilter, canClear: !packet.log.isEmpty) { packet.clearLog() }
             if entries.isEmpty {
-                Text(onlyMine ? "Nothing to or from you yet." : "No packets yet. Frames heard on the downlink appear here.")
+                Text(filter.activeCount > 0 ? "Nothing matches the filter." : "No packets yet. Frames heard on the downlink appear here.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             } else {
                 ForEach(entries.suffix(30).reversed()) { entry in
-                    PacketLogRow(entry: entry) { call in messageTo = call }
+                    PacketLogRow(entry: entry, raw: filter.showRaw) { call in messageTo = call }
                 }
             }
         }
@@ -966,17 +991,19 @@ struct HomePacketCard: View {
         let since = passStart ?? Date().addingTimeInterval(-20 * 60)
         let shown = packet.heard.filter { $0.latitude != nil && (mapAllStations || $0.lastHeard >= since) }
         let unplaced = packet.heard.filter { $0.latitude == nil }.count
+        let objects = packet.objects.filter { mapAllStations || $0.lastHeard >= since }
         return VStack(alignment: .leading, spacing: 6) {
             Picker("Stations", selection: $mapAllStations) {
                 Text("This pass").tag(false)
                 Text("All heard").tag(true)
             }
             .pickerStyle(.segmented)
-            PacketStationMap(stations: shown, observer: store.preferences.observer, satellite: satellite,
+            PacketStationMap(stations: shown, objects: objects, observer: store.preferences.observer, satellite: satellite,
                              myTable: packet.settings.symbolTable.first, myCode: packet.settings.symbolCode.first) { call in
                 messageTo = call
             }
-            Text("\(shown.count) on the map" + (unplaced > 0 ? " · \(unplaced) without a position" : "")
+            Text("\(shown.count) on the map" + (objects.isEmpty ? "" : " · \(objects.count) objects/items")
+                 + (unplaced > 0 ? " · \(unplaced) without a position" : "")
                  + ". Tap a station to put its call in To. The shaded area is \(satellite.name)'s footprint.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
         }
@@ -994,6 +1021,7 @@ struct HomePacketCard: View {
         }
         parts.append("\(s.frames)×")
         parts.append(ODFormat.axisClock(s.lastHeard))
+        if let wx = s.weather, !wx.summary.isEmpty { parts.append(wx.summary) }
         return parts.joined(separator: " · ")
     }
 
@@ -1029,6 +1057,17 @@ struct HomePacketCard: View {
                 Toggle("Tune the radio to the packet frequency (B.B. Link)", isOn: $packet.settings.bbLinkTune)
                 Text("Uses the radio's built-in TNC through a BLE KISS adapter. The Kenwood TH-D74/D75 only offer Bluetooth Classic, which iOS can't open, so they need the B.B. Link adapter (or a compatible ESP32/Raspberry Pi bridge). Set the radio's KISS interface to Bluetooth (menu 983). The adapter accepts one app at a time, so CAT control over the same adapter isn't available while packet runs.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
+            } else if packet.settings.transport == .tcpKISS {
+                HStack {
+                    TextField("Host (e.g. 192.168.1.20)", text: $packet.settings.kissHost)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        .textFieldStyle(.odField)
+                    TextField("Port", value: $packet.settings.kissPort, format: .number.grouping(.never))
+                        .keyboardType(.numberPad).textFieldStyle(.odField).frame(width: 70)
+                }
+                .disabled(packet.isRunning)
+                Text("KISS over TCP to Direwolf (port 8001), UZ7HO soundmodem (8100) or a network TNC on your LAN. That software runs the modem and keys the radio; OrbitDeck sends and receives frames as with the BLE TNC, and reconnects if the link drops.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
             } else {
                 Stepper("TX delay: \(packet.settings.txDelayMs) ms", value: $packet.settings.txDelayMs, in: 50...1000, step: 50)
                 VStack(alignment: .leading, spacing: 3) {
@@ -1062,13 +1101,35 @@ struct HomePacketCard: View {
                 }
                 Stepper(packet.settings.beaconMinutes == 0 ? "Timed beacon: off" : "Timed beacon: every \(packet.settings.beaconMinutes) min",
                         value: $packet.settings.beaconMinutes, in: 0...30)
+                Picker("Beacon sends", selection: $packet.settings.beaconContent) {
+                    ForEach(PacketBeaconContent.allCases) { Text($0.label).tag($0) }
+                }
+                if packet.settings.beaconContent != .position {
+                    HStack {
+                        Text("Status text")
+                        Spacer()
+                        TextField("OrbitDeck {MYGRID4}", text: $packet.settings.statusText)
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField).frame(minWidth: 120, maxWidth: 190)
+                    }
+                }
+                Toggle("Beacon when the satellite is first heard", isOn: $packet.settings.beaconOnFirstHeard)
+                Text("Sends one position as soon as the first digipeated frame of a pass arrives, then the timed beacon continues. Status text goes out as an APRS status (>) or as plain text to CQ, following the satellite's format. Automatic beacons are never closer than 1 minute apart.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
                 Toggle("Number my messages (request acks)", isOn: $packet.settings.requestAcks)
+                if packet.settings.requestAcks {
+                    Toggle("Resend unacknowledged messages (2×, 30 s apart)", isOn: $packet.settings.retryMessages)
+                }
                 Toggle("Acknowledge messages to me", isOn: $packet.settings.autoAck)
                 Toggle("Log QSOs automatically", isOn: $packet.settings.autoLogQSOs)
                 Text("Logs a PKT QSO once you and a station have each sent the other's call, and its reply came after yours or yours was heard back through the satellite. Grid and reports come from the frames. A station already logged on this satellite in the last 30 minutes isn't logged again.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
-                Toggle("Block sending while the satellite is below the horizon", isOn: $packet.settings.blockBelowHorizon)
+                Toggle("Block sending below the minimum elevation", isOn: $packet.settings.blockBelowHorizon)
+                Stepper("Minimum elevation: \(Int(packet.settings.minElevationDeg))°", value: $packet.settings.minElevationDeg, in: 0...45, step: 1)
+                Text("Applies to sending, beacons and message retries; a satellite's profile can override it.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
             }
+            PacketAlertsSetup()
+            PacketSatgateSetup()
             Group {
                 Picker("Duplex", selection: $packet.settings.duplex) {
                     ForEach(PacketDuplex.allCases) { Text($0.label).tag($0) }
@@ -1113,6 +1174,7 @@ struct HomePacketCard: View {
 
 private struct PacketLogRow: View {
     let entry: PacketLogEntry
+    var raw = false
     let reply: (String) -> Void
 
     private var color: Color {
@@ -1129,7 +1191,40 @@ private struct PacketLogRow: View {
         if entry.toMe { return "TO ME" }
         if entry.isTelemetry { return "TLM" }
         if entry.isCQ { return "CQ" }
+        switch entry.aprs.kind {
+        case .object: return "OBJ"
+        case .item: return "ITEM"
+        case .weather: return "WX"
+        default: break
+        }
+        if entry.aprs.weather != nil { return "WX" }
+        if entry.isStatus { return "STS" }
         if entry.isBeacon { return "BCN" }
+        return nil
+    }
+
+    /// "via RS0ISS*, WIDE2-1": `*` on the digipeater that repeated it; satellite
+    /// digipeaters in cyan.
+    private var pathLine: Text? {
+        let path = entry.frame.pathText
+        guard !path.isEmpty else { return nil }
+        var t = Text("via ").foregroundStyle(ODTheme.muted)
+        for (i, element) in path.enumerated() {
+            if i > 0 { t = t + Text(", ").foregroundStyle(ODTheme.muted) }
+            let sat = PacketDigis.isSatellite(element)
+            let repeated = element.hasSuffix("*")
+            t = t + Text(element)
+                .foregroundStyle(sat ? Color.cyan : (repeated ? Color.primary : ODTheme.muted))
+                .fontWeight(repeated || sat ? .semibold : .regular)
+        }
+        return t
+    }
+
+    private var retryText: (String, Color)? {
+        if entry.acked { return nil }
+        if entry.ackFailed { return ("no ack", ODTheme.warning) }
+        if entry.retries > 0 { return ("retry \(entry.retries)/\(PacketMessageRetry.maxRetries)", ODTheme.warning) }
+        if entry.awaitingAck { return ("awaiting ack", ODTheme.muted) }
         return nil
     }
 
@@ -1144,6 +1239,7 @@ private struct PacketLogRow: View {
                     if let tag { Text(tag).font(.caption2.weight(.bold)).foregroundStyle(color) }
                     if let d = entry.digipeatDelay { Text(String(format: "+%.1f s", d)).font(.caption2.monospacedDigit()).foregroundStyle(.cyan) }
                     if entry.acked { Text("acked").font(.caption2).foregroundStyle(ODTheme.good) }
+                    if let r = retryText { Text(r.0).font(.caption2).foregroundStyle(r.1) }
                     Spacer()
                     if let lat = entry.aprs.latitude, let lon = entry.aprs.longitude {
                         Text(FeatureEngine.latLonToGrid6(latitude: lat, longitude: lon).prefix(4))
@@ -1154,12 +1250,266 @@ private struct PacketLogRow: View {
                 }
                 // One line: on a narrow phone the tags would otherwise wrap letter by letter.
                 .lineLimit(1)
-                Text(entry.text.isEmpty ? entry.frame.monitorText : entry.text)
-                    .font(.caption.monospaced()).foregroundStyle(color).lineLimit(3)
+                if raw {
+                    Text(entry.frame.monitorText)
+                        .font(.caption2.monospaced()).foregroundStyle(color).lineLimit(4)
+                        .textSelection(.enabled)
+                } else {
+                    if let pathLine { pathLine.font(.caption2.monospaced()).lineLimit(1).truncationMode(.middle) }
+                    Text(entry.text.isEmpty ? entry.frame.monitorText : entry.text)
+                        .font(.caption.monospaced()).foregroundStyle(color).lineLimit(3)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Monitor filter
+
+/// Compact monitor filters for a phone: call and text fields plus a menu of toggles.
+private struct PacketFilterBar: View {
+    @Binding var filter: PacketMonitorFilter
+    let canClear: Bool
+    let clear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField("Call", text: $filter.call)
+                .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                .textFieldStyle(.odField).font(.caption).frame(width: 74)
+            TextField("Text", text: $filter.text)
+                .autocorrectionDisabled()
+                .textFieldStyle(.odField).font(.caption)
+            Menu {
+                Toggle("Only my traffic", isOn: $filter.onlyMine)
+                Toggle("Digipeated only", isOn: $filter.digipeatedOnly)
+                Toggle("Hide beacons", isOn: $filter.hideBeacons)
+                Toggle("Hide telemetry", isOn: $filter.hideTelemetry)
+                Toggle("Hide status", isOn: $filter.hideStatus)
+                Divider()
+                Toggle("Raw TNC2", isOn: $filter.showRaw)
+                if filter.activeCount > 0 {
+                    Button("Reset filters", role: .destructive) {
+                        let raw = filter.showRaw
+                        filter = PacketMonitorFilter()
+                        filter.showRaw = raw
+                    }
+                }
+            } label: {
+                let n = filter.activeCount
+                Label(n > 0 ? "\(n)" : "Filter", systemImage: n > 0 ? "line.3.horizontal.decrease.circle.fill"
+                                                                    : "line.3.horizontal.decrease.circle")
+                    .font(.caption)
+            }
+            .accessibilityLabel("Monitor filters")
+            if canClear { Button("Clear", action: clear).font(.caption).buttonStyle(.borderless) }
+        }
+    }
+}
+
+// MARK: - Alerts, speech and satgate setup
+
+private struct PacketAlertsSetup: View {
+    @EnvironmentObject private var packet: PacketEngine
+    @State private var watchText = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Alerts").font(.caption.weight(.semibold))
+            Toggle("A message to me", isOn: alertBinding(\.alertToMe))
+            Toggle("A watched callsign or word", isOn: alertBinding(\.alertWatch))
+            if packet.settings.alertWatch {
+                TextField("Watch list, e.g. W1AW, RS0ISS, field day", text: $watchText)
+                    .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                    .textFieldStyle(.odField).font(.caption)
+                    .onAppear { watchText = packet.settings.watchList.joined(separator: ", ") }
+                    .onChange(of: watchText) { _, v in packet.settings.watchList = PacketWatch.parseList(v) }
+            }
+            Toggle("My frame was digipeated", isOn: alertBinding(\.alertDigipeated))
+            Text("A haptic and a sound while OrbitDeck is open, a notification when it's in the background. The same alert repeats at most once a minute. The sound is skipped when the phone's audio output feeds your radio (USB interface or phone mic), so it can't be transmitted.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+            Toggle("Read messages to me aloud", isOn: $packet.settings.speakMessages)
+            Toggle("Also read bulletins", isOn: $packet.settings.speakBulletins)
+            Text("Spoken only when the phone's output isn't the radio's audio path — a KISS TNC, or the built-in modem on Icom network audio — and never while transmitting.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    /// Turning an alert on asks for notification permission (once; iOS remembers).
+    private func alertBinding(_ key: WritableKeyPath<PacketSettings, Bool>) -> Binding<Bool> {
+        Binding(get: { packet.settings[keyPath: key] }, set: { on in
+            packet.settings[keyPath: key] = on
+            if on { packet.requestAlertPermission() }
+        })
+    }
+}
+
+private struct PacketSatgateSetup: View {
+    @EnvironmentObject private var packet: PacketEngine
+    @State private var passcode = ""
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Satgate: forward heard packets to APRS-IS", isOn: $packet.settings.satgateEnabled)
+            if packet.settings.satgateEnabled {
+                HStack {
+                    Text("Passcode")
+                    Spacer()
+                    SecureField("APRS-IS passcode", text: $passcode)
+                        .keyboardType(.numberPad).multilineTextAlignment(.trailing)
+                        .textFieldStyle(.odField).frame(maxWidth: 140)
+                }
+                HStack {
+                    TextField(APRSISGate.defaultHost, text: $packet.settings.satgateHost)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        .textFieldStyle(.odField)
+                    TextField("Port", value: $packet.settings.satgatePort, format: .number.grouping(.never))
+                        .keyboardType(.numberPad).textFieldStyle(.odField).frame(width: 70)
+                }
+                Stepper(packet.settings.satgateSSID == 0 ? "Login: \(packet.satgateCall) (no SSID)" : "Login: \(packet.satgateCall)",
+                        value: $packet.settings.satgateSSID, in: 0...15)
+                if packet.isRunning {
+                    HStack {
+                        PacketSatgateStatus(satgate: packet.satgate)
+                        Spacer(minLength: 4)
+                        Button("Reconnect") { packet.restartSatgate() }
+                            .font(.caption).buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+            }
+            Text("Receive-only: packets heard through the satellite are sent to APRS-IS (aprs.fi and others) with your callsign as the gateway (qAR). Your own frames, duplicates within 30 s and packets marked NOGATE, RFONLY or TCPIP aren't gated, and nothing from the Internet is ever transmitted. Runs only while packet runs (in the foreground, or in the background with audio). Off by default; the passcode stays in the Keychain.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+        .task {
+            if !loaded { passcode = OrbitSecretStore.get(.aprsisPasscode); loaded = true }
+        }
+        .onChange(of: passcode) { _, v in
+            guard loaded else { return }
+            // Saved as typed; used at the next connect (Start, or Reconnect) so partial
+            // passcodes never reach the server.
+            OrbitSecretStore.set(v.trimmingCharacters(in: .whitespaces), for: .aprsisPasscode)
+        }
+    }
+}
+
+private struct PacketSatgateStatus: View {
+    @ObservedObject var satgate: PacketSatgate
+
+    var body: some View {
+        let verifiedText: String = switch satgate.verified {
+        case .some(true): " · verified"
+        case .some(false): " · unverified — check the passcode"
+        case .none: ""
+        }
+        HStack(spacing: 6) {
+            Circle().fill(satgate.verified == false ? ODTheme.warning : satgate.state.color).frame(width: 8, height: 8)
+            Text("Satgate: \(satgate.state.label)\(verifiedText) · \(satgate.gatedCount) gated")
+                .lineLimit(2).minimumScaleFactor(0.8)
+        }
+        .font(.caption)
+        .foregroundStyle(ODTheme.muted)
+    }
+}
+
+// MARK: - Pass log
+
+/// Saved packet sessions (one per pass), newest first.
+private struct PacketSessionsView: View {
+    @EnvironmentObject private var packet: PacketEngine
+    @Environment(\.dismiss) private var dismiss
+    @State private var sessions: [PacketSession] = []
+    @State private var loading = true
+
+    var body: some View {
+        List {
+            if sessions.isEmpty && !loading {
+                Text("No passes logged yet. Every frame heard or sent while packet runs is saved here, one session per pass (the last \(PacketSessionFiles.keep) are kept).")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
+            ForEach(sessions) { s in
+                NavigationLink {
+                    PacketSessionDetailView(session: s)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(s.satellite.isEmpty ? "No satellite" : s.satellite).font(.subheadline.weight(.semibold))
+                            if s.id == packet.currentSession?.id {
+                                Text("LIVE").font(.caption2.weight(.bold)).foregroundStyle(ODTheme.good)
+                            }
+                            Spacer()
+                            Text(PacketSessionExport.utc(s.start)).font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                        }
+                        let st = s.stats
+                        Text("\(st.framesHeard) heard · \(st.stationsHeard) stations · sent \(st.sent)"
+                             + (st.successPercent.map { " · \($0) % digipeated" } ?? ""))
+                            .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                    }
+                }
+            }
+            .onDelete { offsets in
+                for i in offsets { packet.deleteSession(sessions[i].id) }
+                sessions.remove(atOffsets: offsets)
+            }
+        }
+        .navigationTitle("Pass log")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        .task {
+            sessions = await packet.loadSessions()
+            loading = false
+        }
+    }
+}
+
+private struct PacketSessionDetailView: View {
+    let session: PacketSession
+    @State private var files: (text: URL, csv: URL)?
+
+    var body: some View {
+        let st = session.stats
+        List {
+            Section("Statistics") {
+                LabeledContent("Frames heard", value: "\(st.framesHeard)")
+                LabeledContent("Stations heard", value: "\(st.stationsHeard)")
+                LabeledContent("My frames sent", value: "\(st.sent)")
+                LabeledContent("Digipeated", value: "\(st.digipeated)" + (st.successPercent.map { " (\($0) %)" } ?? ""))
+                if let d = st.medianDelay { LabeledContent("Median digipeat delay", value: String(format: "%.1f s", d)) }
+                LabeledContent("Frames per minute", value: String(format: "%.1f", st.framesPerMinute))
+                LabeledContent("Time (UTC)", value: "\(PacketSessionExport.utc(session.start)) – \(PacketSessionExport.utc(session.end).suffix(9))")
+            }
+            Section("Export") {
+                if let files {
+                    ShareLink(item: files.text) { Label("Text (TNC2)", systemImage: "doc.plaintext") }
+                    ShareLink(item: files.csv) { Label("CSV", systemImage: "tablecells") }
+                } else {
+                    ProgressView()
+                }
+            }
+            Section("Frames (\(session.records.count))") {
+                ForEach(session.records.suffix(500).reversed()) { r in
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
+                            Text(ODFormat.axisClock(r.date)).foregroundStyle(ODTheme.muted)
+                            Text(r.direction == .sent ? (r.retry ? "TX retry" : "TX") : (r.ownDigipeated ? "MY DIGI" : "RX"))
+                                .fontWeight(.bold)
+                                .foregroundStyle(r.direction == .sent ? Color.orange : (r.ownDigipeated ? Color.cyan : ODTheme.muted))
+                            if let d = r.digipeatDelay { Text(String(format: "+%.1f s", d)).foregroundStyle(.cyan) }
+                        }
+                        .font(.caption2.monospacedDigit())
+                        Text(r.tnc2).font(.caption2.monospaced()).lineLimit(4).textSelection(.enabled)
+                    }
+                }
+            }
+        }
+        .navigationTitle(session.satellite.isEmpty ? "Session" : session.satellite)
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: session.id) {
+            let s = session
+            files = await Task.detached(priority: .utility) { PacketSessionExport.writeFiles(s) }.value
+        }
     }
 }
 
@@ -1169,6 +1519,7 @@ private struct PacketLogRow: View {
 /// footprint. The footprint is redrawn every few seconds as the satellite moves.
 private struct PacketStationMap: View {
     let stations: [PacketHeardStation]
+    var objects: [PacketObject] = []
     let observer: ObserverSite
     let satellite: SatelliteRecord
     let myTable: Character?
@@ -1200,6 +1551,12 @@ private struct PacketStationMap: View {
                             .buttonStyle(.plain)
                             .accessibilityHint("Puts \(s.call) in the To field")
                         }
+                    }
+                }
+                ForEach(objects) { o in
+                    Annotation(o.name, coordinate: CLLocationCoordinate2D(latitude: o.latitude, longitude: o.longitude)) {
+                        APRSSymbolBadge(table: o.symbolTable, code: o.symbolCode, size: 20, tint: .purple)
+                            .accessibilityLabel("\(o.isItem ? "Item" : "Object") \(o.name) from \(o.owner)")
                     }
                 }
             }
