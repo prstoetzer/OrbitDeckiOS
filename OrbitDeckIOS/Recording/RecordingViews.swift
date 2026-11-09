@@ -168,6 +168,7 @@ struct VoiceMemoControl: View {
                 if memo.isRecording {
                     Text("\(ODFormat.duration(memo.elapsed)) / \(ODFormat.duration(PassRecorder.memoCap))")
                         .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.warning)
+                        .fixedSize()
                     AudioLevelBar(level: memo.level)
                 }
             }

@@ -305,7 +305,7 @@ struct LogScreen: View {
             HStack {
                 Text(q.isStub ? "Memo stub" : q.call).font(.headline)
                     .foregroundStyle(q.isStub ? ODTheme.warning : .primary)
-                if !q.name.isEmpty { Text(q.name).font(.subheadline) }
+                if !q.name.isEmpty { Text(q.name).font(.subheadline).lineLimit(1) }
                 if !q.grid.isEmpty { Text(q.gridList.first ?? q.grid).font(.caption).foregroundStyle(ODTheme.muted) }
                 Spacer()
                 if q.lotwConfirmed { badge("QSL", ODTheme.good) }

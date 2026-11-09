@@ -437,7 +437,8 @@ struct RigControlSettingsView: View {
         let fallback = builtIn ?? rig.config.tuning.uplinkToneHz
         let fallbackText = fallback > 0 ? String(format: "%.1f Hz", fallback) : "off"
         Picker("CTCSS for \(sat.name)", selection: satToneBinding(sat.id)) {
-            Text("Default (\(builtIn != nil ? "built-in" : "global") \(fallbackText))").tag(-1.0)
+            // Short, so the menu value doesn't crowd the label; the source is in the note below.
+            Text("Default (\(fallbackText))").tag(-1.0)
             Text("Off").tag(0.0)
             ForEach(CTCSS.availableHz, id: \.self) { Text(String(format: "%.1f Hz", $0)).tag($0) }
         }
@@ -681,9 +682,9 @@ struct ManualDopplerCalculator: View {
     @ViewBuilder private var content: some View {
         if !rig.connected, transponder.uplinkCenter > 0 {
             Divider().padding(.vertical, 2)
-            HStack {
+            // Title above the picker: side by side they overflow a narrow phone.
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Manual HOLD/TUNE").font(.caption.weight(.semibold)).foregroundStyle(ODTheme.accent)
-                Spacer()
                 Picker("Hold", selection: Binding(get: { holdLeg }, set: { leg in
                     holdLeg = leg
                     if let leg { heldDialHz = leg == .uplink ? currentTx : currentRx; entry = mhz(heldDialHz) }
@@ -693,16 +694,16 @@ struct ManualDopplerCalculator: View {
                     Text("Hold RX").tag(RigRole?.some(.downlink))
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 240)
             }
             if let leg = holdLeg {
                 HStack {
-                    Text(leg == .uplink ? "TX dial (held)" : "RX dial (held)").font(.caption)
-                    Spacer()
+                    Text(leg == .uplink ? "TX dial (held)" : "RX dial (held)").font(.caption).lineLimit(1)
+                    Spacer(minLength: 6)
                     TextField("MHz", text: $entry)
                         .keyboardType(.decimalPad)
                         .multilineTextAlignment(.trailing)
-                        .frame(width: 130)
+                        .monospacedDigit()
+                        .frame(minWidth: 96, maxWidth: 130)
                         .textFieldStyle(.odField)
                         .focused($entryFocused)
                         .onSubmit(commitEntry)

@@ -960,9 +960,15 @@ struct OrbitArchetypesLesson: View {
     var body: some View {
         let arch = archetypes.first { $0.id == selected } ?? archetypes[0]
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Orbit", selection: $selected) { ForEach(archetypes) { Text($0.id).tag($0.id) } }
-                .pickerStyle(.segmented)
-                .onChange(of: selected) { _, _ in start = Date() }
+            // Six orbit names ("Molniya / HEO", "Amateur MEO") don't fit segments on a
+            // phone, so pick from a compact menu.
+            HStack {
+                Text("Orbit").foregroundStyle(ODTheme.muted)
+                Spacer()
+                Picker("Orbit", selection: $selected) { ForEach(archetypes) { Text($0.id).tag($0.id) } }
+                    .pickerStyle(.menu).labelsHidden().fixedSize()
+            }
+            .onChange(of: selected) { _, _ in start = Date() }
             TimelineView(.animation) { context in
                 Canvas { ctx, size in draw(arch, in: &ctx, size: size, t: context.date.timeIntervalSince(start)) }
             }

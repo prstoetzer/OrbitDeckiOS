@@ -861,10 +861,15 @@ struct HomeAmsatQuickReport: View {
                     .font(.caption).foregroundStyle(ODTheme.warning)
             } else {
                 if apiMatches.count > 1 {
-                    Picker("AMSAT name", selection: $apiName) {
-                        ForEach(apiMatches, id: \.self) { Text($0).tag($0) }
+                    // Labeled like the MetricRow below; a bare menu picker shows only its value.
+                    HStack {
+                        Text("AMSAT name").foregroundStyle(ODTheme.muted)
+                        Spacer(minLength: 12)
+                        Picker("AMSAT name", selection: $apiName) {
+                            ForEach(apiMatches, id: \.self) { Text($0).tag($0) }
+                        }
+                        .pickerStyle(.menu).labelsHidden().lineLimit(1)
                     }
-                    .pickerStyle(.menu)
                 } else if !apiName.isEmpty {
                     MetricRow("AMSAT name", apiName)
                 }

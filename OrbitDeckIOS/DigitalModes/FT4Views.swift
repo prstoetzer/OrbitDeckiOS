@@ -821,9 +821,10 @@ struct HomePacketCard: View {
                             Text(m == .automatic ? "Auto (\(autoModemLabel))" : m.label).tag(m)
                         }
                     }
-                    .pickerStyle(.menu)
+                    // `.font` doesn't shrink a menu picker; size the control to match the caption label.
+                    .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
                     .disabled(packet.isRunning)
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
                 if packet.modem(for: satellite) == .g3ruh9600 {
                     Text("9600 baud needs the radio's 9600 data port (flat, wide discriminator audio and direct modulator input), with the receiver on the wide FM filter. Speaker and mic audio are too filtered to decode or send it.")
@@ -951,8 +952,8 @@ struct HomePacketCard: View {
                         Text(stationDetail(station)).font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
                     }
                     Spacer()
-                    Button("Reply") { messageTo = station.call }.font(.caption).buttonStyle(.bordered)
-                    Button("Log") { packet.logQSO(with: station.call) }.font(.caption).buttonStyle(.bordered)
+                    Button("Reply") { messageTo = station.call }.font(.caption).buttonStyle(.bordered).controlSize(.small)
+                    Button("Log") { packet.logQSO(with: station.call) }.font(.caption).buttonStyle(.bordered).controlSize(.small)
                         .disabled(station.logged)
                 }
             }
@@ -1057,7 +1058,7 @@ struct HomePacketCard: View {
                     Text("Position comment")
                     Spacer()
                     TextField("{MYGRID4} via OrbitDeck", text: $packet.settings.beaconComment)
-                        .multilineTextAlignment(.trailing).textFieldStyle(.odField).frame(width: 190)
+                        .multilineTextAlignment(.trailing).textFieldStyle(.odField).frame(minWidth: 120, maxWidth: 190)
                 }
                 Stepper(packet.settings.beaconMinutes == 0 ? "Timed beacon: off" : "Timed beacon: every \(packet.settings.beaconMinutes) min",
                         value: $packet.settings.beaconMinutes, in: 0...30)
@@ -1137,9 +1138,9 @@ private struct PacketLogRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(ODFormat.axisClock(entry.date)).font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
-                    Text(entry.frame.source.description).font(.caption.weight(.semibold))
+                    Text(entry.frame.source.description).font(.caption.weight(.semibold)).layoutPriority(1)
                     Text("→ \(entry.aprs.kind == .message || entry.aprs.kind == .ack ? entry.aprs.addressee : entry.frame.destination.description)")
-                        .font(.caption2).foregroundStyle(ODTheme.muted)
+                        .font(.caption2).foregroundStyle(ODTheme.muted).truncationMode(.tail)
                     if let tag { Text(tag).font(.caption2.weight(.bold)).foregroundStyle(color) }
                     if let d = entry.digipeatDelay { Text(String(format: "+%.1f s", d)).font(.caption2.monospacedDigit()).foregroundStyle(.cyan) }
                     if entry.acked { Text("acked").font(.caption2).foregroundStyle(ODTheme.good) }
@@ -1151,6 +1152,8 @@ private struct PacketLogRow: View {
                         Text(g.prefix(4)).font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.accent)
                     }
                 }
+                // One line: on a narrow phone the tags would otherwise wrap letter by letter.
+                .lineLimit(1)
                 Text(entry.text.isEmpty ? entry.frame.monitorText : entry.text)
                     .font(.caption.monospaced()).foregroundStyle(color).lineLimit(3)
             }
@@ -1468,7 +1471,7 @@ struct HomeCWCard: View {
                 Label(cw.pitchLocked ? "Locked" : "Lock", systemImage: cw.pitchLocked ? "lock.fill" : "lock.open")
                     .font(.caption)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.bordered).controlSize(.small)
             .tint(cw.pitchLocked ? ODTheme.warning : ODTheme.accent)
             .accessibilityLabel(cw.pitchLocked ? "Unlock pitch" : "Lock pitch")
         }
@@ -1630,20 +1633,25 @@ struct HomeCWCard: View {
             Text("Keep the meter out of the red; the decoder adapts to the level, but clipping smears the tone.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
 
-            HStack {
-                Text("Search").font(.caption).foregroundStyle(ODTheme.muted)
-                Picker("From", selection: s.searchLowHz) {
-                    ForEach([200.0, 300, 400, 500, 600, 800], id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Search range").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
+                // Compact menus: `.font` doesn't shrink a menu picker's label, so size the
+                // control itself and keep both on one row without crowding the card.
+                HStack(spacing: 6) {
+                    Picker("From", selection: s.searchLowHz) {
+                        ForEach([200.0, 300, 400, 500, 600, 800], id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+                    }
+                    .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
+                    Text("to").font(.caption2).foregroundStyle(ODTheme.muted)
+                    Picker("To", selection: s.searchHighHz) {
+                        ForEach([900.0, 1000, 1200, 1500, 2000], id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+                    }
+                    .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
+                    Spacer(minLength: 0)
                 }
-                .pickerStyle(.menu)
-                Text("to").font(.caption).foregroundStyle(ODTheme.muted)
-                Picker("To", selection: s.searchHighHz) {
-                    ForEach([900.0, 1000, 1200, 1500, 2000], id: \.self) { Text("\(Int($0)) Hz").tag($0) }
-                }
-                .pickerStyle(.menu)
-                Spacer()
+                Text("The decoder looks for a CW tone between these pitches.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
             }
-            .font(.caption)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("Filter bandwidth").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)

@@ -34,7 +34,7 @@ struct HomeSSTVCard: View {
                 HStack(spacing: 10) {
                     Circle().fill(decoder.isListening ? ODTheme.good : (decoder.isArmed ? ODTheme.warning : ODTheme.muted))
                         .frame(width: 10, height: 10)
-                    Text(headline).font(.subheadline.weight(.semibold))
+                    Text(headline).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
                     Spacer()
                     Button(decoder.isListening ? "Stop" : "Decode") { toggle() }
                         .buttonStyle(.bordered)

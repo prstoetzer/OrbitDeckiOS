@@ -278,10 +278,16 @@ struct RotatorSwitchPrompt: View {
             Text("Point at \(pending.name)?").font(.subheadline.weight(.semibold))
             Text("The rotator is still on the \(rot.engagedSatelliteName) pass.")
                 .font(.caption).foregroundStyle(ODTheme.muted)
+            // Compact, like the rig card's switch banner; a long satellite name truncates
+            // instead of pushing the buttons off the card.
             HStack {
                 Button("Switch") { rot.switchToPending() }.buttonStyle(.borderedProminent)
-                Button("Keep \(rot.engagedSatelliteName)") { rot.keepEngaged() }.buttonStyle(.bordered)
+                Button { rot.keepEngaged() } label: {
+                    Text("Keep \(rot.engagedSatelliteName)").lineLimit(1)
+                }
+                .buttonStyle(.bordered)
             }
+            .controlSize(.small)
         }
     }
 }
@@ -391,11 +397,14 @@ struct RotatorManualView: View {
     }
 
     private func jogRow(_ steps: [Double], _ action: @escaping (Double) -> Void) -> some View {
-        HStack(spacing: 6) {
+        // Six full-size buttons share a Form row: let the digits shrink rather than
+        // truncate to "…" on a narrow phone (the buttons keep their full tap height).
+        HStack(spacing: 4) {
             ForEach(steps, id: \.self) { step in
                 Button { action(step) } label: {
                     Text(verbatim: step > 0 ? "+\(Int(step))" : "\(Int(step))")
-                        .font(.body.monospacedDigit()).frame(maxWidth: .infinity)
+                        .font(.body.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
             }
@@ -489,12 +498,13 @@ struct RotatorMonitorView: View {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
                         .buttonStyle(.bordered)
-                        Spacer()
+                        Spacer(minLength: 0)
                         Button(role: .destructive) { rot.clearMonitor() } label: {
                             Label("Clear", systemImage: "trash")
                         }
                         .buttonStyle(.bordered)
                     }
+                    .controlSize(.small)
                 }
             }
             Section("Traffic") {

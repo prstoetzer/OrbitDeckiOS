@@ -594,11 +594,9 @@ struct GraphCalcView: View {
     @ViewBuilder private var analysis: some View {
         let roots = cache.roots, area = cache.area
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(roots.isEmpty ? "No zeros of y₁ in view" : "Zeros of y₁: " + roots.prefix(6).map { String(format: "%.6g", $0) }.joined(separator: ", ") + (roots.count > 6 ? "…" : ""))
-                Spacer()
-                Text(String(format: "∫y₁ dx (view) ≈ %.4g", area))
-            }
+            // Stacked: a list of zeros beside the area squeezes both into narrow columns.
+            Text(roots.isEmpty ? "No zeros of y₁ in view" : "Zeros of y₁: " + roots.prefix(6).map { String(format: "%.6g", $0) }.joined(separator: ", ") + (roots.count > 6 ? "…" : ""))
+            Text(String(format: "∫y₁ dx (view) ≈ %.4g", area))
             if hasF2 {
                 let xs = cache.intersections
                 Text(xs.isEmpty ? "No intersections of y₁ and y₂ in view"
@@ -611,6 +609,7 @@ struct GraphCalcView: View {
                 TextField("b", text: $intB).textFieldStyle(.odField).keyboardType(.numbersAndPunctuation).frame(maxWidth: 90)
                 if let s = cache.definite {
                     Text(String(format: "= %.8g", s)).foregroundStyle(ODTheme.good)
+                        .lineLimit(1).minimumScaleFactor(0.7)
                 } else {
                     Text("= —")
                 }
@@ -986,9 +985,9 @@ struct GridDistanceView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("From").foregroundStyle(ODTheme.muted)
-                Text(gpsOrigin == nil ? store.preferences.observer.name : "GPS fix")
+                Text(gpsOrigin == nil ? store.preferences.observer.name : "GPS fix").lineLimit(1)
                 Text(GeoFormats.maidenhead(latitude: origin.latitude, longitude: origin.longitude, length: 6))
-                    .font(.body.monospaced())
+                    .font(.body.monospaced()).fixedSize()
                 Spacer()
                 if waitingForFix { ProgressView().controlSize(.small) }
                 if gpsOrigin == nil {

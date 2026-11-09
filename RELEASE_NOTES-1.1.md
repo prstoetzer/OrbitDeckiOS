@@ -79,6 +79,7 @@ Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build eac
 - **New Launches** — six-digit NORAD IDs, SatNOGS-first discovery, scan cache. [1]
 - **Home fixes** — refresh on return from background and in-progress passes under Overhead Now with LOS (Filip Melik, PR #8); Next Passes interaction fixes (PR #5); ended passes drop off; sticky transponder menus fixed. [1]
 - **Precise tuning controls** — ± with hold-to-repeat, selectable step, tap-to-type. [1]
+- **Polish** — sizing fixes for narrow iPhones on the new cards and screens: compact menu pickers (CW search range, packet modem, AMSAT name, orbit types), stacked rows that used to overflow (manual HOLD/TUNE, weather, activation buttons, graphing-calculator results), smaller dense-row buttons and shrink-to-fit jog/frequency text. [4]
 
 ## Maps and tools
 

@@ -774,10 +774,11 @@ struct WorkableView: View {
                         } else {
                             Picker("Pass", selection: Binding(get: { selectedPass?.id ?? passes[0].id }, set: { selectedPassID = $0 })) {
                                 ForEach(passes) { pass in
-                                    Text("\(ODFormat.utc.string(from: pass.aos)) · \(Int(pass.maxElevation.rounded()))°").tag(pass.id)
+                                    // Short date: the full stamp crowds the "Pass" label on a phone.
+                                    Text("\(ODFormat.utcShort.string(from: pass.aos)) · \(Int(pass.maxElevation.rounded()))°").tag(pass.id)
                                 }
                             }
-                            .pickerStyle(.menu)
+                            .pickerStyle(.menu).labelsHidden().lineLimit(1)
                         }
                     }
                 }
@@ -950,11 +951,18 @@ struct WeatherCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let s = weather.usable(for: store.preferences.observer) {
-                HStack(spacing: 14) {
-                    metric("thermometer.medium", Self.temperature(s.temperatureC))
-                    metric("cloud", s.cloudCoverPercent.map { String(format: "%.0f%%", $0) } ?? "—")
-                    metric("wind", Self.wind(s.windSpeedKmh, s.windDirectionDeg))
-                    metric("drop", Self.precipitation(s.precipitationMm))
+                let temp = metric("thermometer.medium", Self.temperature(s.temperatureC))
+                let cloud = metric("cloud", s.cloudCoverPercent.map { String(format: "%.0f%%", $0) } ?? "—")
+                let wind = metric("wind", Self.wind(s.windSpeedKmh, s.windDirectionDeg))
+                let rain = metric("drop", Self.precipitation(s.precipitationMm))
+                // Four readings rarely fit one row on a narrow phone (wind with a
+                // direction is long): fall back to two rows of two.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 14) { temp; cloud; wind; rain }
+                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 4) {
+                        GridRow { temp; cloud }
+                        GridRow { wind; rain }
+                    }
                 }
                 .font(.subheadline.monospacedDigit())
                 let minutes = max(0, Int(Date().timeIntervalSince(s.fetched) / 60))
@@ -975,7 +983,7 @@ struct WeatherCard: View {
     }
 
     private func metric(_ symbol: String, _ value: String) -> some View {
-        Label(value, systemImage: symbol).labelStyle(.titleAndIcon)
+        Label(value, systemImage: symbol).labelStyle(.titleAndIcon).lineLimit(1).fixedSize()
     }
 
     static func temperature(_ c: Double?) -> String {
@@ -1171,7 +1179,8 @@ struct PlanningView: View {
                 ForEach(visibleResults) { row in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
-                            Text(ODFormat.utc.string(from: row.pass.aos)).font(.headline.monospaced())
+                            Text(ODFormat.utc.string(from: row.pass.aos)).font(.subheadline.monospaced().weight(.semibold))
+                                .lineLimit(1).minimumScaleFactor(0.8)
                             Spacer()
                             CloudBadge(date: row.pass.tca)
                         }
@@ -3422,13 +3431,21 @@ struct DataFeedsView: View {
                                 Button("Delete", role: .destructive) { deleteSked(sked) }.buttonStyle(.bordered)
                             }
                         }
-                        HStack {
-                            Button("Can I work it?") { check(a) }.buttonStyle(.bordered)
-                            Button("Operating detail") { openDetail(a) }.buttonStyle(.bordered)
-                                .disabled(activationDetailLoadingID == a.id)
-                            Button("Star satellite") { starSatellite(a) }.buttonStyle(.bordered)
-                            if activationDetailLoadingID == a.id { ProgressView().controlSize(.small) }
+                        // Three buttons don't fit one row on a narrow phone: fall back to two rows.
+                        ViewThatFits(in: .horizontal) {
+                            HStack {
+                                checkButton(a); detailButton(a); starButton(a)
+                                if activationDetailLoadingID == a.id { ProgressView().controlSize(.small) }
+                            }
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack { checkButton(a); detailButton(a) }
+                                HStack {
+                                    starButton(a)
+                                    if activationDetailLoadingID == a.id { ProgressView().controlSize(.small) }
+                                }
+                            }
                         }
+                        .buttonStyle(.bordered)
                         if let check = activationChecks[a.id] {
                             Text(check.message).font(.caption)
                                 .foregroundStyle(check.workable ? ODTheme.accent : ODTheme.warning)
@@ -3539,6 +3556,19 @@ struct DataFeedsView: View {
 
     private func userSked(_ a: ActivationRecord) -> UserActivation? {
         userActivations.first { UserActivation.idPrefix + $0.id.uuidString == a.id }
+    }
+
+    private func checkButton(_ a: ActivationRecord) -> some View {
+        Button("Can I work it?") { check(a) }
+    }
+
+    private func detailButton(_ a: ActivationRecord) -> some View {
+        Button("Operating detail") { openDetail(a) }
+            .disabled(activationDetailLoadingID == a.id)
+    }
+
+    private func starButton(_ a: ActivationRecord) -> some View {
+        Button("Star satellite") { starSatellite(a) }
     }
 
     @ViewBuilder private func reminderBell(_ a: ActivationRecord) -> some View {
