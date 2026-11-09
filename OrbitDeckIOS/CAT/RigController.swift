@@ -1841,6 +1841,57 @@ final class RigController: ObservableObject {
         return true
     }
 
+    /// Best-effort read of the uplink radio's RF power setting (watts), for FT4's courtesy
+    /// power warning. CI-V `14 0A` (0–255 of the rig's maximum, scaled by a per-model/band
+    /// maximum), Kenwood `PC;` (watts), rigctld `l RFPOWER` (0–1, converted with
+    /// `\power2mW`). nil when the radio can't say, isn't connected, or a tick is busy —
+    /// callers then say nothing. Never blocks transmitting.
+    func readRFPowerWatts() async -> Double? {
+        guard connected, !isTicking, !externalHold,
+              let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else { return nil }
+        isTicking = true
+        defer { isTicking = false }
+        switch link.spec.family {
+        case .civ:
+            let addr = civAddr(link)
+            _ = await readReply(link, maxWait: 0.02)
+            await sendRaw(link, CATCodec.civFrame(addr: addr, payload: [0x14, 0x0A]))
+            let reply = await readReply(link, maxWait: 0.4)
+            guard let body = CATCodec.civReply(reply, addr: addr, cmd: 0x14), body.count >= 3, body[0] == 0x0A else { return nil }
+            // Two BCD bytes, 0000–0255.
+            let level = Int(body[1] >> 4) * 1000 + Int(body[1] & 0x0F) * 100 + Int(body[2] >> 4) * 10 + Int(body[2] & 0x0F)
+            guard (0...255).contains(level) else { return nil }
+            let n = link.spec.name.uppercased(), mhz = Double(lastTargetTx) / 1e6
+            let maxW: Double
+            if n.contains("705") || n.contains("905") { maxW = 10 }
+            else if n.contains("9700") || n.contains("9100") { maxW = mhz > 1000 ? 10 : (mhz > 300 ? 75 : 100) }
+            else if n.contains("910") { maxW = mhz > 300 ? 75 : 100 }
+            else { maxW = 100 }
+            return Double(level) / 255.0 * maxW
+        case .kenwoodBase:
+            _ = await readReply(link, maxWait: 0.02)
+            await sendRaw(link, Array("PC;".utf8))
+            let text = String(decoding: await readReply(link, maxWait: 0.4), as: UTF8.self)
+            guard let r = text.range(of: "PC") else { return nil }
+            let digits = text[r.upperBound...].prefix { $0.isNumber }
+            return digits.count >= 3 ? Double(digits) : nil
+        case .rigctld:
+            _ = await readReply(link, maxWait: 0.02)
+            await sendRaw(link, Array("l RFPOWER\n".utf8))
+            let text = String(decoding: await readReply(link, maxWait: 0.5), as: UTF8.self)
+            guard let line = text.split(whereSeparator: \.isNewline).first,
+                  let frac = Double(line.trimmingCharacters(in: .whitespaces)), (0...1).contains(frac),
+                  lastTargetTx > 0 else { return nil }
+            await sendRaw(link, Array("\\power2mW \(frac) \(lastTargetTx) USB\n".utf8))
+            let mwText = String(decoding: await readReply(link, maxWait: 0.5), as: UTF8.self)
+            guard let mwLine = mwText.split(whereSeparator: \.isNewline).first,
+                  let mw = Double(mwLine.trimmingCharacters(in: .whitespaces)), mw > 0 else { return nil }
+            return mw / 1000
+        default:
+            return nil
+        }
+    }
+
     // MARK: Helpers
 
     func transponder(for sat: SatelliteRecord) -> TransponderRecord? {

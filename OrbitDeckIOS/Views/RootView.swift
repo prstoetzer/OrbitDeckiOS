@@ -200,6 +200,12 @@ struct RootView: View {
     @EnvironmentObject private var notifications: NotificationRouter
     @EnvironmentObject private var rig: RigController
     @EnvironmentObject private var rotator: RotatorController
+    // Receive/transmit sessions that keep the screen awake while they run (read-only).
+    @EnvironmentObject private var ft4: FT4Engine
+    @EnvironmentObject private var sstv: SSTVDecoder
+    @EnvironmentObject private var packet: PacketEngine
+    @EnvironmentObject private var cw: CWDecoder
+    @EnvironmentObject private var recorder: PassRecorder
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var autoLocation = LocationProvider()
@@ -342,6 +348,7 @@ struct RootView: View {
             updateLocationFollow(); applyIdleTimer(active: scenePhase == .active)
         }
         .onChange(of: keepScreenAwakeHome) { _, _ in applyIdleTimer(active: scenePhase == .active) }
+        .onChange(of: sessionRunning) { _, _ in applyIdleTimer(active: scenePhase == .active) }
         .onChange(of: notifications.openHomeRequested) { _, requested in
             if requested { selection = .home; notifications.openHomeRequested = false }
         }
@@ -395,12 +402,19 @@ struct RootView: View {
         autoLocation.startFollowing()
     }
 
-    /// Keep the display awake only when the operator opted in, the Home screen is
-    /// the current selection, and the app is foreground-active. Any other state
-    /// releases the idle timer so the rest of the app auto-locks normally.
+    /// Any receive/transmit session that shouldn't be interrupted by auto-lock: FT4,
+    /// SSTV listening, packet, CW decoding or a pass recording.
+    private var sessionRunning: Bool {
+        ft4.isRunning || sstv.isListening || packet.isRunning || cw.isRunning || recorder.isRecording
+    }
+
+    /// Keep the display awake while the app is foreground-active and either a
+    /// receive/transmit session is running (on any screen), or the operator opted in
+    /// and Home is the current selection. Otherwise the idle timer is released so the
+    /// app auto-locks normally — including as soon as the last session stops.
     private func applyIdleTimer(active: Bool) {
         UIApplication.shared.isIdleTimerDisabled =
-            active && keepScreenAwakeHome && (selection ?? .home) == .home
+            active && (sessionRunning || (keepScreenAwakeHome && (selection ?? .home) == .home))
     }
 
     /// Explains the toolbar refresh button in the menu.
