@@ -1127,8 +1127,13 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
         case favorite
     }
 
+    /// When the app started this activity (nil for activities from builds before
+    /// 1.1 (4)). Lets the app replace an old one before iOS's 8-hour limit ends it.
+    var startedAt: Date? = nil
+
     /// One pass in the embedded look-ahead list. Short coding keys keep the
-    /// content well under the 4 KB ActivityKit limit.
+    /// content well under the 4 KB ActivityKit limit; fields added later are
+    /// optional so content from older builds still decodes.
     struct Pass: Codable, Hashable {
         var satellite: String
         var aos: Date
@@ -1136,9 +1141,13 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
         var maxElevation: Double
         /// When auto switching selects this satellite (can precede AOS).
         var switchAt: Date?
+        /// Azimuths at AOS and LOS in degrees (nil before 1.1 (4)).
+        var aosAzimuth: Double? = nil
+        var losAzimuth: Double? = nil
 
         enum CodingKeys: String, CodingKey {
             case satellite = "n", aos = "a", los = "l", maxElevation = "e", switchAt = "s"
+            case aosAzimuth = "aa", losAzimuth = "la"
         }
 
         /// When this pass becomes the one to show: the switch time, else AOS.
@@ -1166,21 +1175,43 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
 
         /// The look-ahead list, or just the primary pass for older content.
         var timeline: [Pass] {
-            if let passes, !passes.isEmpty { return passes }
+            if let passes, !passes.isEmpty { return passes.sorted { $0.start < $1.start } }
             return [Pass(satellite: satellite, aos: aos, los: los, maxElevation: maxElevation, switchAt: switchAt)]
         }
 
-        /// The pass to show at `date`: the one in progress that started last (the
-        /// most recent switch), else the next to start; nil once all have ended.
+        /// The pass to show at `date`, nil once every pass has ended. Among passes
+        /// already started (switched in, or past AOS) and not yet set: with auto
+        /// switching the latest switch wins, as the switcher would have moved on to
+        /// it; for favorites the earliest stays until its LOS, so a pass being
+        /// worked isn't replaced by one rising later. Otherwise the next to start.
         func pass(at date: Date) -> Pass? {
             let live = timeline.filter { $0.los > date }
-            if let current = live.filter({ $0.start <= date }).max(by: { $0.start < $1.start }) {
+            let started = live.filter { $0.start <= date }
+            if let current = source == .priority ? started.last : started.first {
                 return current
             }
-            return live.min { $0.start < $1.start }
+            return live.first
         }
 
-        /// The next switch, AOS or LOS after `date`, when what to show changes.
+        /// The pass after `pass` in the list (the next one to start), for "Then …".
+        func following(_ pass: Pass) -> Pass? {
+            let list = timeline
+            guard let index = list.firstIndex(of: pass), index + 1 < list.count else { return nil }
+            return list[index + 1]
+        }
+
+        /// The first moment after `date` at which `pass(at:)` gives a different
+        /// pass (or nil, once the last has ended); nil when it never changes again.
+        /// The widget's countdowns cover AOS by themselves, so this is the one
+        /// redraw that matters: the stale date.
+        func passChange(after date: Date) -> Date? {
+            let shown = pass(at: date)
+            guard shown != nil else { return nil }
+            let moments = Set(timeline.flatMap { [$0.start, $0.los] }).filter { $0 > date }.sorted()
+            return moments.first { pass(at: $0) != shown }
+        }
+
+        /// The next switch, AOS or LOS after `date`, when anything shown changes.
         func nextTransition(after date: Date) -> Date? {
             timeline.flatMap { [$0.switchAt, $0.aos, $0.los].compactMap { $0 } }
                 .filter { $0 > date }
@@ -1189,21 +1220,30 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
     }
 }
 
-/// Keeps one Live Activity showing the next pass: with auto switching on, the
-/// satellite the priority list switches to next (and when); otherwise the next
-/// AOS, or the LOS of a pass in progress, among the favorites.
+/// Keeps one Live Activity showing the next pass.
 ///
-/// The content carries the next few passes and the widget picks the one to show
-/// when it renders, so the activity moves on by itself while the app isn't
-/// running; the stale date (the next AOS/LOS/switch) makes the system redraw at
-/// each transition. Beyond that it stays current through a background app refresh
-/// (at iOS's discretion) and, opt-in on iOS 26+, a scheduled activity for the
-/// following pass that iOS starts by itself.
+/// Which satellite it follows (the rule; Settings and Help say the same):
+/// - Auto switching on with a priority list: the priority satellite selected now
+///   while its pass is up, then each satellite the switcher will switch to, with
+///   the switch time. Changing the selection or the priorities replans it.
+/// - Otherwise: the next passes of the favorites above the pass-prediction minimum
+///   (the selected satellite when there are no favorites). The selection otherwise
+///   doesn't change it.
+///
+/// While OrbitDeck isn't running iOS gives it no time, so the content carries the
+/// next few passes and the widget draws everything from dates: the countdown to
+/// AOS, then the pass-left timer and progress bar run by themselves through the
+/// pass. The stale date is the LOS (or the next switch), when iOS redraws the
+/// activity once more and the widget moves on to the next pass from the list.
+/// Beyond that it stays current through a background app refresh (at iOS's
+/// discretion) and, opt-in on iOS 26+, a scheduled activity for a later pass
+/// that iOS starts by itself. There is never more than one running activity:
+/// refreshes are serialized, extras are ended, and dead ones are cleared.
 @MainActor
 final class LiveActivityController: ObservableObject {
     nonisolated static let enabledKey = "liveActivityEnabled"
-    /// Opt-in (iOS 26+): schedule an activity for the following pass that the
-    /// system starts on its own, with an alert, even while OrbitDeck is closed.
+    /// Opt-in (iOS 26+): schedule an activity for a later pass that the system
+    /// starts on its own, with an alert, even while OrbitDeck is closed.
     nonisolated static let scheduleNextKey = "liveActivityScheduleNext"
     static let refreshInterval: Duration = .seconds(30)
     /// The BGAppRefreshTask; also listed in Info.plist (BGTaskSchedulerPermittedIdentifiers).
@@ -1215,6 +1255,10 @@ final class LiveActivityController: ObservableObject {
     nonisolated static let currentRelevance = 50.0
     /// Higher, so the Dynamic Island prefers the scheduled pass once it has started.
     nonisolated static let scheduledRelevance = 100.0
+    /// iOS ends a Live Activity after 8 hours. One older than this is replaced with
+    /// a fresh one when the app is opened (outside a pass), so it lasts the night.
+    nonisolated static let replaceAge: TimeInterval = 4 * 3600
+    nonisolated static let logCategory = "liveactivity"
 
     /// On by default; the Settings toggle writes this key through @AppStorage.
     nonisolated static var isEnabled: Bool {
@@ -1234,7 +1278,8 @@ final class LiveActivityController: ObservableObject {
     /// What the planner needs: captured from the running app, or loaded from disk
     /// when iOS launches the app in the background just for the refresh.
     struct Inputs: Sendable {
-        /// The candidates: the priority list (in order) or the favorites.
+        /// The candidates: the priority list (in order), else the favorites (else
+        /// the selected satellite).
         var records: [SatelliteRecord]
         var usePriorities: Bool
         var observer: ObserverSite
@@ -1249,21 +1294,26 @@ final class LiveActivityController: ObservableObject {
     struct Plan: Sendable {
         /// The running activity's content (nil: nothing to show).
         var current: OrbitDeckPassAttributes.ContentState?
-        /// The pass after the current one, for the opt-in scheduled activity.
+        /// A later pass, for the opt-in scheduled activity.
         var scheduled: OrbitDeckPassAttributes.ContentState?
     }
 
-    /// The attached controller, so a background refresh in a running app reuses
-    /// its loaded catalog instead of reading it from disk.
+    /// The attached controller, so a background refresh in a running app goes
+    /// through it (serialized, with its loaded catalog) instead of reading from disk.
     private static weak var shared: LiveActivityController?
 
     private weak var store: OrbitStore?
     private weak var autoSwitch: AutoSwitchController?
     private var loop: Task<Void, Never>?
-    private var computing = false
+    /// One refresh at a time: overlapping ones (the loop, the app coming forward,
+    /// a setting) could otherwise both see no activity and start two, or one could
+    /// end the activity with a plan the other hasn't computed yet.
+    private var refreshing = false
+    private var refreshAgain = false
     private var lastKey = ""
     private var computedAt = Date.distantPast
     private var plan: Plan?
+    private var loggedDisabled = false
     /// Reconcile the scheduled activity on the next foreground refresh (set when
     /// the plan changes, the app comes forward or the setting changes), so a
     /// failed request isn't retried every 30 s.
@@ -1299,6 +1349,9 @@ final class LiveActivityController: ObservableObject {
         scheduleDirty = true
     }
 
+    /// Attached with the catalog loaded (else a background refresh plans from disk).
+    fileprivate var isReady: Bool { store.map { !$0.satellites.isEmpty } ?? false }
+
     /// Request a background refresh for the next transition as the app leaves the screen.
     func didEnterBackground() {
         submittedWake = wakeTarget
@@ -1311,27 +1364,55 @@ final class LiveActivityController: ObservableObject {
         Task { await refresh() }
     }
 
-    /// Recompute when the inputs change, the next transition passes, or every 10
-    /// minutes; then start, update or end the activity to match.
+    /// Recompute when the inputs change, a transition passes, or every 10 minutes;
+    /// then start, update or end the activity to match. Serialized: a call made
+    /// while one is running makes that one go round again instead.
     func refresh(now: Date = .now) async {
+        if refreshing { refreshAgain = true; return }
+        refreshing = true
+        defer { refreshing = false }
+        var date = now
+        repeat {
+            refreshAgain = false
+            await refreshOnce(now: date)
+            date = .now
+        } while refreshAgain
+    }
+
+    private func refreshOnce(now: Date) async {
         guard let store, let autoSwitch, !FactoryResetService.didReset else { return }
         let foreground = UIApplication.shared.applicationState == .active
-        guard Self.isEnabled, ActivityAuthorizationInfo().areActivitiesEnabled else {
+        let authorized = ActivityAuthorizationInfo().areActivitiesEnabled
+        guard Self.isEnabled, authorized else {
+            if !loggedDisabled {
+                loggedDisabled = true
+                ODLog.shared.log(Self.isEnabled ? "Live Activities are off in iOS Settings for OrbitDeck"
+                                                : "Live Activity turned off in OrbitDeck Settings",
+                                 category: Self.logCategory)
+            }
             plan = nil; lastKey = ""
             _ = await Self.apply(nil, canStart: false, manageScheduled: true)
             setWake(nil, foreground: foreground)
             return
         }
+        loggedDisabled = false
+        // Catalog not loaded yet: an empty plan would end the activity a previous
+        // run left, only to start it again a moment later.
+        guard !store.satellites.isEmpty else { return }
         let inputs = Self.inputs(store: store, autoSwitch: autoSwitch)
         let next = inputs.usePriorities ? autoSwitch.nextSwitch : nil
         let ids = inputs.records.map(\.id)
-        let key = "\(inputs.usePriorities)|\(ids)|\(inputs.observer.stableKey)|\(inputs.minElevation)|\(inputs.selected ?? 0)|\(next?.norad ?? 0)|\(next?.date.timeIntervalSince1970 ?? 0)|\(store.satellites.count)|\(inputs.utc)"
+        let key = "\(inputs.usePriorities)|\(ids)|\(inputs.observer.stableKey)|\(inputs.minElevation)|\(inputs.preemption.rawValue)|\(inputs.preemptElevation)|\(inputs.selected ?? 0)|\(next?.norad ?? 0)|\(next?.date.timeIntervalSince1970 ?? 0)|\(store.satellites.count)|\(inputs.utc)"
         let expired = plan?.current?.nextTransition(after: computedAt).map { $0 <= now } ?? false
-        if key != lastKey || expired || now.timeIntervalSince(computedAt) > 600, !computing {
-            computing = true
+        if plan == nil || key != lastKey || expired || now.timeIntervalSince(computedAt) > 600 {
             lastKey = key; computedAt = now
-            plan = await Task.detached(priority: .utility) { Self.compute(inputs, now: now) }.value
-            computing = false
+            // The passes already shown, so recomputing (whose switch times move by
+            // up to a 30 s planning step) doesn't push a needless update.
+            let previous = plan.map { ($0.current?.passes ?? []) + ($0.scheduled?.passes ?? []) }
+                ?? Self.runningTimeline()
+            plan = await Task.detached(priority: .utility) {
+                Self.compute(inputs, now: now, previous: previous)
+            }.value
             scheduleDirty = true
         }
         // Live Activities can only be started (or scheduled) from the foreground; one
@@ -1360,7 +1441,8 @@ final class LiveActivityController: ObservableObject {
     private static func inputs(store: OrbitStore, autoSwitch: AutoSwitchController) -> Inputs {
         let settings = autoSwitch.settings
         let usePriorities = settings.enabled && !settings.priorities.isEmpty
-        let ids: [UInt] = usePriorities ? settings.priorities : store.preferences.favorites.sorted()
+        let ids = candidateIDs(usePriorities: usePriorities, priorities: settings.priorities,
+                               favorites: store.preferences.favorites, selected: store.preferences.selectedNorad)
         return Inputs(records: ids.compactMap { id in store.satellites.first { $0.id == id } },
                       usePriorities: usePriorities, observer: store.preferences.observer,
                       minElevation: usePriorities ? autoSwitch.threshold(for: store) : store.preferences.minElevation,
@@ -1368,11 +1450,13 @@ final class LiveActivityController: ObservableObject {
                       selected: store.preferences.selectedNorad, utc: !ODFormat.useLocalTime)
     }
 
-    /// The inputs from the attached app, or nil when there is none or its catalog
-    /// isn't loaded yet.
-    private func liveInputs() -> Inputs? {
-        guard let store, let autoSwitch, !store.satellites.isEmpty else { return nil }
-        return Self.inputs(store: store, autoSwitch: autoSwitch)
+    /// The priority list (in order) with auto switching, else the favorites, else
+    /// the selected satellite.
+    nonisolated static func candidateIDs(usePriorities: Bool, priorities: [UInt], favorites: Set<UInt>,
+                                         selected: UInt?) -> [UInt] {
+        if usePriorities { return priorities }
+        if !favorites.isEmpty { return favorites.sorted() }
+        return selected.map { [$0] } ?? []
     }
 
     /// The same inputs read from the saved preferences, auto-switch settings and
@@ -1384,7 +1468,8 @@ final class LiveActivityController: ObservableObject {
         let settings = defaults.data(forKey: AutoSwitchController.defaultsKey)
             .flatMap { try? JSONDecoder().decode(AutoSwitchSettings.self, from: $0) } ?? AutoSwitchSettings()
         let usePriorities = settings.enabled && !settings.priorities.isEmpty
-        let ids: [UInt] = usePriorities ? settings.priorities : preferences.favorites.sorted()
+        let ids = candidateIDs(usePriorities: usePriorities, priorities: settings.priorities,
+                               favorites: preferences.favorites, selected: preferences.selectedNorad)
         let catalog = OrbitStore.cachedRecords(for: Set(ids), preferences: preferences)
         // No catalog on disk: don't mistake that for "no passes" and end the activity.
         guard !catalog.isEmpty || ids.isEmpty else { return nil }
@@ -1396,14 +1481,46 @@ final class LiveActivityController: ObservableObject {
                       selected: preferences.selectedNorad, utc: !(preferences.useLocalTime ?? false))
     }
 
+    /// The passes in the running activity's content (to keep them stable when the
+    /// app plans again after a relaunch).
+    nonisolated static func runningTimeline() -> [OrbitDeckPassAttributes.Pass] {
+        Activity<OrbitDeckPassAttributes>.activities
+            .filter { $0.activityState == .active || $0.activityState == .stale }
+            .flatMap { $0.content.state.timeline }
+    }
+
+    /// Reuse a pass from `previous` when the new plan has the same one, so planning
+    /// jitter (switch times move by up to a 30 s step, AOS/LOS by seconds) doesn't
+    /// change the content: no update, no redraw, no "14:04Z" ↔ "14:05Z" flicker.
+    nonisolated static func stabilized(_ list: [OrbitDeckPassAttributes.Pass],
+                                       previous: [OrbitDeckPassAttributes.Pass]) -> [OrbitDeckPassAttributes.Pass] {
+        func close(_ a: Date?, _ b: Date?, _ tolerance: TimeInterval) -> Bool {
+            switch (a, b) {
+            case (nil, nil): true
+            case let (a?, b?): abs(a.timeIntervalSince(b)) <= tolerance
+            default: false
+            }
+        }
+        return list.map { item in
+            guard let old = previous.first(where: {
+                $0.satellite == item.satellite && close($0.aos, item.aos, 30) && close($0.los, item.los, 30)
+                    && close($0.switchAt, item.switchAt, 60) && abs($0.maxElevation - item.maxElevation) < 1
+            }) else { return item }
+            // Content from an older build lacks the azimuths: take the new pass.
+            return old.aosAzimuth == nil && item.aosAzimuth != nil ? item : old
+        }
+    }
+
     /// CPU-bound (SGP4): call from a detached task.
-    nonisolated static func compute(_ inputs: Inputs, now: Date) -> Plan {
+    nonisolated static func compute(_ inputs: Inputs, now: Date,
+                                    previous: [OrbitDeckPassAttributes.Pass] = []) -> Plan {
         typealias Pass = OrbitDeckPassAttributes.Pass
-        // One spare, so the scheduled activity also gets a full list.
-        let wanted = embeddedPassCount + 1
+        // Spares, so the scheduled activity also gets a full list.
+        let wanted = embeddedPassCount + 3
         func entry(_ record: SatelliteRecord, _ pass: PredictedPass, switchAt: Date?) -> Pass {
             Pass(satellite: String(record.name.prefix(40)), aos: pass.aos, los: pass.los,
-                 maxElevation: (pass.maxElevation * 10).rounded() / 10, switchAt: switchAt)
+                 maxElevation: (pass.maxElevation * 10).rounded() / 10, switchAt: switchAt,
+                 aosAzimuth: pass.aosAzimuth.rounded(), losAzimuth: pass.losAzimuth.rounded())
         }
         func samePass(_ a: Pass, _ b: Pass) -> Bool {
             a.satellite == b.satellite && abs(a.aos.timeIntervalSince(b.aos)) < 60
@@ -1451,7 +1568,7 @@ final class LiveActivityController: ObservableObject {
             for record in inputs.records {
                 if Task.isCancelled { break }
                 let found = (try? OrbitPredictor.predictPasses(record, observer: inputs.observer, from: now,
-                                                               minElevation: inputs.minElevation, maxCount: 3,
+                                                               minElevation: inputs.minElevation, maxCount: 4,
                                                                horizonDays: 2)) ?? []
                 all += found.filter { $0.duration < 12 * 3600 && $0.los > now }
                     .map { entry(record, $0, switchAt: nil) }
@@ -1460,61 +1577,95 @@ final class LiveActivityController: ObservableObject {
                 if !list.contains(where: { samePass($0, item) }) { list.append(item) }
             }
         }
-        list.sort { $0.start < $1.start }
+        list = stabilized(list, previous: previous).sorted { $0.start < $1.start }
+        return makePlan(from: list, source: inputs.usePriorities ? .priority : .favorite, utc: inputs.utc, now: now)
+    }
 
-        let source: OrbitDeckPassAttributes.Source = inputs.usePriorities ? .priority : .favorite
+    /// The running and scheduled contents for a planned pass list (sorted by start).
+    nonisolated static func makePlan(from list: [OrbitDeckPassAttributes.Pass], source: OrbitDeckPassAttributes.Source,
+                                 utc: Bool, now: Date) -> Plan {
+        typealias Pass = OrbitDeckPassAttributes.Pass
         func state(_ passes: [Pass], at date: Date) -> OrbitDeckPassAttributes.ContentState? {
             guard let first = passes.first else { return nil }
             let probe = OrbitDeckPassAttributes.ContentState(
                 satellite: first.satellite, aos: first.aos, los: first.los, maxElevation: first.maxElevation,
-                switchAt: first.switchAt, source: source, inPass: false, utc: inputs.utc, passes: passes)
+                switchAt: first.switchAt, source: source, inPass: false, utc: utc, passes: passes)
             guard let shown = probe.pass(at: date) else { return nil }
             return OrbitDeckPassAttributes.ContentState(
                 satellite: shown.satellite, aos: shown.aos, los: shown.los, maxElevation: shown.maxElevation,
-                switchAt: shown.switchAt, source: source, inPass: shown.aos <= date, utc: inputs.utc,
+                switchAt: shown.switchAt, source: source, inPass: shown.aos <= date, utc: utc,
                 passes: passes)
         }
         let current = state(Array(list.prefix(embeddedPassCount)), at: now)
+        // Without the app the running activity reaches the pass shown now and, after
+        // its one redraw at the stale date, the next. Schedule the pass after that.
         var scheduled: OrbitDeckPassAttributes.ContentState?
-        if let current,
-           let index = list.firstIndex(where: { $0.satellite == current.satellite && $0.aos == current.aos }),
-           index + 1 < list.count {
-            let following = Array(list[(index + 1)...].prefix(embeddedPassCount))
-            if let first = following.first { scheduled = state(following, at: first.start) }
+        if let current, let shown = current.pass(at: now) {
+            let reach = current.passChange(after: now).flatMap { current.pass(at: $0) } ?? shown
+            if let index = list.firstIndex(of: reach), index + 1 < list.count {
+                let following = Array(list[(index + 1)...].prefix(embeddedPassCount))
+                if let first = following.first { scheduled = state(following, at: first.start) }
+            }
         }
         return Plan(current: current, scheduled: scheduled)
     }
 
     /// Start, update or end the running activity to match `plan`, and (from the
     /// foreground) reconcile the scheduled one. Returns when a background refresh
-    /// should next run: the next transition, or nil with nothing to keep current.
+    /// should next run: the stale date, or nil with nothing to keep current.
     /// Nonisolated so the (non-Sendable) Activity objects never cross actors.
     nonisolated private static func apply(_ plan: Plan?, canStart: Bool, manageScheduled: Bool) async -> Date? {
         let now = Date()
         let all = Activity<OrbitDeckPassAttributes>.activities
-        // Prefer the highest relevance (a scheduled activity that has started) when
-        // collapsing duplicates; the others are leftovers from earlier passes.
+        // Ended by iOS's time limit (or an earlier run) but still on the Lock Screen:
+        // dismiss them, so a dead activity doesn't sit next to (or instead of) the live one.
+        for activity in all where activity.activityState == .ended {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        // A scheduled activity that has started has the higher relevance; keep it
+        // and end the older one it replaces.
         let running = all.filter { $0.activityState == .active || $0.activityState == .stale }
             .sorted { $0.content.relevanceScore > $1.content.relevanceScore }
         var wake: Date?
         if let state = plan?.current {
-            // Stale at the next transition, so the system redraws the widget then and
-            // it picks the right pass from the embedded list.
-            let staleDate = state.nextTransition(after: now) ?? state.los
-            if let activity = running.first {
-                for extra in running.dropFirst() { await extra.end(nil, dismissalPolicy: .immediate) }
-                if activity.content.state != state || activity.activityState == .stale {
-                    await activity.update(ActivityContent(state: state, staleDate: staleDate,
-                                                          relevanceScore: activity.content.relevanceScore))
+            // The widget's timers carry it through AOS by themselves; the stale date
+            // is when it must show a different pass, so iOS redraws it then.
+            let staleDate = state.passChange(after: now) ?? state.los
+            let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: currentRelevance)
+            let inPass = state.pass(at: now).map { $0.aos <= now } ?? false
+            let keep = running.first.flatMap { activity -> Activity<OrbitDeckPassAttributes>? in
+                let age = activity.attributes.startedAt.map { now.timeIntervalSince($0) } ?? .infinity
+                return canStart && !inPass && age > replaceAge ? nil : activity
+            }
+            if let activity = keep {
+                for extra in running where extra.id != activity.id {
+                    ODLog.shared.log("Ending duplicate activity \(extra.id)", category: logCategory)
+                    await extra.end(nil, dismissalPolicy: .immediate)
+                }
+                if activity.content.state != state || activity.content.staleDate != staleDate
+                    || activity.content.relevanceScore != currentRelevance || activity.activityState == .stale {
+                    await activity.update(content)
                 }
             } else if canStart {
-                _ = try? Activity.request(attributes: OrbitDeckPassAttributes(),
-                                          content: ActivityContent(state: state, staleDate: staleDate,
-                                                                   relevanceScore: currentRelevance))
+                do {
+                    let activity = try Activity.request(attributes: OrbitDeckPassAttributes(startedAt: now),
+                                                        content: content, pushType: nil)
+                    ODLog.shared.log("Started \(activity.id): \(state.satellite) AOS \(state.aos), stale \(staleDate)"
+                                     + (running.isEmpty ? "" : ", replacing \(running.count) older"),
+                                     category: logCategory)
+                    for old in running { await old.end(nil, dismissalPolicy: .immediate) }
+                } catch {
+                    ODLog.shared.log("Start failed: \(error)", category: logCategory)
+                    // Replacement failed: keep the old one current instead.
+                    if let activity = running.first { await activity.update(content) }
+                }
             }
             wake = staleDate
         } else {
-            for activity in running { await activity.end(nil, dismissalPolicy: .immediate) }
+            for activity in running {
+                ODLog.shared.log("Ending \(activity.id): no planned pass", category: logCategory)
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
         }
         if #available(iOS 26.0, *) {
             var pending = all.filter { $0.activityState == .pending }
@@ -1562,19 +1713,19 @@ final class LiveActivityController: ObservableObject {
         let alert = AlertConfiguration(title: LocalizedStringResource(String.LocalizationValue("\(name) pass in \(minutes) min")),
                                        body: LocalizedStringResource(String.LocalizationValue(body)),
                                        sound: .default)
-        let content = ActivityContent(state: wanted, staleDate: wanted.nextTransition(after: start) ?? pass.los,
+        let content = ActivityContent(state: wanted, staleDate: wanted.passChange(after: start) ?? pass.los,
                                       relevanceScore: scheduledRelevance)
         do {
-            let activity = try Activity.request(attributes: OrbitDeckPassAttributes(), content: content,
+            let activity = try Activity.request(attributes: OrbitDeckPassAttributes(startedAt: start), content: content,
                                                 pushType: nil, style: .standard,
                                                 alertConfiguration: alert, start: start)
+            ODLog.shared.log("Scheduled \(activity.id): \(pass.satellite) starts \(start)", category: logCategory)
             return [activity]
-        } catch ActivityAuthorizationError.targetMaximumExceeded, ActivityAuthorizationError.globalMaximumExceeded {
-            // Too many Live Activities at once (OrbitDeck's or the system's): skip the
-            // reminder; the running activity still lists this pass. Retried when the
-            // plan changes or the app is next opened.
-            return []
         } catch {
+            // Too many Live Activities at once (OrbitDeck's or the system's), or not
+            // allowed: skip the reminder; the running activity still lists this
+            // pass. Retried when the plan changes or the app is next opened.
+            ODLog.shared.log("Scheduling failed: \(error)", category: logCategory)
             return []
         }
     }
@@ -1619,7 +1770,11 @@ final class LiveActivityController: ObservableObject {
         request.earliestBeginDate = max(date, Date().addingTimeInterval(60))
         // Fails when Background App Refresh is off (or in the simulator); the
         // activity then advances only through its embedded pass list.
-        try? BGTaskScheduler.shared.submit(request)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            ODLog.shared.log("Background refresh not scheduled: \(error)", category: logCategory)
+        }
     }
 
     nonisolated private static func handleBackgroundRefresh(_ task: BGTask) {
@@ -1639,6 +1794,13 @@ final class LiveActivityController: ObservableObject {
     /// next refresh. Activities can't be started from here, only updated or ended.
     nonisolated private static func backgroundRefresh() async -> Bool {
         if await MainActor.run(body: { FactoryResetService.didReset }) { return true }
+        ODLog.shared.log("Background refresh", category: logCategory)
+        // App already running (e.g. recording in the background): its serialized
+        // refresh does the work and submits the next wake itself.
+        if let controller = await MainActor.run(body: { shared.flatMap { $0.isReady ? $0 : nil } }) {
+            await controller.refresh()
+            return true
+        }
         guard isEnabled, ActivityAuthorizationInfo().areActivitiesEnabled else {
             _ = await apply(nil, canStart: false, manageScheduled: false)
             return true
@@ -1647,9 +1809,11 @@ final class LiveActivityController: ObservableObject {
             $0.activityState != .ended && $0.activityState != .dismissed
         }
         guard hasActivity else { return true }
-        let live = await MainActor.run { shared?.liveInputs() }
-        guard let inputs = live ?? loadSavedInputs() else { return false }
-        let plan = compute(inputs, now: Date())
+        guard let inputs = loadSavedInputs() else {
+            submitBackgroundRefresh(at: Date().addingTimeInterval(3600))
+            return false
+        }
+        let plan = compute(inputs, now: Date(), previous: runningTimeline())
         guard !Task.isCancelled else { return false }
         let wake = await apply(plan, canStart: false, manageScheduled: false)
         guard !Task.isCancelled else { return false }

@@ -15,8 +15,13 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
         case favorite
     }
 
+    /// When the app started this activity (nil for activities from builds before
+    /// 1.1 (4)). Lets the app replace an old one before iOS's 8-hour limit ends it.
+    var startedAt: Date? = nil
+
     /// One pass in the embedded look-ahead list. Short coding keys keep the
-    /// content well under the 4 KB ActivityKit limit.
+    /// content well under the 4 KB ActivityKit limit; fields added later are
+    /// optional so content from older builds still decodes.
     struct Pass: Codable, Hashable {
         var satellite: String
         var aos: Date
@@ -24,9 +29,13 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
         var maxElevation: Double
         /// When auto switching selects this satellite (can precede AOS).
         var switchAt: Date?
+        /// Azimuths at AOS and LOS in degrees (nil before 1.1 (4)).
+        var aosAzimuth: Double? = nil
+        var losAzimuth: Double? = nil
 
         enum CodingKeys: String, CodingKey {
             case satellite = "n", aos = "a", los = "l", maxElevation = "e", switchAt = "s"
+            case aosAzimuth = "aa", losAzimuth = "la"
         }
 
         /// When this pass becomes the one to show: the switch time, else AOS.
@@ -54,21 +63,43 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
 
         /// The look-ahead list, or just the primary pass for older content.
         var timeline: [Pass] {
-            if let passes, !passes.isEmpty { return passes }
+            if let passes, !passes.isEmpty { return passes.sorted { $0.start < $1.start } }
             return [Pass(satellite: satellite, aos: aos, los: los, maxElevation: maxElevation, switchAt: switchAt)]
         }
 
-        /// The pass to show at `date`: the one in progress that started last (the
-        /// most recent switch), else the next to start; nil once all have ended.
+        /// The pass to show at `date`, nil once every pass has ended. Among passes
+        /// already started (switched in, or past AOS) and not yet set: with auto
+        /// switching the latest switch wins, as the switcher would have moved on to
+        /// it; for favorites the earliest stays until its LOS, so a pass being
+        /// worked isn't replaced by one rising later. Otherwise the next to start.
         func pass(at date: Date) -> Pass? {
             let live = timeline.filter { $0.los > date }
-            if let current = live.filter({ $0.start <= date }).max(by: { $0.start < $1.start }) {
+            let started = live.filter { $0.start <= date }
+            if let current = source == .priority ? started.last : started.first {
                 return current
             }
-            return live.min { $0.start < $1.start }
+            return live.first
         }
 
-        /// The next switch, AOS or LOS after `date`, when what to show changes.
+        /// The pass after `pass` in the list (the next one to start), for "Then …".
+        func following(_ pass: Pass) -> Pass? {
+            let list = timeline
+            guard let index = list.firstIndex(of: pass), index + 1 < list.count else { return nil }
+            return list[index + 1]
+        }
+
+        /// The first moment after `date` at which `pass(at:)` gives a different
+        /// pass (or nil, once the last has ended); nil when it never changes again.
+        /// The widget's countdowns cover AOS by themselves, so this is the one
+        /// redraw that matters: the stale date.
+        func passChange(after date: Date) -> Date? {
+            let shown = pass(at: date)
+            guard shown != nil else { return nil }
+            let moments = Set(timeline.flatMap { [$0.start, $0.los] }).filter { $0 > date }.sorted()
+            return moments.first { pass(at: $0) != shown }
+        }
+
+        /// The next switch, AOS or LOS after `date`, when anything shown changes.
         func nextTransition(after date: Date) -> Date? {
             timeline.flatMap { [$0.switchAt, $0.aos, $0.los].compactMap { $0 } }
                 .filter { $0 > date }
@@ -80,14 +111,15 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
 struct OrbitDeckPassLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: OrbitDeckPassAttributes.self) { context in
-            PassLockScreenView(shown: ShownPass(context.state, at: .now))
-                .padding(14)
+            PassActivityContent(shown: ShownPass(context.state, at: .now))
                 .activityBackgroundTint(Color.black.opacity(0.75))
                 .activitySystemActionForegroundColor(.cyan)
         } dynamicIsland: { context in
-            // Chosen at render time from the embedded pass list, so whenever the
-            // system redraws (at the stale date, on expansion, on the Lock Screen)
-            // it shows the right pass even if the app hasn't run since.
+            // Chosen when iOS draws the activity (on an update, at the stale date),
+            // from the embedded pass list. Between draws only the date-driven views
+            // (timers, progress) move, so every layout reads right through AOS
+            // without a redraw: the AOS countdown stops at 0:00 while the pass-left
+            // timer and the progress bar take over.
             let shown = ShownPass(context.state, at: .now)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading, priority: 1) {
@@ -112,14 +144,19 @@ struct OrbitDeckPassLiveActivity: Widget {
                                 .foregroundStyle(shown.phase.color)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.7)
+                                .frame(maxWidth: 96, alignment: .trailing)
                         }
                         .dynamicIsland(verticalPlacement: .belowIfTooWide)
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    PassDetailLine(shown: shown)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        PassTimesLine(shown: shown)
+                        PassProgressRow(shown: shown)
+                        PassFooterLine(shown: shown)
+                    }
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
                 }
             } compactLeading: {
                 // Compact width shrinks when another app shares the island; fall back
@@ -157,21 +194,94 @@ struct OrbitDeckPassLiveActivity: Widget {
             }
             .keylineTint(.cyan)
         }
+        // The small family is the Apple Watch Smart Stack (and CarPlay); the Lock
+        // Screen and StandBy keep the medium layout.
+        .supplementalActivityFamilies([.small, .medium])
+    }
+}
+
+/// Picks the Lock Screen layout or the compact Smart Stack one.
+private struct PassActivityContent: View {
+    @Environment(\.activityFamily) private var family
+    let shown: ShownPass
+
+    var body: some View {
+        switch family {
+        case .small:
+            PassSmallView(shown: shown)
+        default:
+            PassLockScreenView(shown: shown).padding(14)
+        }
+    }
+}
+
+/// The Smart Stack layout: name, the live countdown and the pass progress — no
+/// more than a watch face fits.
+private struct PassSmallView: View {
+    let shown: ShownPass
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .foregroundStyle(shown.pass == nil ? Color.secondary : Color.cyan)
+                Text(shown.pass.map { PassPhase.shortName($0.satellite) } ?? "OrbitDeck")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .font(.headline)
+            if let pass = shown.pass {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(shown.phase.countdownLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    PassCountdown(shown: shown)
+                        .font(.title3.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(shown.phase.color)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                if let window = shown.window {
+                    ProgressView(timerInterval: window, countsDown: false) { EmptyView() } currentValueLabel: { EmptyView() }
+                        .tint(.orange)
+                }
+                Text(String(format: "Max %.0f°", pass.maxElevation))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Open OrbitDeck to plan more")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(8)
     }
 }
 
 /// The pass picked for display at render time, and where it is.
 private struct ShownPass {
     let pass: OrbitDeckPassAttributes.Pass?
+    /// The one after it in the list, for "Then …".
+    let next: OrbitDeckPassAttributes.Pass?
     let phase: PassPhase
     let source: OrbitDeckPassAttributes.Source
     let utc: Bool
+    /// When this was drawn: the start of the AOS countdown.
+    let drawnAt: Date
 
     init(_ state: OrbitDeckPassAttributes.ContentState, at date: Date) {
-        pass = state.pass(at: date)
+        let pass = state.pass(at: date)
+        self.pass = pass
+        next = pass.flatMap { state.following($0) }
         if let pass { phase = pass.aos <= date ? .up : .upcoming } else { phase = .ended }
         source = state.source
         utc = state.utc
+        drawnAt = date
+    }
+
+    /// AOS to LOS, as a valid range even for a degenerate pass.
+    var window: ClosedRange<Date>? {
+        pass.map { $0.aos...max($0.aos.addingTimeInterval(1), $0.los) }
     }
 }
 
@@ -215,20 +325,27 @@ private enum PassPhase {
         }
         return formatter.string(from: date)
     }
+
+    /// 16-point compass name for an azimuth, e.g. 30 → "NNE".
+    static func compass(_ azimuth: Double) -> String {
+        let points = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                      "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+        let degrees = (azimuth.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+        return points[Int(degrees / 22.5 + 0.5) % 16]
+    }
 }
 
-/// A self-updating countdown to AOS, or to LOS once the pass is up. The system
-/// animates timer text without app updates, and it stops at 0:00.
+/// The main countdown: to AOS (stops at 0:00 there), or to LOS when drawn during
+/// the pass. The system runs timer text without app updates.
 private struct PassCountdown: View {
     let shown: ShownPass
 
     var body: some View {
-        if let pass = shown.pass, shown.phase == .up {
-            Text(timerInterval: pass.aos...max(pass.aos, pass.los), countsDown: true)
+        if let window = shown.window, shown.phase == .up {
+            Text(timerInterval: window, countsDown: true)
                 .multilineTextAlignment(.trailing)
         } else if let pass = shown.pass {
-            let now = Date()
-            Text(timerInterval: now...max(now, pass.aos), countsDown: true)
+            Text(timerInterval: shown.drawnAt...max(shown.drawnAt, pass.aos), countsDown: true)
                 .multilineTextAlignment(.trailing)
         } else {
             Image(systemName: "arrow.clockwise")
@@ -242,8 +359,8 @@ private struct PassRing: View {
     let shown: ShownPass
 
     var body: some View {
-        if let pass = shown.pass, shown.phase == .up {
-            ring(pass.aos...max(pass.aos, pass.los))
+        if let window = shown.window, shown.phase == .up {
+            ring(window)
         } else if let pass = shown.pass {
             ring(pass.aos.addingTimeInterval(-3600)...pass.aos)
         } else {
@@ -265,21 +382,90 @@ private struct PassRing: View {
     }
 }
 
-private struct PassDetailLine: View {
+/// "AOS 14:05Z NE · max 54° · LOS 14:16Z SSE", shortened to fit.
+private struct PassTimesLine: View {
     let shown: ShownPass
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        Group {
             if let pass = shown.pass {
-                Text("AOS \(PassPhase.clock(pass.aos, utc: shown.utc)) · LOS \(PassPhase.clock(pass.los, utc: shown.utc)) · max \(Int(pass.maxElevation.rounded()))°")
-                if let switchAt = pass.switchAt {
-                    Text("Auto switch at \(PassPhase.clock(switchAt, utc: shown.utc))")
+                let aos = PassPhase.clock(pass.aos, utc: shown.utc)
+                let los = PassPhase.clock(pass.los, utc: shown.utc)
+                let max = "max \(Int(pass.maxElevation.rounded()))°"
+                if let aosAz = pass.aosAzimuth, let losAz = pass.losAzimuth {
+                    ViewThatFits(in: .horizontal) {
+                        Text("AOS \(aos) \(PassPhase.compass(aosAz)) · \(max) · LOS \(los) \(PassPhase.compass(losAz))")
+                        Text("\(aos) \(PassPhase.compass(aosAz)) · \(max) · \(los) \(PassPhase.compass(losAz))")
+                        Text("AOS \(aos) · \(max) · LOS \(los)")
+                    }
                 } else {
-                    Text(shown.source == .priority ? "Next priority satellite" : "Next favorite pass")
+                    Text("AOS \(aos) · \(max) · LOS \(los)")
                 }
             } else {
                 Text("No more planned passes")
-                Text("Open OrbitDeck to refresh")
+            }
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A bar across the pass, empty before AOS and full at LOS, and the time left in
+/// the pass (its full length until AOS). Both run by themselves, so the activity
+/// reads right through the whole pass even if iOS never redraws it.
+private struct PassProgressRow: View {
+    let shown: ShownPass
+
+    var body: some View {
+        if let window = shown.window {
+            HStack(spacing: 8) {
+                ProgressView(timerInterval: window, countsDown: false) {
+                    EmptyView()
+                } currentValueLabel: {
+                    EmptyView()
+                }
+                .progressViewStyle(.linear)
+                .tint(.orange)
+                if shown.phase == .upcoming {
+                    // The big countdown shows LOS once drawn in the pass; before AOS
+                    // this one shows the pass length, then counts down to LOS.
+                    HStack(spacing: 3) {
+                        Text("Pass")
+                        Text(timerInterval: window, countsDown: true)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 56, alignment: .trailing)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+        }
+    }
+}
+
+/// How the pass was chosen and what follows it, or how to get more.
+private struct PassFooterLine: View {
+    let shown: ShownPass
+
+    var body: some View {
+        Group {
+            if let pass = shown.pass {
+                let reason = if let switchAt = pass.switchAt {
+                    "Auto switch \(PassPhase.clock(switchAt, utc: shown.utc))"
+                } else {
+                    shown.source == .priority ? "Priority satellite" : "Favorite pass"
+                }
+                if let next = shown.next {
+                    let then = "Then \(PassPhase.shortName(next.satellite)) \(PassPhase.clock(next.start, utc: shown.utc))"
+                    ViewThatFits(in: .horizontal) {
+                        Text("\(reason) · \(then)")
+                        Text(then)
+                    }
+                } else {
+                    Text(reason)
+                }
+            } else {
+                Text("Open OrbitDeck to plan more")
             }
         }
         .lineLimit(1)
@@ -292,47 +478,75 @@ private struct PassLockScreenView: View {
     let shown: ShownPass
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .font(.title2)
-                .foregroundStyle(shown.pass == nil ? Color.secondary : Color.cyan)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(shown.pass?.satellite ?? "OrbitDeck")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                PassDetailLine(shown: shown)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.title2)
+                    .foregroundStyle(shown.pass == nil ? Color.secondary : Color.cyan)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(shown.pass?.satellite ?? "OrbitDeck")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Group {
+                        PassTimesLine(shown: shown)
+                        PassFooterLine(shown: shown)
+                    }
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.7))
-            }
-            Spacer(minLength: 8)
-            if shown.pass != nil {
-                VStack(alignment: .trailing, spacing: 0) {
-                    Text(shown.phase.countdownLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.7))
-                    PassCountdown(shown: shown)
-                        .font(.title2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(shown.phase.color)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .frame(maxWidth: 90, alignment: .trailing)
+                }
+                Spacer(minLength: 8)
+                if shown.pass != nil {
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(shown.phase.countdownLabel)
+                            .font(.caption2)
+                            .foregroundStyle(.white.opacity(0.7))
+                        PassCountdown(shown: shown)
+                            .font(.title2.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(shown.phase.color)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .frame(maxWidth: 96, alignment: .trailing)
+                    }
                 }
             }
+            PassProgressRow(shown: shown)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.white.opacity(0.7))
         }
+    }
+}
+
+private extension OrbitDeckPassAttributes.ContentState {
+    /// Preview content from (name, switch, AOS, LOS, max elevation), times in minutes from now.
+    static func preview(_ source: OrbitDeckPassAttributes.Source, utc: Bool,
+                        _ items: [(String, Double?, Double, Double, Double)]) -> Self {
+        let now = Date.now
+        let passes = items.map { name, switchAt, aos, los, maxEl in
+            OrbitDeckPassAttributes.Pass(satellite: name, aos: now.addingTimeInterval(aos * 60),
+                                         los: now.addingTimeInterval(los * 60), maxElevation: maxEl,
+                                         switchAt: switchAt.map { now.addingTimeInterval($0 * 60) },
+                                         aosAzimuth: 20, losAzimuth: 160)
+        }
+        let first = passes.first ?? OrbitDeckPassAttributes.Pass(satellite: "ISS", aos: now, los: now, maxElevation: 0)
+        return Self(satellite: first.satellite, aos: first.aos, los: first.los, maxElevation: first.maxElevation,
+                    switchAt: first.switchAt, source: source, inPass: first.aos <= now, utc: utc,
+                    passes: passes.isEmpty ? [first] : passes)
     }
 }
 
 #Preview("Lock Screen", as: .content, using: OrbitDeckPassAttributes()) {
     OrbitDeckPassLiveActivity()
 } contentStates: {
-    OrbitDeckPassAttributes.ContentState(satellite: "ISS (ZARYA)", aos: .now.addingTimeInterval(900),
-                                         los: .now.addingTimeInterval(1500), maxElevation: 54,
-                                         switchAt: .now.addingTimeInterval(840), source: .priority,
-                                         inPass: false, utc: true)
-    OrbitDeckPassAttributes.ContentState(satellite: "SO-50", aos: .now.addingTimeInterval(-120),
-                                         los: .now.addingTimeInterval(480), maxElevation: 31,
-                                         switchAt: nil, source: .favorite, inPass: true, utc: false)
+    OrbitDeckPassAttributes.ContentState.preview(.priority, utc: true,
+                                                  [("ISS (ZARYA)", 14, 15, 25, 54), ("AO-91", nil, 110, 122, 31)])
+    OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false,
+                                                  [("SO-50", nil, -2, 8, 31), ("AO-7_[U/v]", nil, 95, 112, 62)])
+    // Content from a build before the look-ahead list.
+    OrbitDeckPassAttributes.ContentState(satellite: "SO-50", aos: .now.addingTimeInterval(600),
+                                         los: .now.addingTimeInterval(1200), maxElevation: 31,
+                                         switchAt: nil, source: .favorite, inPass: false, utc: true)
     // Every embedded pass has ended and the app hasn't refreshed.
     OrbitDeckPassAttributes.ContentState(satellite: "SO-50", aos: .now.addingTimeInterval(-900),
                                          los: .now.addingTimeInterval(-300), maxElevation: 31,
@@ -343,30 +557,20 @@ private struct PassLockScreenView: View {
 #Preview("Island compact", as: .dynamicIsland(.compact), using: OrbitDeckPassAttributes()) {
     OrbitDeckPassLiveActivity()
 } contentStates: {
-    OrbitDeckPassAttributes.ContentState(satellite: "ISS (ZARYA)", aos: .now.addingTimeInterval(5400),
-                                         los: .now.addingTimeInterval(6000), maxElevation: 54,
-                                         switchAt: nil, source: .priority, inPass: false, utc: true)
-    OrbitDeckPassAttributes.ContentState(satellite: "AO-7_[U/v]", aos: .now.addingTimeInterval(-120),
-                                         los: .now.addingTimeInterval(780), maxElevation: 31,
-                                         switchAt: nil, source: .favorite, inPass: true, utc: false)
+    OrbitDeckPassAttributes.ContentState.preview(.priority, utc: true, [("ISS (ZARYA)", nil, 90, 100, 54)])
+    OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false, [("AO-7_[U/v]", nil, -2, 13, 31)])
 }
 
 #Preview("Island minimal", as: .dynamicIsland(.minimal), using: OrbitDeckPassAttributes()) {
     OrbitDeckPassLiveActivity()
 } contentStates: {
-    OrbitDeckPassAttributes.ContentState(satellite: "ISS (ZARYA)", aos: .now.addingTimeInterval(1200),
-                                         los: .now.addingTimeInterval(1800), maxElevation: 54,
-                                         switchAt: nil, source: .priority, inPass: false, utc: true)
-    OrbitDeckPassAttributes.ContentState(satellite: "SO-50", aos: .now.addingTimeInterval(-240),
-                                         los: .now.addingTimeInterval(360), maxElevation: 31,
-                                         switchAt: nil, source: .favorite, inPass: true, utc: false)
+    OrbitDeckPassAttributes.ContentState.preview(.priority, utc: true, [("ISS (ZARYA)", nil, 20, 30, 54)])
+    OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false, [("SO-50", nil, -4, 6, 31)])
 }
 
 #Preview("Island expanded", as: .dynamicIsland(.expanded), using: OrbitDeckPassAttributes()) {
     OrbitDeckPassLiveActivity()
 } contentStates: {
-    OrbitDeckPassAttributes.ContentState(satellite: "TEVEL2-9 (RADFXSAT-2)", aos: .now.addingTimeInterval(4000),
-                                         los: .now.addingTimeInterval(4600), maxElevation: 72,
-                                         switchAt: .now.addingTimeInterval(3940), source: .priority,
-                                         inPass: false, utc: true)
+    OrbitDeckPassAttributes.ContentState.preview(.priority, utc: true,
+                                                  [("TEVEL2-9 (RADFXSAT-2)", 65, 66, 76, 72), ("ISS (ZARYA)", 140, 141, 151, 40)])
 }

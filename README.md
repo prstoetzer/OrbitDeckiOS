@@ -56,7 +56,7 @@ OrbitDeck is a companion to the OrbitDeck desktop app and CardSat by Paul Stoetz
 
 ## Requirements
 
-- iOS / iPadOS 17 or later (iPhone and iPad)
+- iOS / iPadOS 17 or later (iPhone and iPad); the Live Activity / Dynamic Island extension needs iOS 18 or later
 - A current Xcode (the app target uses Swift 6 language mode)
 - [SatelliteKit](https://github.com/gavineadie/SatelliteKit) for SGP4/SDP4 propagation (resolved via Swift Package Manager)
 
