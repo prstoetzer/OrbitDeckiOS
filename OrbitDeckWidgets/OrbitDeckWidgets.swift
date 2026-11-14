@@ -431,7 +431,7 @@ private struct PassProgressRow: View {
                     // The big countdown shows LOS once drawn in the pass; before AOS
                     // this one shows the pass length, then counts down to LOS.
                     HStack(spacing: 3) {
-                        Text("Pass")
+                        Text("Up for")
                         Text(timerInterval: window, countsDown: true)
                             .multilineTextAlignment(.trailing)
                             .frame(maxWidth: 56, alignment: .trailing)
