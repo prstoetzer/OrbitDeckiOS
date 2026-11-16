@@ -523,39 +523,24 @@ struct HomeView: View {
             }
             .padding(.horizontal)
 
-            // Status labels never wrap ("Below / horizon"); when they and the
-            // timestamp don't fit on one line, the timestamp moves beneath them.
-            let horizon = Label(
-                look.elevation > 0 ? "Above horizon" : "Below horizon",
-                systemImage: look.elevation > 0 ? "eye.fill" : "eye.slash"
-            )
-            .foregroundStyle(look.elevation > 0 ? ODTheme.good : ODTheme.muted)
-            .lineLimit(1).fixedSize()
-            let illumination = Label(
-                look.sunlit ? "Sunlit" : "Eclipsed",
-                systemImage: look.sunlit ? "sun.max.fill" : "moon.fill"
-            )
-            .foregroundStyle(look.sunlit ? ODTheme.warning : ODTheme.muted)
-            .lineLimit(1).fixedSize()
-            let stamp = Text(ODFormat.utc.string(from: look.date))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(ODTheme.muted)
-                .lineLimit(1).fixedSize()
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    horizon
-                    illumination
-                    Spacer()
-                    stamp
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 12) {
-                        horizon
-                        illumination
-                        Spacer()
-                    }
-                    stamp
-                }
+            HStack(spacing: 12) {
+                Label(
+                    look.elevation > 0 ? "Above horizon" : "Below horizon",
+                    systemImage: look.elevation > 0 ? "eye.fill" : "eye.slash"
+                )
+                .foregroundStyle(look.elevation > 0 ? ODTheme.good : ODTheme.muted)
+
+                Label(
+                    look.sunlit ? "Sunlit" : "Eclipsed",
+                    systemImage: look.sunlit ? "sun.max.fill" : "moon.fill"
+                )
+                .foregroundStyle(look.sunlit ? ODTheme.warning : ODTheme.muted)
+
+                Spacer()
+
+                Text(ODFormat.utc.string(from: look.date))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(ODTheme.muted)
             }
             .padding(.horizontal)
         } else {
