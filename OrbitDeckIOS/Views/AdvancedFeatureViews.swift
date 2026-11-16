@@ -854,7 +854,7 @@ struct ExportsView: View {
                     }
 
                     SectionCard("Pass card") {
-                        Text("Create a shareable summary card with the sky track, 145.8 MHz Doppler curve and key pass facts.")
+                        Text("Create a shareable summary card with the sky track, a Doppler curve for the satellite's downlink and key pass facts.")
                             .font(.caption).foregroundStyle(ODTheme.muted)
                         if !passes.isEmpty {
                             Picker("Pass", selection: $cardPassIndex) {
@@ -977,7 +977,7 @@ struct ExportsView: View {
             passes = try OrbitPredictor.predictPasses(sat, observer: store.preferences.observer, minElevation: store.preferences.minElevation, maxCount: 200, horizonDays: Double(days))
             if cardPassIndex >= min(passes.count, 12) { cardPassIndex = 0 }
             comparison = []
-            status = "\(passes.count) passes over \(days) day(s)."
+            status = "\(passes.count) pass\(passes.count == 1 ? "" : "es") over \(days) day\(days == 1 ? "" : "s")."
         } catch { status = error.localizedDescription }
     }
 
@@ -1023,7 +1023,7 @@ struct ExportsView: View {
                 try eventStore.save(event, span: .thisEvent, commit: false)
             }
             try eventStore.commit()
-            status = "Added \(entries.count) event(s) to your calendar."
+            status = "Added \(entries.count) event\(entries.count == 1 ? "" : "s") to your calendar."
         } catch {
             status = error.localizedDescription
         }
@@ -1039,7 +1039,7 @@ struct ExportsView: View {
                 } else {
                     shareURL = try OrbitExportService.temporaryTextFile(name: "favorites_passes.ics", text: OrbitExportService.favoritesPassesICS(groups, observer: store.preferences.observer, leadMinutes: store.preferences.passAlarmLeadMinutes ?? 10)); shareLabel = "favorites iCalendar"
                 }
-                status = "Prepared \(shareLabel) for \(groups.count) favorite(s)."
+                status = "Prepared \(shareLabel) for \(groups.count) favorite\(groups.count == 1 ? "" : "s")."
             } catch { status = error.localizedDescription }
             return
         }
@@ -1078,7 +1078,7 @@ struct ExportsView: View {
         do {
             shareURL = try OrbitExportService.temporaryTextFile(name: "favorite_pass_comparison.csv", text: OrbitExportService.comparisonCSV(comparison, observer: store.preferences.observer, days: days))
             shareLabel = "comparison CSV"
-            status = "Compared \(comparison.count) favorite satellite(s); CSV is ready to share."
+            status = "Compared \(comparison.count) favorite satellite\(comparison.count == 1 ? "" : "s"); CSV is ready to share."
         } catch { status = error.localizedDescription }
     }
 
@@ -1159,7 +1159,7 @@ struct ExportsView: View {
             )
             shareURL = try OrbitExportService.temporaryFile(name: "favorites_pass_schedule.pdf", data: data)
             shareLabel = "favorites schedule PDF"
-            status = "Prepared a chronological schedule across \(favorites.count) favorite satellite(s)."
+            status = "Prepared a chronological schedule across \(favorites.count) favorite satellite\(favorites.count == 1 ? "" : "s")."
         } catch { status = error.localizedDescription }
     }
 
@@ -1177,7 +1177,7 @@ struct ExportsView: View {
             )
             shareURL = try OrbitExportService.temporaryFile(name: "site_comparison_\(base).pdf", data: data)
             shareLabel = "site comparison PDF"
-            status = "Prepared pass comparison across \(sites.count) site(s)."
+            status = "Prepared pass comparison across \(sites.count) site\(sites.count == 1 ? "" : "s")."
         } catch { status = error.localizedDescription }
     }
 
@@ -1195,7 +1195,7 @@ struct ExportsView: View {
             let data = OrbitExportService.referenceOrbitsPDF(satellites: sats, observer: store.preferences.observer, days: referenceDays)
             shareURL = try OrbitExportService.temporaryFile(name: "reference_orbits_\(base).pdf", data: data)
             shareLabel = "reference-orbits PDF"
-            status = "Prepared \(referenceDays)-day OSCARLOCATOR reference orbits for \(sats.count) satellite(s)."
+            status = "Prepared \(referenceDays)-day OSCARLOCATOR reference orbits for \(sats.count) satellite\(sats.count == 1 ? "" : "s")."
         } catch { status = error.localizedDescription }
     }
 
@@ -1244,7 +1244,7 @@ struct ExportsView: View {
         let lead = store.preferences.passAlarmLeadMinutes ?? 10
         do {
             try await PassAlarmService.schedule(pass: pass, satellite: sat, observer: store.preferences.observer, leadMinutes: lead)
-            status = "Alarm scheduled \(lead) minute(s) before \(ODFormat.utcShort.string(from: pass.aos))."
+            status = "Alarm scheduled \(lead) minute\(lead == 1 ? "" : "s") before \(ODFormat.utcShort.string(from: pass.aos))."
         } catch { status = error.localizedDescription }
     }
 }
@@ -1288,9 +1288,9 @@ struct ManualSatelliteEditor: View {
         NavigationStack {
             Form {
                 Section("Identity") {
-                    TextField("Name", text: $name).textFieldStyle(.odField)
-                    TextField("NORAD / synthetic ID", text: $norad).keyboardType(.numberPad).textFieldStyle(.odField)
-                    TextField("International designator (optional)", text: $designator).textInputAutocapitalization(.characters).textFieldStyle(.odField)
+                    labeled("Name") { TextField("Name", text: $name).textFieldStyle(.odField) }
+                    labeled("NORAD ID") { TextField("NORAD / synthetic ID", text: $norad).keyboardType(.numberPad).textFieldStyle(.odField) }
+                    labeled("Int'l designator") { TextField("Optional", text: $designator).textInputAutocapitalization(.characters).textFieldStyle(.odField) }
                     DatePicker("Epoch (UTC instant)", selection: $epoch)
                 }
                 Section("Mean elements") {
@@ -1313,7 +1313,15 @@ struct ManualSatelliteEditor: View {
     }
 
     private func field(_ label: String, _ binding: Binding<String>) -> some View {
-        TextField(label, text: binding).keyboardType(.numbersAndPunctuation).textFieldStyle(.odField)
+        labeled(label) { TextField(label, text: binding).keyboardType(.numbersAndPunctuation).textFieldStyle(.odField) }
+    }
+
+    /// A visible label beside the field, so a filled-in value keeps its meaning.
+    private func labeled<Field: View>(_ label: String, @ViewBuilder _ field: () -> Field) -> some View {
+        HStack {
+            Text(label)
+            field().multilineTextAlignment(.trailing)
+        }
     }
 
     private func save() {
@@ -1367,12 +1375,12 @@ struct ManualTransponderManager: View {
                     }
                 }
                 Section("Add transponder") {
-                    TextField("Description", text: $description).textFieldStyle(.odField)
-                    TextField("Downlink low/center MHz", text: $downlink).keyboardType(.decimalPad).textFieldStyle(.odField)
-                    TextField("Downlink high MHz (optional)", text: $downlinkHigh).keyboardType(.decimalPad).textFieldStyle(.odField)
-                    TextField("Uplink low/center MHz (optional)", text: $uplink).keyboardType(.decimalPad).textFieldStyle(.odField)
-                    TextField("Uplink high MHz (optional)", text: $uplinkHigh).keyboardType(.decimalPad).textFieldStyle(.odField)
-                    TextField("Mode", text: $mode).textFieldStyle(.odField)
+                    transponderField("Description", "Description", $description, keyboard: .default)
+                    transponderField("Downlink (MHz)", "Low or center", $downlink)
+                    transponderField("Downlink high (MHz)", "Optional", $downlinkHigh)
+                    transponderField("Uplink (MHz)", "Optional low or center", $uplink)
+                    transponderField("Uplink high (MHz)", "Optional", $uplinkHigh)
+                    transponderField("Mode", "Mode", $mode, keyboard: .default)
                     Toggle("Inverting linear transponder", isOn: $invert)
                     Button("Add Manual Transponder") { add() }
                     if !error.isEmpty { Text(error).foregroundStyle(ODTheme.warning) }
@@ -1380,6 +1388,16 @@ struct ManualTransponderManager: View {
             }
             .navigationTitle("\(satellite.name) Transponders")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+    }
+
+    /// A labeled transponder field (the label stays visible once the field is filled).
+    private func transponderField(_ label: String, _ prompt: String, _ text: Binding<String>,
+                                  keyboard: UIKeyboardType = .decimalPad) -> some View {
+        HStack {
+            Text(label)
+            TextField(prompt, text: text).keyboardType(keyboard)
+                .multilineTextAlignment(.trailing).textFieldStyle(.odField)
         }
     }
 

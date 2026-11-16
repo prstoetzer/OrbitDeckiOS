@@ -255,7 +255,26 @@ enum AO7Service {
             upperUncertainty = delta
             delta += finePhaseStep
         }
-        let phaseUncertainty = 0.5 * (lowerUncertainty + upperUncertainty)
+        let plateau = 0.5 * (lowerUncertainty + upperUncertainty)
+        // The plateau only measures how far the phase can slide before one more
+        // report stops fitting, so with conflicting reports it can collapse to a
+        // single search step (shown as 0m 00s next to "Reports disagree"). Also take
+        // the median distance from each report the fit gets wrong to the nearest
+        // modeled switch: how far the switch times would have to move to explain
+        // them. Never below the search resolution.
+        var misfitDistances: [Double] = []
+        for observation in observations {
+            let t = observation.date.timeIntervalSince1970
+            let k = floor((t - bestReference) / bestPeriod)
+            let predicted = (Int(k) & 1) ^ bestFlip
+            let fits = observation.negative ? predicted != observation.mode : predicted == observation.mode
+            if fits { continue }
+            let intoHalfCycle = t - (bestReference + k * bestPeriod)
+            misfitDistances.append(min(intoHalfCycle, bestPeriod - intoHalfCycle))
+        }
+        misfitDistances.sort()
+        let misfitSpread = misfitDistances.isEmpty ? 0 : misfitDistances[misfitDistances.count / 2]
+        let phaseUncertainty = max(finePhaseStep / 2, plateau, misfitSpread)
 
         let nowTime = now.timeIntervalSince1970
         let kNow = floor((nowTime - bestReference) / bestPeriod)

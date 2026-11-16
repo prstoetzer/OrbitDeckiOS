@@ -31,6 +31,8 @@ struct OrbitalAnalysisView: View {
                         VStack(spacing: 14) {
                             page(satellite: satellite, at: context.date)
                         }
+                        // The app's standard card inset from the screen edges.
+                        .padding(.horizontal)
                         .padding(.vertical, 14)
                     }
                 }
@@ -157,9 +159,24 @@ struct OrbitalAnalysisView: View {
                 } else if crossings.isEmpty {
                     Text("No equator crossings found in the next ~12 orbits.").font(.caption).foregroundStyle(ODTheme.muted)
                 } else {
+                    // Column headings carry "longitude", so each row is just the
+                    // stamp and the angle and fits on one line.
+                    HStack {
+                        Text("Time")
+                        Spacer()
+                        Text("Longitude")
+                    }
+                    .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.muted)
                     ForEach(Array(crossings.prefix(16).enumerated()), id: \.offset) { _, crossing in
-                        MetricRow(ODFormat.utc.string(from: crossing.0),
-                                  String(format: "%+.2f° longitude", crossing.1))
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(ODFormat.utc.string(from: crossing.0))
+                                .font(.callout.monospacedDigit())
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                            Spacer(minLength: 8)
+                            Text(String(format: "%+.2f°", crossing.1))
+                                .font(.system(.body, design: .monospaced))
+                                .lineLimit(1).fixedSize()
+                        }
                     }
                 }
             }
@@ -167,8 +184,14 @@ struct OrbitalAnalysisView: View {
             SectionCard("Live Doppler") {
                 if let transponder = selectedTransponder(satellite), let look {
                     if satellite.transponders.count > 1 {
-                        TransponderPicker(transponders: satellite.transponders, selection: $selectedTransponderID)
-                            .equatable()
+                        // Labeled like a MetricRow so the menu sits on the value
+                        // column instead of floating indented under the title.
+                        HStack {
+                            Text("Transponder").foregroundStyle(ODTheme.muted)
+                            Spacer(minLength: 12)
+                            TransponderPicker(transponders: satellite.transponders, selection: $selectedTransponderID)
+                                .equatable()
+                        }
                     }
                     let cal = store.downlinkCalibrationHz(for: satellite.id, transponder: transponder.id, invert: transponder.invert)
                     // Calibrated dials for the tune readouts; the uncalibrated pair

@@ -75,9 +75,18 @@ struct HomeQuickLogCard: View {
                             .font(.caption).buttonStyle(.borderless)
                     }
                 }
+                // Captions over the reports: they're prefilled, so the placeholders never show.
                 HStack {
-                    TextField("RST sent", text: $rstSent).textFieldStyle(.odField).frame(maxWidth: .infinity)
-                    TextField("RST rcvd", text: $rstRcvd).textFieldStyle(.odField).frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("RST sent").font(.caption).foregroundStyle(ODTheme.muted).accessibilityHidden(true)
+                        TextField("RST sent", text: $rstSent).textFieldStyle(.odField)
+                    }
+                    .frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("RST rcvd").font(.caption).foregroundStyle(ODTheme.muted).accessibilityHidden(true)
+                        TextField("RST rcvd", text: $rstRcvd).textFieldStyle(.odField)
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 TextField("Their grid (optional)", text: $theirGrid)
                     .textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.odField)
@@ -177,7 +186,7 @@ struct LogScreen: View {
             }
             if qso.qsos.isEmpty && qso.recordings.isEmpty && qso.ft4Traffic.isEmpty {
                 ContentUnavailableView("No log entries yet", systemImage: "book",
-                                       description: Text("Log a QSO from the Home card or the + button; pass recordings and FT4 activity appear here too. (SSTV images have their own screen.)"))
+                                       description: Text("Log a QSO from the Home card or New QSO in the \u{22EF} menu; pass recordings and FT4 activity appear here too. (SSTV images have their own screen.)"))
             }
             if !qso.qsos.isEmpty {
                 Section("Contacts (\(qso.qsos.count))") {
@@ -435,10 +444,10 @@ struct QSOEditView: View {
                     TextField("Name", text: $record.name)
                         .textInputAutocapitalization(.words).autocorrectionDisabled()
                     labeledField("Their grid", text: $record.grid, caps: true)
-                    HStack {
-                        labeledField("RST sent", text: $record.rstSent)
-                        labeledField("RST rcvd", text: $record.rstRcvd)
-                    }
+                    // Visible labels: both reports are prefilled (e.g. 599), so a
+                    // placeholder alone never shows which is which.
+                    HStack { Text("RST sent"); Spacer(); labeledField("RST sent", text: $record.rstSent).multilineTextAlignment(.trailing) }
+                    HStack { Text("RST rcvd"); Spacer(); labeledField("RST rcvd", text: $record.rstRcvd).multilineTextAlignment(.trailing) }
                     // Log times are UTC: without the zone override the picker shows and
                     // edits device-local time while the label says UTC.
                     DatePicker("Time (UTC)", selection: $record.utc)
@@ -455,8 +464,17 @@ struct QSOEditView: View {
                     modeField("Mode", text: $record.mode)
                     modeField("Uplink mode", text: legBinding(\.uplinkMode), placeholder: "Same as mode")
                     modeField("Downlink mode", text: legBinding(\.downlinkMode), placeholder: "Same as mode")
-                    HStack { Text("Downlink"); Spacer(); TextField("Hz", value: $record.dlHz, format: .number).multilineTextAlignment(.trailing) }
-                    HStack { Text("Uplink"); Spacer(); TextField("Hz", value: $record.ulHz, format: .number).multilineTextAlignment(.trailing) }
+                    // Stored and entered in hertz; the unit is shown so 437,475,000 reads as a frequency.
+                    HStack {
+                        Text("Downlink"); Spacer()
+                        TextField("Hz", value: $record.dlHz, format: .number).multilineTextAlignment(.trailing)
+                        Text("Hz").foregroundStyle(ODTheme.muted)
+                    }
+                    HStack {
+                        Text("Uplink"); Spacer()
+                        TextField("Hz", value: $record.ulHz, format: .number).multilineTextAlignment(.trailing)
+                        Text("Hz").foregroundStyle(ODTheme.muted)
+                    }
                 } header: {
                     Text("Satellite")
                 } footer: {

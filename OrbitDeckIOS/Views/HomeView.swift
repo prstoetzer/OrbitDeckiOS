@@ -523,24 +523,39 @@ struct HomeView: View {
             }
             .padding(.horizontal)
 
-            HStack(spacing: 12) {
-                Label(
-                    look.elevation > 0 ? "Above horizon" : "Below horizon",
-                    systemImage: look.elevation > 0 ? "eye.fill" : "eye.slash"
-                )
-                .foregroundStyle(look.elevation > 0 ? ODTheme.good : ODTheme.muted)
-
-                Label(
-                    look.sunlit ? "Sunlit" : "Eclipsed",
-                    systemImage: look.sunlit ? "sun.max.fill" : "moon.fill"
-                )
-                .foregroundStyle(look.sunlit ? ODTheme.warning : ODTheme.muted)
-
-                Spacer()
-
-                Text(ODFormat.utc.string(from: look.date))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(ODTheme.muted)
+            // Status labels never wrap ("Below / horizon"); when they and the
+            // timestamp don't fit on one line, the timestamp moves beneath them.
+            let horizon = Label(
+                look.elevation > 0 ? "Above horizon" : "Below horizon",
+                systemImage: look.elevation > 0 ? "eye.fill" : "eye.slash"
+            )
+            .foregroundStyle(look.elevation > 0 ? ODTheme.good : ODTheme.muted)
+            .lineLimit(1).fixedSize()
+            let illumination = Label(
+                look.sunlit ? "Sunlit" : "Eclipsed",
+                systemImage: look.sunlit ? "sun.max.fill" : "moon.fill"
+            )
+            .foregroundStyle(look.sunlit ? ODTheme.warning : ODTheme.muted)
+            .lineLimit(1).fixedSize()
+            let stamp = Text(ODFormat.utc.string(from: look.date))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(ODTheme.muted)
+                .lineLimit(1).fixedSize()
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    horizon
+                    illumination
+                    Spacer()
+                    stamp
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 12) {
+                        horizon
+                        illumination
+                        Spacer()
+                    }
+                    stamp
+                }
             }
             .padding(.horizontal)
         } else {
@@ -623,8 +638,14 @@ struct HomeView: View {
         SectionCard("Transponder") {
             if let transponder = selectedTransponder(satellite) {
                 if satellite.transponders.count > 1 {
-                    TransponderPicker(transponders: satellite.transponders, selection: $selectedTransponderID)
-                        .equatable()
+                    // Labeled like the MetricRows below so the menu lines up with
+                    // the value column instead of floating under the card title.
+                    HStack {
+                        Text("Transponder").foregroundStyle(ODTheme.muted)
+                        Spacer(minLength: 12)
+                        TransponderPicker(transponders: satellite.transponders, selection: $selectedTransponderID)
+                            .equatable()
+                    }
                 }
                 MetricRow("Type", transponder.kind)
                 if !transponder.mode.isEmpty { MetricRow("Mode", transponder.mode) }
@@ -656,11 +677,19 @@ struct HomeView: View {
         }
     }
 
+    /// A transponder edge range with one shared unit ("145.900–145.950 MHz"), short
+    /// enough to show at the same size as the other values; two full
+    /// `ODFormat.frequency` strings didn't fit and were scaled down.
     private func passband(_ low: Int64, _ high: Int64) -> String {
-        if high > low {
-            return "\(ODFormat.frequency(low)) – \(ODFormat.frequency(high))"
+        guard high > low else { return ODFormat.frequency(low) }
+        let wholeKHz = low % 1000 == 0 && high % 1000 == 0
+        if low >= 1_000_000_000 {
+            return String(format: "%.*f–%.*f GHz", wholeKHz ? 6 : 9, Double(low) / 1e9, wholeKHz ? 6 : 9, Double(high) / 1e9)
         }
-        return ODFormat.frequency(low)
+        if low >= 1_000_000, high < 1_000_000_000 {
+            return String(format: "%.*f–%.*f MHz", wholeKHz ? 3 : 6, Double(low) / 1e6, wholeKHz ? 3 : 6, Double(high) / 1e6)
+        }
+        return "\(ODFormat.frequency(low)) – \(ODFormat.frequency(high))"
     }
 
     @ViewBuilder
@@ -739,9 +768,11 @@ struct HomeView: View {
         Divider().padding(.vertical, 2)
         // The adjuster clamps into range: switching to a narrower transponder can
         // momentarily leave a wider offset in place before the reset fires.
-        PreciseAdjuster(title: "Passband", value: $passbandOffsetHz, range: -half...half,
+        // The value is the offset from the transponder center, so name it as such
+        // and spell out the neutral state rather than a bare "center".
+        PreciseAdjuster(title: "Passband offset", value: $passbandOffsetHz, range: -half...half,
                         steps: [10, 100, 1000, 5000],
-                        valueLabel: { $0 == 0 ? "center" : String(format: "%+.2f kHz", $0 / 1000) },
+                        valueLabel: { $0 == 0 ? "0 kHz (center)" : String(format: "%+.2f kHz", $0 / 1000) },
                         sliderStep: 100)
     }
 

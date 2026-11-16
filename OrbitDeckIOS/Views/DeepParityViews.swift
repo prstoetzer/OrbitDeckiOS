@@ -453,7 +453,7 @@ struct DeepTinyBasicView: View {
             let result = try CardSatTinyBasicEngine().run(source, inputs: numericInputs, stringInputs: stringInputs, host: host, fileDirectory: basicDirectory)
             output = result.output.joined(separator: "\n")
             ops = result.graphics
-            status = "Ran \(result.steps) statement(s); \(result.graphics.count) graphics call(s)."
+            status = "Ran \(result.steps) statement\(result.steps == 1 ? "" : "s"); \(result.graphics.count) graphics call\(result.graphics.count == 1 ? "" : "s")."
         } catch {
             output = "?\(error.localizedDescription)"
             status = error.localizedDescription

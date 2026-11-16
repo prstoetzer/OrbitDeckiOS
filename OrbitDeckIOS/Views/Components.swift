@@ -206,8 +206,8 @@ enum ODFormat {
     /// Rewrite every "number unit" in display text into the chosen system, e.g.
     /// "Perigee 408 km · apogee 421 km" → "Perigee 254 mi · apogee 262 mi", or a
     /// calculator's "12.34 ft" → "3.76 m" in metric. Ranges ("300–800 km") convert
-    /// both ends. Use only on text whose numbers are measurements (not band names
-    /// such as "2 m").
+    /// both ends. Band names ("2 m", "70 cm") are left alone when followed by "band"
+    /// or in text that also gives a frequency, but prefer passing only measurements.
     static func units(_ text: String) -> String {
         UnitConversion.rewrite(text, toCustomary: usesCustomary)
     }
@@ -289,7 +289,10 @@ enum UnitConversion {
             let unit = ns.substring(with: m.range(at: 5))
             let space = ns.substring(with: m.range(at: 4))
             let value = ns.substring(with: m.range(at: 3))
-            if unit == "°C" || unit == "°F" {
+            if toCustomary, isBandDesignator(value: value, unit: unit, ranged: m.range(at: 1).location != NSNotFound,
+                                             after: ns.substring(from: m.range.location + m.range.length), in: text) {
+                out += ns.substring(with: m.range)
+            } else if unit == "°C" || unit == "°F" {
                 let toF = unit == "°C"
                 out += convertTemperature(value, toF: toF) + space + (toF ? "°F" : "°C")
             } else if let rule = (toCustomary ? toUS : toMetric).first(where: { $0.from == unit }) {
@@ -306,6 +309,25 @@ enum UnitConversion {
         }
         out += ns.substring(from: cursor)
         return out
+    }
+
+    /// Amateur band names ("2 m", "30 m", "70 cm") are designators, not lengths.
+    private static let bandMeters: Set<String> = ["2200", "630", "160", "80", "60", "40", "30", "20", "17", "15", "12", "10", "6", "4", "2", "1.25"]
+    private static let bandCentimeters: Set<String> = ["70", "33", "23", "13", "9", "6", "5", "3", "1.2"]
+
+    /// True for a band designator: a band-name value in m/cm followed by "band",
+    /// or anywhere in text that talks in frequencies (MHz/GHz/kHz).
+    private static func isBandDesignator(value: String, unit: String, ranged: Bool, after: String, in text: String) -> Bool {
+        guard !ranged else { return false }
+        let names: Set<String>
+        switch unit {
+        case "m": names = bandMeters
+        case "cm": names = bandCentimeters
+        default: return false
+        }
+        guard names.contains(value) else { return false }
+        if after.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("band") { return true }
+        return text.contains("MHz") || text.contains("GHz") || text.contains("kHz")
     }
 
     private static func parse(_ s: String) -> (value: Double, decimals: Int, grouped: Bool, sign: String)? {

@@ -180,12 +180,21 @@ struct OrbitDeckPassLiveActivity: Widget {
                 .foregroundStyle(shown.pass == nil ? Color.secondary : Color.cyan)
                 .frame(maxWidth: 76, alignment: .leading)
             } compactTrailing: {
-                PassCountdown(shown: shown)
-                    .font(.caption2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(shown.phase.color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                    .frame(maxWidth: 52, alignment: .trailing)
+                // A bare "17:58" here read as a clock time, so the AOS countdown is
+                // prefixed "in". (During the pass the orange LOS countdown is the
+                // time left.) The timer text fills the remaining width, so it's
+                // leading-aligned to sit right after the prefix.
+                HStack(spacing: 2) {
+                    if shown.phase == .upcoming {
+                        Text("in").fixedSize()
+                    }
+                    PassCountdown(shown: shown, alignment: shown.phase == .upcoming ? .leading : .trailing)
+                }
+                .font(.caption2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(shown.phase.color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .frame(maxWidth: 64, alignment: .trailing)
             } minimal: {
                 // With two or more Live Activities the island shows only this; a
                 // self-updating ring keeps the time left visible (to AOS within the
@@ -339,14 +348,15 @@ private enum PassPhase {
 /// the pass. The system runs timer text without app updates.
 private struct PassCountdown: View {
     let shown: ShownPass
+    var alignment: TextAlignment = .trailing
 
     var body: some View {
         if let window = shown.window, shown.phase == .up {
             Text(timerInterval: window, countsDown: true)
-                .multilineTextAlignment(.trailing)
+                .multilineTextAlignment(alignment)
         } else if let pass = shown.pass {
             Text(timerInterval: shown.drawnAt...max(shown.drawnAt, pass.aos), countsDown: true)
-                .multilineTextAlignment(.trailing)
+                .multilineTextAlignment(alignment)
         } else {
             Image(systemName: "arrow.clockwise")
         }

@@ -257,9 +257,7 @@ struct RootView: View {
                 ForEach(navGroups) { group in
                     Section(group.title) {
                         ForEach(group.items) { destination in
-                            Label(destination.title, systemImage: destination.icon)
-                                .font(.body)
-                                .tag(destination)
+                            menuRow(destination)
                         }
                     }
                 }
@@ -270,7 +268,22 @@ struct RootView: View {
                 }
             }
             .navigationTitle("OrbitDeck")
+            // On iPhone the menu is the root of the collapsed stack. Once a screen is
+            // pushed over it, hide it so no part of it peeks out from under the
+            // destination's edge (or stays reachable to VoiceOver) after the transition.
+            .opacity(menuCovered ? 0 : 1)
+            .accessibilityHidden(menuCovered)
+            .animation(.easeInOut(duration: 0.25), value: menuCovered)
             .toolbar {
+                if horizontalSizeClass == .compact {
+                    ToolbarItem(placement: .topBarLeading) {
+                        // Return to the screen the menu was opened from.
+                        Button { selection = lastSelection } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .accessibilityLabel("Close menu")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     if store.isRefreshingGP {
                         ProgressView()
@@ -428,6 +441,37 @@ struct RootView: View {
     private func applyIdleTimer(active: Bool) {
         UIApplication.shared.isIdleTimerDisabled =
             active && (sessionRunning || (keepScreenAwakeHome && (selection ?? .home) == .home))
+    }
+
+    /// On iPhone, a screen is pushed over the menu (the menu isn't on-screen).
+    private var menuCovered: Bool {
+        horizontalSizeClass == .compact && selection != nil
+    }
+
+    /// One menu row. A real Button, so it activates only on a tap (not at the end of
+    /// a swipe) and VoiceOver announces it as a button; the icon is decorative and the
+    /// row's text is its label. The current screen is tinted and marked selected —
+    /// on iPhone the list selection is nil while the menu is open, so it falls back to
+    /// the last screen shown.
+    private func menuRow(_ destination: OrbitDestination) -> some View {
+        let isCurrent = (selection ?? lastSelection) == destination
+        return Button { selection = destination } label: {
+            Label {
+                Text(destination.title)
+                    .fontWeight(isCurrent ? .semibold : .regular)
+                    .foregroundStyle(isCurrent ? ODTheme.accent : .primary)
+            } icon: {
+                Image(systemName: destination.icon)
+                    .foregroundStyle(ODTheme.accent)
+                    .accessibilityHidden(true)
+            }
+            .font(.body)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel(destination.title)
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+        .tag(destination)
     }
 
     /// Explains the toolbar refresh button in the menu.

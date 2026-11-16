@@ -373,10 +373,12 @@ enum BenchTools {
         switch id {
         case "dipole":
             let f = max(v("freq"), 0.001); let totalFt = 468 / f
-            return [row("Overall", String(format: "%.2f ft", totalFt)), row("Each leg", String(format: "%.2f ft", totalFt/2)), row("Overall", String(format: "%.2f m", totalFt*0.3048))]
+            // In the operator's unit system only: a second, metric row would be
+            // rewritten back to feet by the display's unit conversion.
+            return [row("Overall", ODFormat.meters(totalFt*0.3048, decimals: 2)), row("Each leg", ODFormat.meters(totalFt*0.3048/2, decimals: 2))]
         case "vertical":
             let f = max(v("freq"), 0.001); let ft = 234 / f
-            return [row("Radiator", String(format: "%.2f ft", ft)), row("Radial", String(format: "%.2f ft", ft)), row("Metric", String(format: "%.2f m", ft*0.3048))]
+            return [row("Radiator", ODFormat.meters(ft*0.3048, decimals: 2)), row("Radial", ODFormat.meters(ft*0.3048, decimals: 2))]
         case "wavelength":
             let f = max(v("freq"), 0.001); let m = 299.792458 / f
             return [row("Wavelength", String(format: "%.4f m", m)), row("Half wave", String(format: "%.4f m", m/2)), row("Quarter wave", String(format: "%.4f m", m/4))]

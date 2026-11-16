@@ -38,7 +38,7 @@ struct SettingsView: View {
         let shown = override.isEmpty ? GPService.defaultURLString(store.preferences) : override
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Source URL").font(.caption.weight(.semibold))
+                Text("Source URL")
                 Spacer()
                 if !override.isEmpty {
                     Button("Reset to default") { store.preferences[keyPath: key] = nil }
@@ -96,39 +96,51 @@ struct SettingsView: View {
                 .textFieldStyle(.odField)
                 .disabled(following)
 
-                HStack {
-                    TextField("Latitude", value: Binding(
-                        get: { store.preferences.observer.latitude },
-                        set: { store.preferences.observer.latitude = max(-90, min(90, $0)) }
-                    ), format: .number.precision(.fractionLength(0...6)))
-                    .keyboardType(.numbersAndPunctuation)
-                    .textFieldStyle(.odField)
-                    Text("°").foregroundStyle(ODTheme.muted)
-                }
+                // Visible labels (a placeholder disappears once a value is in). The row
+                // separator is pinned to the row's leading edge: by default it aligns to
+                // the first Text, which put a short stub under the unit.
+                LabeledContent {
+                    HStack {
+                        TextField("Latitude", value: Binding(
+                            get: { store.preferences.observer.latitude },
+                            set: { store.preferences.observer.latitude = max(-90, min(90, $0)) }
+                        ), format: .number.precision(.fractionLength(0...6)))
+                        .keyboardType(.numbersAndPunctuation)
+                        .textFieldStyle(.odField)
+                        Text("°").foregroundStyle(ODTheme.muted).accessibilityHidden(true)
+                    }
+                } label: { Text("Latitude") }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .disabled(following)
 
-                HStack {
-                    TextField("Longitude", value: Binding(
-                        get: { store.preferences.observer.longitude },
-                        set: { store.preferences.observer.longitude = Self.normalizedLongitude($0) }
-                    ), format: .number.precision(.fractionLength(0...6)))
-                    .keyboardType(.numbersAndPunctuation)
-                    .textFieldStyle(.odField)
-                    Text("°").foregroundStyle(ODTheme.muted)
-                }
+                LabeledContent {
+                    HStack {
+                        TextField("Longitude", value: Binding(
+                            get: { store.preferences.observer.longitude },
+                            set: { store.preferences.observer.longitude = Self.normalizedLongitude($0) }
+                        ), format: .number.precision(.fractionLength(0...6)))
+                        .keyboardType(.numbersAndPunctuation)
+                        .textFieldStyle(.odField)
+                        Text("°").foregroundStyle(ODTheme.muted).accessibilityHidden(true)
+                    }
+                } label: { Text("Longitude") }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .disabled(following)
 
-                HStack {
-                    // Stored in meters; entered in the chosen unit (m or ft).
-                    TextField("Altitude", value: Binding(
-                        get: { ODFormat.usesCustomary ? store.preferences.observer.altitudeMeters * UnitConversion.ftPerM
-                                                      : store.preferences.observer.altitudeMeters },
-                        set: { store.preferences.observer.altitudeMeters = ODFormat.usesCustomary ? $0 / UnitConversion.ftPerM : $0 }
-                    ), format: .number.precision(.fractionLength(0...1)))
-                    .keyboardType(.numbersAndPunctuation)
-                    .textFieldStyle(.odField)
-                    Text(ODFormat.heightUnit).foregroundStyle(ODTheme.muted)
-                }
+                LabeledContent {
+                    HStack {
+                        // Stored in meters; entered in the chosen unit (m or ft).
+                        TextField("Altitude", value: Binding(
+                            get: { ODFormat.usesCustomary ? store.preferences.observer.altitudeMeters * UnitConversion.ftPerM
+                                                          : store.preferences.observer.altitudeMeters },
+                            set: { store.preferences.observer.altitudeMeters = ODFormat.usesCustomary ? $0 / UnitConversion.ftPerM : $0 }
+                        ), format: .number.precision(.fractionLength(0...1)))
+                        .keyboardType(.numbersAndPunctuation)
+                        .textFieldStyle(.odField)
+                        Text(ODFormat.heightUnit).foregroundStyle(ODTheme.muted)
+                    }
+                } label: { Text("Altitude") }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 .disabled(following)
 
                 // Enter a station as a Maidenhead grid square (4/6/8 characters).
@@ -171,8 +183,10 @@ struct SettingsView: View {
                     }
                 }
 
+                // The provider's friendly message; it clears itself on the next good fix.
                 if let error = locationProvider.errorMessage {
-                    Text(error).font(.caption).foregroundStyle(ODTheme.warning)
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(ODTheme.warning)
                 }
             } header: {
                 Text("Observer station")
@@ -188,8 +202,10 @@ struct SettingsView: View {
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 .textFieldStyle(.odField)
-                LabeledContent("Station grid", value: store.operatorGrid)
-                Text("Your callsign and current station grid are used only when you explicitly confirm an attributed AMSAT status report.")
+                // Derived from the observer station, like the six-character grid above;
+                // AMSAT status reports take the four-character square, so name it as such.
+                LabeledContent("Report grid (4-character)", value: store.operatorGrid)
+                Text("Your callsign and the four-character grid of the observer station above are used only when you explicitly confirm an attributed AMSAT status report.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
@@ -263,7 +279,7 @@ struct SettingsView: View {
                     ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
                 } label: { Label("Remote audio (voice)", systemImage: "mic.and.signal.meter") }
                 .pickerStyle(.menu)
-                Text("These Home cards normally appear only when a USB or network audio interface is connected. Set one to \u{201C}Always show\u{201D} to use it without an interface (it still prefers USB or network audio, falling back to the built-in microphone — hold the phone near your receiver), or \u{201C}Hidden\u{201D} to keep it off the Home screen even with an interface plugged in.")
+                Text("These Home cards normally appear only when a USB or network audio interface is connected. Set one to \u{201C}Always\u{201D} to use it without an interface (it still prefers USB or network audio, falling back to the built-in microphone — hold the phone near your receiver), or \u{201C}Hidden\u{201D} to keep it off the Home screen even with an interface plugged in.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
                 Toggle("Use data mode for FT4", isOn: $ft4DataMode)
                 Text("When FT4 starts on a data-mode-capable radio, OrbitDeck sets the DATA sub-mode so audio uses the rig's ACC/USB data port, and restores plain SSB when FT4 stops: CI-V USB-D/LSB-D (IC-9700/9100/705/905/7100/7000), Hamlib PKTUSB/PKTLSB via rigctld (any supported radio), and DIG on the Yaesu FT-817/818/857/897. Turn this off if you feed audio through the mic/headphone jack instead.")
@@ -1093,7 +1109,8 @@ struct AutoSwitchView: View {
                         }
                     }
                 } header: {
-                    Text("Planned switching · next \(Int(Self.planHours)) h")
+                    // Uppercased by hand with the case transform off, so the hour unit stays "h".
+                    Text("PLANNED SWITCHING · NEXT \(Int(Self.planHours)) h").textCase(nil)
                 } footer: {
                     Text("Simulated with the current rules. The strip under the curves shows which satellite would be selected while it is up; orange entries are conflicts resolved by priority.")
                 }

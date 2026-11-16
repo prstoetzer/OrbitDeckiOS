@@ -484,6 +484,8 @@ struct MutualView: View {
     @State private var seededMinEl = false
     @State private var dxDopplerWindow: MutualWindowRecord?
     @State private var skyPlotWindowID: Date?
+    /// The last search finished with no mutual windows (drives the empty state).
+    @State private var searchedEmpty = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -512,10 +514,10 @@ struct MutualView: View {
                     Button("Compute mutual windows") { compute() }
                         .disabled(isLoading || (!allFavorites && store.selectedSatellite == nil))
                         .onChange(of: store.preferences.selectedNorad) { _, _ in
-                            windows = []; favoriteWindows = []; error = nil; shareURL = nil; reportStatus = ""
+                            windows = []; favoriteWindows = []; error = nil; shareURL = nil; reportStatus = ""; searchedEmpty = false
                         }
                         .onChange(of: allFavorites) { _, _ in
-                            windows = []; favoriteWindows = []; error = nil; shareURL = nil; reportStatus = ""
+                            windows = []; favoriteWindows = []; error = nil; shareURL = nil; reportStatus = ""; searchedEmpty = false
                         }
                 }
 
@@ -523,6 +525,16 @@ struct MutualView: View {
                     Section { HStack { Spacer(); ProgressView("Computing…"); Spacer() } }
                 } else if let error {
                     Section { Text(error).foregroundStyle(.red) }
+                } else if searchedEmpty {
+                    Section {
+                        ContentUnavailableView(
+                            "No mutual windows",
+                            systemImage: "binoculars",
+                            description: Text(allFavorites
+                                ? "None of your favorites is above \(Int(minimumElevation))° at both stations in the next \(Int(days)) days."
+                                : "The satellite is never above \(Int(minimumElevation))° at both stations in the next \(Int(days)) days. Try a longer horizon or a lower minimum elevation.")
+                        )
+                    }
                 } else if allFavorites, !favoriteWindows.isEmpty {
                     Section("\(favoriteWindows.count) windows across favorites") {
                         ForEach(favoriteWindows) { entry in
@@ -681,6 +693,7 @@ struct MutualView: View {
         error = nil
         windows = []
         favoriteWindows = []
+        searchedEmpty = false
 
         if allFavorites {
             let favorites = store.satellites.filter { store.preferences.favorites.contains($0.id) }
@@ -697,7 +710,7 @@ struct MutualView: View {
                     return out.sorted { $0.window.start < $1.window.start }
                 }.value
                 favoriteWindows = merged
-                if merged.isEmpty { error = "No mutual windows for any favorite in this horizon." }
+                searchedEmpty = merged.isEmpty
                 isLoading = false
             }
             return
@@ -715,6 +728,7 @@ struct MutualView: View {
                                                     from: start, days: horizon, minimumElevation: minEl)
                 }.value
                 windows = value
+                searchedEmpty = value.isEmpty
             } catch {
                 self.error = error.localizedDescription
             }
@@ -967,7 +981,7 @@ struct WeatherCard: View {
                 .font(.subheadline.monospacedDigit())
                 let minutes = max(0, Int(Date().timeIntervalSince(s.fetched) / 60))
                 Text(weather.isStale() ? "Offline — forecast from \(minutes < 120 ? "\(minutes) min" : "\(minutes / 60) h") ago"
-                                       : "Updated \(minutes) min ago")
+                                       : minutes < 1 ? "Updated just now" : "Updated \(minutes) min ago")
                     .font(.caption2).foregroundStyle(weather.isStale() ? ODTheme.warning : ODTheme.muted)
             } else if weather.isLoading {
                 ProgressView("Loading local weather…")
@@ -1655,7 +1669,7 @@ struct AO7View: View {
                     LabeledContent("Agreement", value: String(format: "%.1f%%", fit.agreementPercent))
                     LabeledContent("Reports", value: "\(fit.observationCount) total · \(fit.positiveCount) heard · \(fit.negativeCount) not heard")
                     LabeledContent("Mode changes seen", value: String(fit.observedSwitchCount))
-                    LabeledContent("Phase uncertainty", value: ODFormat.duration(fit.phaseUncertaintySeconds))
+                    LabeledContent("Phase uncertainty", value: "± " + ODFormat.duration(fit.phaseUncertaintySeconds))
                     Text(fit.note)
                         .font(.caption)
                         .foregroundStyle(fit.nearBoundary ? ODTheme.warning : ODTheme.muted)
@@ -3075,7 +3089,7 @@ struct NewLaunchesView: View {
                             if !details.isEmpty {
                                 Text(details.joined(separator: " · ")).font(.caption).foregroundStyle(ODTheme.muted)
                             }
-                            Text("\(hit.activeTransmitterCount) of \(hit.transmitterCount) transmitter(s) active • \(hit.mode.isEmpty ? "mode unknown" : hit.mode)")
+                            Text("\(hit.activeTransmitterCount) of \(hit.transmitterCount) transmitter\(hit.transmitterCount == 1 ? "" : "s") active • \(hit.mode.isEmpty ? "mode unknown" : hit.mode)")
                                 .font(.caption)
                             if hit.downlinkHz > 0 {
                                 Text("Downlink \(ODFormat.frequency(hit.downlinkHz))")
@@ -3271,8 +3285,9 @@ struct MUFView: View {
                 Spacer()
                 Text(String(format: "%.1f MHz", r.mufMHz)).font(.body.monospacedDigit()).foregroundStyle(ODTheme.accent)
             }
-            Text(ODFormat.units(String(format: "Workable %.1f MHz • %@ • %.0f km • %03.0f°",
-                        r.workableMHz, r.bestBand, r.distanceKm, r.bearingDegrees)))
+            // Only the distance is converted: the band name ("30 m") is not a length.
+            Text(String(format: "Workable %.1f MHz • %@ • %@ • %03.0f°",
+                        r.workableMHz, r.bestBand, ODFormat.units(String(format: "%.0f km", r.distanceKm)), r.bearingDegrees))
                 .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
         }
     }
@@ -3296,7 +3311,7 @@ struct MUFView: View {
 
 struct PropagationView: View {
     @EnvironmentObject private var store: OrbitStore
-    private var outlook: PropagationOutlookSnapshot { PropagationEngine.outlook(weather: store.spaceWeather) }
+    private var outlook: PropagationOutlookSnapshot { PropagationEngine.outlook(weather: store.spaceWeather, site: store.preferences.observer) }
 
     // The engine emits lowercase status words ("quiet", "low — 80/40 normal")
     // so they read naturally inside the summary sentence ("field quiet").
@@ -3470,7 +3485,7 @@ struct DataFeedsView: View {
                 let result = await PassAlarmService.rescheduleActivationReminders(requestPermission: false)
                 reminders = ActivationSkedStore.loadReminders()
                 if result.deferred > 0 {
-                    reminderMessage = "\(result.deferred) later reminder(s) will be scheduled when room frees up (iOS allows 64 pending notifications)."
+                    reminderMessage = "\(result.deferred) later reminder\(result.deferred == 1 ? "" : "s") will be scheduled when room frees up (iOS allows 64 pending notifications)."
                 }
             }
         }
@@ -3519,14 +3534,14 @@ struct DataFeedsView: View {
         Task {
             do {
                 activations = try await ActivationService.fetch()
-                activationMessage = activations.isEmpty ? "No upcoming activations were returned." : "\(activations.count) upcoming activation(s)."
+                activationMessage = activations.isEmpty ? "No upcoming activations were returned." : "\(activations.count) upcoming activation\(activations.count == 1 ? "" : "s")."
             } catch {
                 // Offline (or hams.at unreachable): fall back to the last fetched feed.
                 if let cached = ActivationService.cachedFeed() {
                     activations = cached.rows
                     let minutes = max(0, Int(Date().timeIntervalSince(cached.fetched) / 60))
                     let age = minutes < 60 ? "\(minutes) min" : minutes < 2880 ? "\(minutes / 60) h" : "\(minutes / 1440) days"
-                    activationMessage = "Offline — showing the hams.at feed saved \(age) ago (\(cached.rows.count) activation(s)). \(error.localizedDescription)"
+                    activationMessage = "Offline — showing the hams.at feed saved \(age) ago (\(cached.rows.count) activation\(cached.rows.count == 1 ? "" : "s")). \(error.localizedDescription)"
                 } else {
                     activationMessage = error.localizedDescription
                 }
@@ -3606,9 +3621,9 @@ struct DataFeedsView: View {
             if !reminders.isEmpty && result.scheduled == 0 && result.deferred == 0 {
                 reminderMessage = "No reminders are pending — allow notifications for OrbitDeck in iOS Settings, or the start is too close."
             } else if result.deferred > 0 {
-                reminderMessage = "\(result.scheduled) reminder notification(s) pending; \(result.deferred) later one(s) will be added when room frees up (iOS allows 64)."
+                reminderMessage = "\(result.scheduled) reminder notification\(result.scheduled == 1 ? "" : "s") pending; \(result.deferred) later one\(result.deferred == 1 ? "" : "s") will be added when room frees up (iOS allows 64)."
             } else {
-                reminderMessage = reminders.isEmpty ? "" : "\(result.scheduled) reminder notification(s) pending."
+                reminderMessage = reminders.isEmpty ? "" : "\(result.scheduled) reminder notification\(result.scheduled == 1 ? "" : "s") pending."
             }
         }
     }
@@ -3678,7 +3693,7 @@ struct DataFeedsView: View {
                 activationDetail = detail
                 activationMessage = detail.windows.isEmpty
                     ? "No mutual window was found within ±60 minutes of the advertised start."
-                    : "Prepared \(detail.windows.count) mutual-window operating detail(s)."
+                    : "Prepared \(detail.windows.count) mutual-window operating detail\(detail.windows.count == 1 ? "" : "s")."
             } catch {
                 activationMessage = error.localizedDescription
             }
@@ -3754,11 +3769,16 @@ struct UserActivationEditor: View {
         NavigationStack {
             Form {
                 Section("Activation") {
-                    TextField("Callsign", text: $sked.callsign)
-                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
-                        .textFieldStyle(.odField)
                     HStack {
+                        Text("Callsign")
+                        TextField("Callsign", text: $sked.callsign)
+                            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
+                    HStack {
+                        Text("Satellite")
                         TextField("Satellite", text: $sked.satellite)
+                            .multilineTextAlignment(.trailing)
                             .autocorrectionDisabled()
                             .textFieldStyle(.odField)
                         if !favoriteNames.isEmpty {
@@ -3768,18 +3788,27 @@ struct UserActivationEditor: View {
                             .accessibilityLabel("Choose a favorite satellite")
                         }
                     }
-                    TextField("Grid(s), e.g. EM73 or DM79/DM89", text: $sked.grid)
-                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
-                        .textFieldStyle(.odField)
+                    HStack {
+                        Text("Grid")
+                        TextField("EM73, or DM79/DM89 for a line", text: $sked.grid)
+                            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
                     DatePicker("Start (UTC)", selection: $sked.start)
                         .environment(\.timeZone, TimeZone(secondsFromGMT: 0)!)
                 }
                 Section("Optional") {
-                    TextField("Mode (SSB, CW, FM, FT4…)", text: $sked.mode)
-                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
-                        .textFieldStyle(.odField)
-                    TextField("Frequency", text: $sked.frequency)
-                        .textFieldStyle(.odField)
+                    HStack {
+                        Text("Mode")
+                        TextField("SSB, CW, FM, FT4…", text: $sked.mode)
+                            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
+                    HStack {
+                        Text("Frequency")
+                        TextField("Frequency", text: $sked.frequency)
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
                     TextField("Notes", text: $sked.notes, axis: .vertical)
                         .lineLimit(2...5)
                         .textFieldStyle(.odField)
@@ -3877,12 +3906,18 @@ struct PostActivationView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    TextField("Callsign", text: $callsign)
-                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
-                        .textFieldStyle(.odField)
-                    TextField("Grids (comma-separated, 1–4)", text: $gridsText)
-                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
-                        .textFieldStyle(.odField)
+                    HStack {
+                        Text("Callsign")
+                        TextField("Callsign", text: $callsign)
+                            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
+                    HStack {
+                        Text("Grids")
+                        TextField("Comma-separated, 1–4", text: $gridsText)
+                            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
                     if store.operatorVuccGrids.count > 1 {
                         let vucc = store.operatorVuccGrids
                         Button("Use my grid \(vucc.count >= 4 ? "corner" : "line"): \(vucc.joined(separator: ", "))") {
@@ -3898,20 +3933,27 @@ struct PostActivationView: View {
                 }
 
                 Section("Observer position") {
-                    TextField("Grid square", text: $observerGrid)
-                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
-                        .textFieldStyle(.odField)
-                        .onChange(of: observerGrid) { _, newValue in
-                            if let ll = FeatureEngine.gridToLatLon(newValue.trimmingCharacters(in: .whitespaces)) {
-                                observerLat = ll.latitude
-                                observerLon = ll.longitude
-                            }
-                        }
                     HStack {
+                        Text("Grid square")
+                        TextField("Grid square", text: $observerGrid)
+                            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                            .onChange(of: observerGrid) { _, newValue in
+                                if let ll = FeatureEngine.gridToLatLon(newValue.trimmingCharacters(in: .whitespaces)) {
+                                    observerLat = ll.latitude
+                                    observerLon = ll.longitude
+                                }
+                            }
+                    }
+                    HStack {
+                        Text("Latitude")
                         TextField("Latitude", value: $observerLat, format: .number.precision(.fractionLength(0...6)))
-                            .keyboardType(.numbersAndPunctuation).textFieldStyle(.odField)
+                            .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
+                    HStack {
+                        Text("Longitude")
                         TextField("Longitude", value: $observerLon, format: .number.precision(.fractionLength(0...6)))
-                            .keyboardType(.numbersAndPunctuation).textFieldStyle(.odField)
+                            .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing).textFieldStyle(.odField)
                     }
                     Text("Enter a Maidenhead grid to fill the coordinates, or type latitude/longitude directly. Prefilled from your station.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
@@ -3926,8 +3968,11 @@ struct PostActivationView: View {
                     }
                     Toggle("Set frequency", isOn: $setFrequency)
                     if setFrequency {
-                        TextField("Frequency (MHz)", text: $mhzText)
-                            .keyboardType(.decimalPad).textFieldStyle(.odField)
+                        HStack {
+                            Text("Frequency (MHz)")
+                            TextField("MHz", text: $mhzText)
+                                .keyboardType(.decimalPad).multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                        }
                         Picker("Direction", selection: $mhzDirection) {
                             Text("Downlink").tag("down")
                             Text("Uplink").tag("up")
@@ -4421,20 +4466,29 @@ struct SitesView: View {
                     Text("Following device location — the primary site is “\(OrbitStore.currentLocationName)” and can't be renamed. Switch to a fixed site in Settings to edit it.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 } else {
-                    TextField("Primary site name", text: Binding(
-                        get: { store.preferences.observer.name },
-                        set: { store.preferences.observer.name = $0 }
-                    ))
-                    .textFieldStyle(.odField)
+                    HStack {
+                        Text("Name")
+                        TextField("Primary site name", text: Binding(
+                            get: { store.preferences.observer.name },
+                            set: { store.preferences.observer.name = $0 }
+                        ))
+                        .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
                     Text("The primary site drives Track, passes, MUF, mutual visibility and every other observer-relative screen.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 }
             }
             Section("Add secondary site") {
-                TextField("Nickname", text: $newName).textFieldStyle(.odField)
-                TextField("Maidenhead grid or latitude,longitude", text: $newLocation)
-                    .textInputAutocapitalization(.characters)
-                    .textFieldStyle(.odField)
+                HStack {
+                    Text("Nickname")
+                    TextField("Nickname", text: $newName).multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                }
+                HStack {
+                    Text("Location")
+                    TextField("Grid or lat,lon", text: $newLocation)
+                        .textInputAutocapitalization(.characters)
+                        .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                }
                 HStack {
                     Text("Altitude (\(ODFormat.heightUnit))"); Spacer()
                     // newAltitude is meters; entered in the chosen unit.
@@ -4641,7 +4695,11 @@ struct AmsatStatusInteractiveView: View {
                 if apiMatches.count > 1 {
                     Picker("AMSAT mode name", selection: $apiName) { ForEach(apiMatches, id: \.self) { Text($0).tag($0) } }
                 } else {
-                    TextField("AMSAT API name", text: $apiName).textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.odField)
+                    HStack {
+                        Text("AMSAT mode name")
+                        TextField("AMSAT API name", text: $apiName).textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing).textFieldStyle(.odField)
+                    }
                 }
                 Button("Resolve AMSAT catalog name") { Task { await resolveSelectedSatellite() } }
                 Picker("Status", selection: $reportStatus) { ForEach(AmsatStatusService.reportStatuses, id: \.self) { Text($0).tag($0) } }
@@ -5791,7 +5849,7 @@ private struct NearbyAPRSPanel: View {
             } header: {
                 Text("APRS-IS")
             } footer: {
-                Text("Receive-only (passcode -1) connection to \(APRSISFeed.host):\(APRSISFeed.port) with a range filter around your station. Fixed stations beacon every 10–30 minutes, so the list fills over time.")
+                Text("Receive-only (passcode -1) connection to \(APRSISFeed.host):\(String(APRSISFeed.port)) with a range filter around your station. Fixed stations beacon every 10–30 minutes, so the list fills over time.")
             }
             Section("Stations (\(feed.stations.count)) · \(feed.packetCount) packets") {
                 Picker("Sort", selection: $sortByDistance) { Text("Nearest").tag(true); Text("Latest").tag(false) }
@@ -5870,10 +5928,17 @@ private struct NearbyClusterPanel: View {
     var body: some View {
         Form {
             Section {
-                TextField("Host", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .keyboardType(.URL).textFieldStyle(.odField).disabled(feed.isActive)
-                TextField("Port", value: $port, format: .number.grouping(.never)).keyboardType(.numberPad)
-                    .textFieldStyle(.odField).disabled(feed.isActive)
+                HStack {
+                    Text("Host")
+                    TextField("Cluster host name", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .keyboardType(.URL).multilineTextAlignment(.trailing).textFieldStyle(.odField).disabled(feed.isActive)
+                }
+                HStack {
+                    Text("Port")
+                    Spacer()
+                    TextField("Port", value: $port, format: .number.grouping(.never)).keyboardType(.numberPad)
+                        .multilineTextAlignment(.trailing).frame(width: 90).textFieldStyle(.odField).disabled(feed.isActive)
+                }
                 HStack {
                     if feed.isActive {
                         Button("Disconnect") { feed.stop() }
@@ -6012,11 +6077,18 @@ private struct NearbyTelnetPanel: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            HStack {
-                TextField("Host", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .keyboardType(.URL).textFieldStyle(.odField).disabled(session.isActive)
-                TextField("Port", value: $port, format: .number.grouping(.never)).keyboardType(.numberPad)
-                    .textFieldStyle(.odField).frame(width: 80).disabled(session.isActive)
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Host").font(.caption).foregroundStyle(ODTheme.muted)
+                    TextField("Host", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .keyboardType(.URL).textFieldStyle(.odField).disabled(session.isActive)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Port").font(.caption).foregroundStyle(ODTheme.muted)
+                    TextField("Port", value: $port, format: .number.grouping(.never)).keyboardType(.numberPad)
+                        .textFieldStyle(.odField).disabled(session.isActive)
+                }
+                .frame(width: 80)
                 if session.isActive {
                     Button("Close") { session.stop() }
                 } else {

@@ -42,9 +42,11 @@ struct TrackView: View {
                                     MetricRow("Footprint radius", ODFormat.units(String(format: "%.0f km", look.footprintRadiusKm)))
                                     MetricRow("Illumination", look.sunlit ? "Sunlit" : "Eclipsed", valueColor: look.sunlit ? ODTheme.warning : ODTheme.muted)
                                 }
+                                .padding(.horizontal)
 
                                 if let transponder = satellite.transponders.first {
                                     dopplerCard(satellite: satellite, transponder: transponder, rangeRateKmS: look.rangeRateKmS)
+                                        .padding(.horizontal)
                                 }
                             }
                             .padding(.bottom, 24)

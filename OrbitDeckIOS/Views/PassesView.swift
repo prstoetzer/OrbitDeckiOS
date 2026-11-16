@@ -190,6 +190,7 @@ struct ScheduleView: View {
                             .lineLimit(1)
                         Text("\(ODFormat.compass(entry.pass.aosAzimuth)) → \(ODFormat.compass(entry.pass.losAzimuth)) · \(ODFormat.duration(entry.pass.duration))")
                             .font(.caption).foregroundStyle(ODTheme.muted)
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
                     Spacer(minLength: 8)
                     VStack(alignment: .trailing, spacing: 2) {
@@ -295,6 +296,7 @@ struct PassesView: View {
     @State private var minEl = 5
 
     private let minElevationPresets = [0, 5, 10, 20, 30]
+    private static let maxPasses = 20
 
     var body: some View {
         VStack(spacing: 0) {
@@ -365,7 +367,7 @@ struct PassesView: View {
             Spacer()
         } else {
             List {
-                Section("\(passes.count) passes · next 10 days") {
+                Section(listHeader) {
                     ForEach(Array(passes.enumerated()), id: \.element.id) { index, pass in
                         passRow(pass, isBest: index == bestPassIndex)
                     }
@@ -395,31 +397,45 @@ struct PassesView: View {
                 .background(qualityColor(score).opacity(0.16))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                VStack(alignment: .leading, spacing: 4) {
+                // Three short lines rather than two crowded ones: AOS (minute precision,
+                // the detail sheet has seconds) with the countdown, the other-zone
+                // clock with the score, then duration and direction. Every token is
+                // single-line so nothing truncates or breaks mid-word at phone width.
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Text(ODFormat.utcShort.string(from: pass.aos))
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1).minimumScaleFactor(0.7)
-                        Text(ODFormat.secondaryClock(pass.aos))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(ODTheme.muted)
-                            .lineLimit(1).minimumScaleFactor(0.7)
+                        Text(listClock(pass.aos))
+                            .font(.subheadline.weight(.semibold).monospacedDigit())
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                            .layoutPriority(1)
                         if isBest {
                             Image(systemName: "star.fill")
                                 .font(.caption2)
                                 .foregroundStyle(ODTheme.warning)
                         }
-                        Spacer()
+                        Spacer(minLength: 4)
                         Text(relativeAOS(pass.aos))
-                            .font(.caption)
+                            .font(.caption.monospacedDigit())
                             .foregroundStyle(ODTheme.muted)
+                            .lineLimit(1)
+                            .fixedSize()
                     }
+                    HStack(spacing: 6) {
+                        Text(ODFormat.secondaryClock(pass.aos))
+                            .font(.caption2.monospacedDigit())
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Spacer(minLength: 4)
+                        Text(verbatim: "Q\(score)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(qualityColor(score))
+                            .fixedSize()
+                    }
+                    .foregroundStyle(ODTheme.muted)
                     HStack(spacing: 14) {
                         Label(ODFormat.duration(pass.duration), systemImage: "clock")
+                            .lineLimit(1).fixedSize()
                         Label("\(ODFormat.compass(pass.aosAzimuth))→\(ODFormat.compass(pass.losAzimuth))", systemImage: "arrow.left.and.right")
-                        Spacer()
-                        Text(verbatim: "Q\(score)")
-                            .foregroundStyle(qualityColor(score))
+                            .lineLimit(1).fixedSize()
+                        Spacer(minLength: 0)
                     }
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(ODTheme.muted)
@@ -467,9 +483,37 @@ struct PassesView: View {
         score >= 70 ? ODTheme.good : (score >= 40 ? ODTheme.accent : ODTheme.muted)
     }
 
+    /// Coarser the further out: "in 2d 13h" past a day, "in 5h 12m" past an hour,
+    /// and the full "in 12m 34s" only for the imminent passes.
     private func relativeAOS(_ date: Date) -> String {
         let seconds = date.timeIntervalSinceNow
-        return seconds <= 0 ? "in progress" : "in \(ODFormat.duration(seconds))"
+        guard seconds > 0 else { return "in progress" }
+        let minutes = Int(seconds) / 60
+        if minutes >= 24 * 60 { return "in \(minutes / 1440)d \(minutes % 1440 / 60)h" }
+        if minutes >= 60 { return "in \(minutes / 60)h \(minutes % 60)m" }
+        return "in \(ODFormat.duration(seconds))"
+    }
+
+    /// "Nov 16 22:38 UTC" (or the local equivalent): the day in the display zone
+    /// plus the zone-labeled clock, compact enough for one line in the list.
+    private func listClock(_ date: Date) -> String {
+        "\(listDay(date)) \(ODFormat.primaryClock(date))"
+    }
+
+    private func listDay(_ date: Date) -> String {
+        var style = Date.FormatStyle().month(.abbreviated).day()
+        style.timeZone = ODFormat.displayTimeZone
+        return date.formatted(style)
+    }
+
+    /// The list is capped at `maxPasses`, which for a low-orbit bird runs out well
+    /// before the 10-day search horizon, so say what span is actually covered.
+    private var listHeader: String {
+        guard let last = passes.last else { return "" }
+        if passes.count >= Self.maxPasses {
+            return "Next \(passes.count) passes · through \(listDay(last.aos))"
+        }
+        return "\(passes.count) pass\(passes.count == 1 ? "" : "es") · next 10 days"
     }
 
     private var taskKey: String {
@@ -501,13 +545,14 @@ struct PassesView: View {
 
         let observer = store.preferences.observer
         let minimum = Double(minEl)   // local mask for this screen only
+        let cap = Self.maxPasses
         do {
             passes = try await Task.detached(priority: .userInitiated) {
                 try OrbitPredictor.predictPasses(
                     satellite,
                     observer: observer,
                     minElevation: minimum,
-                    maxCount: 20
+                    maxCount: cap
                 )
             }.value
         } catch {
@@ -535,14 +580,15 @@ private struct PassDetailSheet: View {
 
                     SectionCard("Pass") {
                         MetricRow("Satellite", satellite.name)
-                        MetricRow("AOS", ODFormat.utc.string(from: pass.aos), valueColor: ODTheme.good)
-                        MetricRow("TCA", ODFormat.utc.string(from: pass.tca))
-                        MetricRow("LOS", ODFormat.utc.string(from: pass.los), valueColor: ODTheme.warning)
+                        PassTimeRow("AOS", pass.aos, valueColor: ODTheme.good)
+                        PassTimeRow("TCA", pass.tca)
+                        PassTimeRow("LOS", pass.los, valueColor: ODTheme.warning)
                         MetricRow("Duration", ODFormat.duration(pass.duration))
                         MetricRow("Maximum elevation", ODFormat.angle(pass.maxElevation))
                         MetricRow("AOS azimuth", "\(ODFormat.compass(pass.aosAzimuth)) \(ODFormat.angle(pass.aosAzimuth, decimals: 0))")
                         MetricRow("LOS azimuth", "\(ODFormat.compass(pass.losAzimuth)) \(ODFormat.angle(pass.losAzimuth, decimals: 0))")
                     }
+                    .padding(.horizontal)
                 }
                 .padding(.bottom, 24)
             }

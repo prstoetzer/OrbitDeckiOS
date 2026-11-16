@@ -4,7 +4,7 @@ import Charts
 struct RadioView: View {
     private enum RadioTab: String, CaseIterable, Identifiable {
         case link = "Link budget"
-        case playbook = "Doppler playbook"
+        case playbook = "Playbook"   // "Doppler playbook" truncated in the segment
         case passband = "Passband plan"
         var id: String { rawValue }
     }
@@ -276,11 +276,28 @@ struct RadioView: View {
                     passbandPercent: passbandPercent,
                     calDlHz: Int64(calDlHz.rounded()), calUlHz: Int64(calUlHz.rounded()))) ?? []
 
-                HStack {
+                // The app's export pattern: bordered prepare buttons, then a
+                // prominent share button once a file is ready (on its own line
+                // when the three don't fit across the card).
+                let prepare = Group {
                     Button("Prepare CSV") { preparePlaybook(rows, satellite, transponder, pass, pdf: false) }
                     Button("Prepare PDF") { preparePlaybook(rows, satellite, transponder, pass, pdf: true) }
-                    if let shareURL { ShareLink(item: shareURL) { Label("Share \(shareLabel)", systemImage: "square.and.arrow.up") } }
                 }
+                .buttonStyle(.bordered)
+                let share = Group {
+                    if let shareURL {
+                        ShareLink(item: shareURL) { Label("Share \(shareLabel)", systemImage: "square.and.arrow.up") }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack { prepare; share }
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack { prepare }
+                        share
+                    }
+                }
+                .lineLimit(1)
 
                 ScrollView(.horizontal) {
                     VStack(alignment: .leading, spacing: 5) {

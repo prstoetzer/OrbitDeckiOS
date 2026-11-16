@@ -703,7 +703,7 @@ struct GraphCalcView: View {
         }
         guard !points.isEmpty else { importStatus = "No x,y number pairs found."; return }
         importedPoints = Array(points.prefix(5000))
-        importStatus = "Imported \(importedPoints.count) point(s)\(skipped > 0 ? ", skipped \(skipped) line(s)" : "")."
+        importStatus = "Imported \(importedPoints.count) point\(importedPoints.count == 1 ? "" : "s")\(skipped > 0 ? ", skipped \(skipped) line\(skipped == 1 ? "" : "s")" : "")."
         if let minX = importedPoints.map(\.x).min(), let maxX = importedPoints.map(\.x).max(), maxX > minX {
             let pad = (maxX - minX) * 0.05
             xmin = String(format: "%.6g", minX - pad); xmax = String(format: "%.6g", maxX + pad)
@@ -766,7 +766,7 @@ struct TinyBasicView:View{
     var body:some View{GeometryReader{geo in if geo.size.width>780{HStack(spacing:12){editor;display}.padding()}else{ScrollView{VStack{editor;display}.padding()}}}}
     private var editor:some View{VStack(alignment:.leading){HStack{Button("Run"){run()}.buttonStyle(.borderedProminent);Button("Clear"){output="";ops=[];status=""};Button("Sample"){source=tinyBasicSample};ShareLink(item:source,preview:SharePreview("OrbitDeck BASIC program")){Label("Share source",systemImage:"square.and.arrow.up")}};TextEditor(text:$source).font(.system(.body,design:.monospaced)).frame(minHeight:300).overlay(RoundedRectangle(cornerRadius:8).stroke(ODTheme.grid));Text("Output").font(.headline);ScrollView{Text(output.isEmpty ? "(no output)":output).font(.system(.body,design:.monospaced)).frame(maxWidth:.infinity,alignment:.leading).textSelection(.enabled)}.frame(minHeight:100).odPanel();Text(status).font(.caption).foregroundStyle(ODTheme.muted)}.frame(maxWidth:.infinity)}
     private var display:some View{VStack(alignment:.leading){Text("Display · 240 × 135").font(.headline);Canvas{ctx,size in let scale=min(size.width/240,size.height/135);let ox=(size.width-240*scale)/2,oy=(size.height-135*scale)/2;ctx.fill(rectPath(CGRect(x:ox,y:oy,width:240*scale,height:135*scale)),with:.color(.black));for op in ops{func p(_ x:Double,_ y:Double)->CGPoint{CGPoint(x:ox+x*scale,y:oy+y*scale)};let col=Color(hex:TinyBasicEngine.palette[max(0,min(TinyBasicEngine.palette.count-1,op.color))]);switch op.kind{case .cls:ctx.fill(rectPath(CGRect(x:ox,y:oy,width:240*scale,height:135*scale)),with:.color(.black));case .pset:if op.values.count>=2{let q=p(op.values[0],op.values[1]);ctx.fill(rectPath(CGRect(x:q.x,y:q.y,width:max(1,scale),height:max(1,scale))),with:.color(col))};case .line:if op.values.count>=4{var path=Path();path.move(to:p(op.values[0],op.values[1]));path.addLine(to:p(op.values[2],op.values[3]));ctx.stroke(path,with:.color(col),lineWidth:max(1,scale))};case .circle:if op.values.count>=3{let q=p(op.values[0],op.values[1]),rr=op.values[2]*scale;ctx.stroke(Path(ellipseIn:CGRect(x:q.x-rr,y:q.y-rr,width:2*rr,height:2*rr)),with:.color(col),lineWidth:max(1,scale))};case .text:if op.values.count>=2{ctx.draw(Text(op.text).font(.system(size:max(7,5*scale),design:.monospaced)).foregroundStyle(.white),at:p(op.values[0],op.values[1]),anchor:.topLeading)};case .show:break}}}.aspectRatio(240/135,contentMode:.fit).frame(minHeight:280).odPanel();Text("0.6 foundation supports numbered programs, variables A–Z, assignments, PRINT, FOR/NEXT, IF…THEN line jumps, GOTO/GOSUB/RETURN, and CLS/PSET/LINE/CIRCLE/TEXT/SHOW. Arrays, DATA/READ, live satellite host variables, INPUT and sandboxed file statements are planned.").font(.caption).foregroundStyle(ODTheme.muted)}.frame(maxWidth:.infinity)}
-    private func run(){do{let r=try TinyBasicEngine().run(source);output=r.output.joined(separator:"\n");ops=r.graphics;status="Ran \(r.steps) statement(s); \(r.graphics.count) graphics call(s)."}catch{output="?\(error.localizedDescription)";status=error.localizedDescription}}
+    private func run(){do{let r=try TinyBasicEngine().run(source);output=r.output.joined(separator:"\n");ops=r.graphics;status="Ran \(r.steps) statement\(r.steps == 1 ? "" : "s"); \(r.graphics.count) graphics call\(r.graphics.count == 1 ? "" : "s")."}catch{output="?\(error.localizedDescription)";status=error.localizedDescription}}
 }
 
 // MARK: - References
@@ -1654,7 +1654,7 @@ enum StationReadiness {
         } else {
             items.append(.init(id: "gp", title: "GP element data", detail: "No catalog loaded yet. Update elements now (needs a connection).", state: .missing, fix: .refreshGP))
         }
-        items.append(.init(id: "fav", title: "Favorites", detail: prefs.favorites.isEmpty ? "No favorite satellites — star a few in Satellites; Home and the schedules follow them." : "\(prefs.favorites.count) favorite satellite(s)",
+        items.append(.init(id: "fav", title: "Favorites", detail: prefs.favorites.isEmpty ? "No favorite satellites — star a few in Satellites; Home and the schedules follow them." : "\(prefs.favorites.count) favorite satellite\(prefs.favorites.count == 1 ? "" : "s")",
                            state: prefs.favorites.isEmpty ? .warn : .ok, fix: prefs.favorites.isEmpty ? .satellites : nil))
 
         // Identity and services

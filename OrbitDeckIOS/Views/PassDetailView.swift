@@ -24,7 +24,7 @@ struct PassDetailView: View {
                             minimumElevation: store.preferences.minElevation
                         )
                         .frame(maxHeight: 500)
-                        .padding()
+                        .padding(.vertical)
 
                         if path.count > 1 {
                             SectionCard("Elevation profile") {
@@ -59,9 +59,9 @@ struct PassDetailView: View {
                         }
 
                         SectionCard("Next pass") {
-                            MetricRow("AOS", ODFormat.utc.string(from: pass.aos), valueColor: ODTheme.good)
-                            MetricRow("TCA", ODFormat.utc.string(from: pass.tca))
-                            MetricRow("LOS", ODFormat.utc.string(from: pass.los), valueColor: ODTheme.warning)
+                            PassTimeRow("AOS", pass.aos, valueColor: ODTheme.good)
+                            PassTimeRow("TCA", pass.tca)
+                            PassTimeRow("LOS", pass.los, valueColor: ODTheme.warning)
                             MetricRow("Duration", ODFormat.duration(pass.duration))
                             MetricRow("Maximum elevation", ODFormat.angle(pass.maxElevation))
                             MetricRow("AOS azimuth", "\(ODFormat.angle(pass.aosAzimuth)) \(ODFormat.compass(pass.aosAzimuth))")
@@ -83,6 +83,7 @@ struct PassDetailView: View {
                             }
                         }
                     }
+                    .padding(.horizontal)
                     .padding(.bottom, 24)
                 } else {
                     ContentUnavailableView(
@@ -167,6 +168,40 @@ struct PassDetailView: View {
             errorMessage = nil
         } catch {
             if initial { errorMessage = error.localizedDescription }
+        }
+    }
+}
+
+/// A pass-event time row for the pass-detail cards: the full stamp in the display
+/// zone, with the other zone's clock beneath it (UTC under local, or local under
+/// UTC), matching what the Next Passes list shows.
+struct PassTimeRow: View {
+    let label: String
+    let date: Date
+    var valueColor: Color = .primary
+
+    init(_ label: String, _ date: Date, valueColor: Color = .primary) {
+        self.label = label
+        self.date = date
+        self.valueColor = valueColor
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .foregroundStyle(ODTheme.muted)
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(ODFormat.utc.string(from: date))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(valueColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(ODFormat.secondaryClock(date))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(ODTheme.muted)
+                    .lineLimit(1)
+            }
         }
     }
 }

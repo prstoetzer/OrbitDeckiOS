@@ -206,7 +206,7 @@ struct SSTVGalleryScreen: View {
         Group {
             if qso.sstvImages.isEmpty {
                 ContentUnavailableView("No SSTV images yet", systemImage: "photo.on.rectangle.angled",
-                                       description: Text("Decode SSTV from the Home SSTV card (an audio interface must be connected). Saved images appear here."))
+                                       description: Text("Decode SSTV from the Home SSTV card. It appears when a USB or network audio interface is connected, or always if you set SSTV decode to \u{201C}Always\u{201D} in Settings \u{2192} Audio features to use the built-in microphone. Saved images appear here."))
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 8) {

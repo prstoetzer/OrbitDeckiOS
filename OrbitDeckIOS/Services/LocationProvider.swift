@@ -150,6 +150,22 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        errorMessage = error.localizedDescription
+        guard let clError = error as? CLError else {
+            errorMessage = "Location isn't available right now."
+            return
+        }
+        switch clError.code {
+        case .locationUnknown:
+            // Transient: Core Location keeps trying, so keep waiting for a fix.
+            return
+        case .denied:
+            errorMessage = "Location access is off. Allow it in Settings to use your position."
+        case .network:
+            errorMessage = "Location isn't available: no network connection."
+        case .headingFailure:
+            errorMessage = "Compass heading isn't available here (magnetic interference?)."
+        default:
+            errorMessage = "Location isn't available right now. Try again in a moment."
+        }
     }
 }

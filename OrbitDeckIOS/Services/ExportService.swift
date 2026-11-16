@@ -553,7 +553,7 @@ struct OrbitExportService {
             let usable = page.width - margin * 2
             context.beginPage()
             ("\(satellite.name) — mutual windows" as NSString).draw(in: CGRect(x: margin, y: 42, width: usable, height: 28), withAttributes: [.font: UIFont.boldSystemFont(ofSize: 20), .foregroundColor: UIColor.label])
-            ("\(home.name) (\(String(format: "%.3f", home.latitude)), \(String(format: "%.3f", home.longitude))) ↔ \(dx.name) (\(String(format: "%.3f", dx.latitude)), \(String(format: "%.3f", dx.longitude))) · minimum elevation \(String(format: "%.0f", minimumElevation))° · \(String(format: "%.0f", days)) day(s)" as NSString).draw(in: CGRect(x: margin, y: 74, width: usable, height: 34), withAttributes: [.font: UIFont.systemFont(ofSize: 9), .foregroundColor: UIColor.secondaryLabel])
+            ("\(home.name) (\(String(format: "%.3f", home.latitude)), \(String(format: "%.3f", home.longitude))) ↔ \(dx.name) (\(String(format: "%.3f", dx.latitude)), \(String(format: "%.3f", dx.longitude))) · minimum elevation \(String(format: "%.0f", minimumElevation))° · \(String(format: "%.0f", days)) day\(days == 1 ? "" : "s")" as NSString).draw(in: CGRect(x: margin, y: 74, width: usable, height: 34), withAttributes: [.font: UIFont.systemFont(ofSize: 9), .foregroundColor: UIColor.secondaryLabel])
             var y: CGFloat = 120
             let widths: [CGFloat] = [80, 72, 72, 65, 75, 75]
             let headers = ["Day", "Start", "End", "Dur", "Home max", "DX max"]
@@ -812,7 +812,7 @@ struct OrbitExportService {
                 ])
             }
 
-            section("Next passes — minimum elevation \(String(format: "%.0f", minElevation))° · next \(horizonDays) day(s)")
+            section("Next passes — minimum elevation \(String(format: "%.0f", minElevation))° · next \(horizonDays) day\(horizonDays == 1 ? "" : "s")")
             if passes.isEmpty {
                 ("No passes above the configured minimum elevation in this window." as NSString).draw(in: CGRect(x: margin, y: y, width: usable, height: 20), withAttributes: [.font: keyFont, .foregroundColor: muted])
                 y += 20
@@ -835,7 +835,7 @@ struct OrbitExportService {
                 }
             }
 
-            section("Equator crossings — \(ascending ? "ascending" : "descending") node · next \(horizonDays) day(s)")
+            section("Equator crossings — \(ascending ? "ascending" : "descending") node · next \(horizonDays) day\(horizonDays == 1 ? "" : "s")")
             if satellite.periodMinutes > 600 {
                 ("Geosynchronous / high-altitude orbit: no useful OSCARLOCATOR daily equator-crossing schedule." as NSString).draw(in:CGRect(x:margin,y:y,width:usable,height:30),withAttributes:[.font:keyFont,.foregroundColor:muted]); y += 30
             } else if crossings.isEmpty {
@@ -940,7 +940,7 @@ struct OrbitExportService {
         }
         return planningReportPDF(
             title: "Favorite satellites — chronological pass schedule",
-            subtitle: "Station \(observer.name) · next \(horizon) day(s) · minimum elevation \(String(format:"%.0f",minElevation))° · \(satellites.count) favorite(s) · \(events.count) pass(es)",
+            subtitle: "Station \(observer.name) · next \(horizon) day\(horizon == 1 ? "" : "s") · minimum elevation \(String(format:"%.0f",minElevation))° · \(satellites.count) favorite\(satellites.count == 1 ? "" : "s") · \(events.count) pass\(events.count == 1 ? "" : "es")",
             csvText: csv(rows)
         )
     }
@@ -961,7 +961,7 @@ struct OrbitExportService {
         }
         return planningReportPDF(
             title: "\(satellite.name) — passes by site",
-            subtitle: "Primary and saved stations · next \(horizon) day(s) · minimum elevation \(String(format:"%.0f",minElevation))°",
+            subtitle: "Primary and saved stations · next \(horizon) day\(horizon == 1 ? "" : "s") · minimum elevation \(String(format:"%.0f",minElevation))°",
             csvText: csv(rows)
         )
     }
@@ -1565,12 +1565,20 @@ struct OrbitExportService {
 
             let chart = CGRect(x: 565, y: 255, width: 570, height: 230)
             cg.setStrokeColor(UIColor(white: 0.25, alpha: 1).cgColor); cg.stroke(chart)
+            // The satellite's own downlink (a two-way transponder first), or a
+            // labeled 145.8 MHz reference when no downlink is known.
+            let downlink = satellite.transponders.first { $0.isActive && $0.isTwoWay && $0.downlinkCenter > 0 }
+                ?? satellite.transponders.first { $0.isActive && $0.downlinkCenter > 0 }
+            let dopplerHz = downlink.map { Double($0.downlinkCenter) } ?? 145.8e6
+            let dopplerLabel = downlink == nil
+                ? "Doppler at a 145.8 MHz reference"
+                : String(format: "%.3f MHz downlink Doppler", dopplerHz / 1e6)
             var samples: [(Double, Double)] = []
             let span = max(pass.duration, 1)
             for i in 0...80 {
                 let t = pass.aos.addingTimeInterval(span * Double(i) / 80)
                 if let look = try? OrbitPredictor.look(satellite, observer: observer, at: t) {
-                    samples.append((Double(i)/80, -145.8e6 * look.rangeRateKmS / 299_792.458))
+                    samples.append((Double(i)/80, -dopplerHz * look.rangeRateKmS / 299_792.458))
                 }
             }
             if let lo = samples.map({$0.1}).min(), let hi = samples.map({$0.1}).max(), hi > lo {
@@ -1581,7 +1589,7 @@ struct OrbitExportService {
                     i == 0 ? p.move(to: CGPoint(x:x,y:y)) : p.addLine(to: CGPoint(x:x,y:y))
                 }
                 green.setStroke(); p.lineWidth = 4; p.stroke()
-                draw(String(format:"145.8 MHz Doppler  %+.0f to %+.0f Hz", lo, hi), rect: CGRect(x: chart.minX, y: chart.maxY+12, width: chart.width, height: 25), font: .systemFont(ofSize: 15), color: muted)
+                draw(dopplerLabel + String(format:"  %+.0f to %+.0f Hz", lo, hi), rect: CGRect(x: chart.minX, y: chart.maxY+12, width: chart.width, height: 25), font: .systemFont(ofSize: 15), color: muted)
             }
             draw(String(format:"MAX EL\n%.0f°", pass.maxElevation), rect: CGRect(x: 585, y: 175, width: 150, height: 68), font: .boldSystemFont(ofSize: 23))
             draw(String(format:"DURATION\n%.1f min", pass.duration/60), rect: CGRect(x: 780, y: 175, width: 175, height: 68), font: .boldSystemFont(ofSize: 23))
@@ -2518,7 +2526,7 @@ enum StationReportService {
             return ReportSection(heading: "\(sat.name) · NORAD \(sat.id)", lines: TLEFormatter.lines(for: sat) + [summary], monospaced: true)
         }
         return textPDF(title: "Favorite satellites — element sets",
-                       subtitle: "\(sats.count) satellite(s) · generated \(ODFormat.utc.string(from: now)). Two-line elements rebuilt from the loaded GP data; n-dot terms are written as zero (SGP4 doesn't use them). Refresh elements before precision work.",
+                       subtitle: "\(sats.count) satellite\(sats.count == 1 ? "" : "s") · generated \(ODFormat.utc.string(from: now)). Two-line elements rebuilt from the loaded GP data; n-dot terms are written as zero (SGP4 doesn't use them). Refresh elements before precision work.",
                        sections: sections, footer: "OrbitDeck iOS · keps export")
     }
 

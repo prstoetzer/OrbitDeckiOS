@@ -72,11 +72,19 @@ struct IlluminationView: View {
                             MetricRow("Station elevation", ODFormat.angle(look.elevation))
                             MetricRow("Visible from station", look.visible ? "Yes" : "No",
                                       valueColor: look.visible ? ODTheme.good : ODTheme.muted)
-                            MetricRow("Optical condition",
-                                      look.visible && look.sunlit
-                                      ? "Satellite is above the horizon and illuminated"
-                                      : "Not simultaneously above-horizon and sunlit")
+                            // A sentence, not a short value: stacked under its label
+                            // so it wraps in full instead of truncating like a MetricRow.
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Optical condition").foregroundStyle(ODTheme.muted)
+                                Text(look.visible && look.sunlit
+                                     ? "Satellite is above the horizon and illuminated"
+                                     : "Not simultaneously above the horizon and sunlit")
+                                    .font(.callout)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .padding(.horizontal)
 
                         Text("The shadow state uses a cylindrical Earth-shadow test. The raster and eclipse table use this same propagator rather than a separate illumination model.")
                             .font(.caption).foregroundStyle(ODTheme.muted).padding(.horizontal)
@@ -151,18 +159,23 @@ struct IlluminationView: View {
     @ViewBuilder
     private func eclipseView(_ satellite: SatelliteRecord) -> some View {
         VStack(spacing: 8) {
-            HStack {
-                Picker("Span", selection: $eclipseDays) {
-                    Text("1 d").tag(1); Text("3 d").tag(3); Text("7 d").tag(7); Text("14 d").tag(14)
+            // Span picker and export buttons on separate rows (side by side when
+            // there's room, e.g. iPad) so the buttons never squeeze onto two lines.
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    eclipseSpanPicker.frame(maxWidth: 360)
+                    Spacer()
+                    eclipseExportButtons(satellite)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
-                Spacer()
-                Button("Prepare CSV") { prepareEclipseShare(satellite, pdf: false) }.buttonStyle(.bordered)
-                Button("Prepare PDF") { prepareEclipseShare(satellite, pdf: true) }.buttonStyle(.bordered)
-                if let shareURL {
-                    ShareLink(item: shareURL) { Label("Share \(shareLabel)", systemImage: "square.and.arrow.up") }
-                        .buttonStyle(.borderedProminent)
+                VStack(alignment: .leading, spacing: 8) {
+                    eclipseSpanPicker
+                    ViewThatFits(in: .horizontal) {
+                        eclipseExportButtons(satellite)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack { eclipsePrepareButtons(satellite) }.lineLimit(1)
+                            eclipseShareButton
+                        }
+                    }
                 }
             }
             .padding(.horizontal)
@@ -180,37 +193,47 @@ struct IlluminationView: View {
                         }
                         ForEach(periods.indices, id: \.self) { index in
                             let p = periods[index]
+                            // Entry on the first line, exit on the second: the two
+                            // full stamps side by side are wider than a phone.
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack {
                                     Text(ODFormat.utcShort.string(from: p.enter)).font(.body.monospacedDigit())
-                                    Text("→").foregroundStyle(ODTheme.muted)
-                                    Text(ODFormat.utcShort.string(from: p.exit)).font(.body.monospacedDigit())
-                                    Spacer()
+                                        .lineLimit(1).minimumScaleFactor(0.8)
+                                    Spacer(minLength: 8)
                                     Text(ODFormat.duration(p.durationSeconds)).font(.body.monospacedDigit())
+                                        .lineLimit(1).fixedSize()
                                 }
                                 HStack {
-                                    if index > 0 {
-                                        Text("Interval \(ODFormat.duration(p.enter.timeIntervalSince(periods[index - 1].exit)))")
-                                    }
-                                    Spacer()
+                                    Text("→ \(ODFormat.utcShort.string(from: p.exit))")
+                                        .lineLimit(1).minimumScaleFactor(0.8)
+                                    Spacer(minLength: 8)
                                     Text(String(format: "β %+.1f°", p.betaAngleDegrees))
+                                        .lineLimit(1).fixedSize()
                                 }
-                                .font(.caption).foregroundStyle(ODTheme.muted)
+                                .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                                if index > 0 {
+                                    Text("Interval \(ODFormat.duration(p.enter.timeIntervalSince(periods[index - 1].exit)))")
+                                        .font(.caption).foregroundStyle(ODTheme.muted)
+                                }
                             }
                         }
                     }
                     Section("Daily summary") {
+                        // The date and count on one line, the totals on the next,
+                        // so the date keeps its full width and never breaks.
                         ForEach(daily) { row in
-                            HStack {
-                                Text(ODFormat.utcDay.string(from: row.date)).font(.body.monospacedDigit())
-                                Spacer()
-                                Text("\(row.count) eclipse\(row.count == 1 ? "" : "s")")
-                                Text("· \(ODFormat.duration(row.totalSeconds))")
-                                Text(String(format: "· %.1f%% day", row.percentOfDay))
-                                Text(String(format: "· β %+.1f°", row.betaAngleDegrees))
-                                    .foregroundStyle(ODTheme.muted)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(ODFormat.utcDay.string(from: row.date)).font(.body.monospacedDigit())
+                                        .lineLimit(1).fixedSize()
+                                    Spacer(minLength: 8)
+                                    Text("\(row.count) eclipse\(row.count == 1 ? "" : "s")")
+                                        .font(.caption).lineLimit(1)
+                                }
+                                Text("\(ODFormat.duration(row.totalSeconds)) · \(String(format: "%.1f%% of day", row.percentOfDay)) · \(String(format: "β %+.1f°", row.betaAngleDegrees))")
+                                    .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                                    .lineLimit(1).minimumScaleFactor(0.8)
                             }
-                            .font(.caption)
                         }
                     }
                 }
@@ -223,6 +246,36 @@ struct IlluminationView: View {
         // `.task(id:)` does not reliably re-fire when `eclipseDays` (local Picker
         // state) changes, so reload eclipses explicitly on span change.
         .onChange(of: eclipseDays) { _, _ in Task { await loadEclipses(satellite) } }
+    }
+
+    private var eclipseSpanPicker: some View {
+        Picker("Span", selection: $eclipseDays) {
+            Text("1 d").tag(1); Text("3 d").tag(3); Text("7 d").tag(7); Text("14 d").tag(14)
+        }
+        .pickerStyle(.segmented)
+    }
+
+    @ViewBuilder
+    private func eclipsePrepareButtons(_ satellite: SatelliteRecord) -> some View {
+        Button("Prepare CSV") { prepareEclipseShare(satellite, pdf: false) }.buttonStyle(.bordered)
+        Button("Prepare PDF") { prepareEclipseShare(satellite, pdf: true) }.buttonStyle(.bordered)
+    }
+
+    @ViewBuilder
+    private var eclipseShareButton: some View {
+        if let shareURL {
+            ShareLink(item: shareURL) { Label("Share \(shareLabel)", systemImage: "square.and.arrow.up") }
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func eclipseExportButtons(_ satellite: SatelliteRecord) -> some View {
+        HStack {
+            eclipsePrepareButtons(satellite)
+            eclipseShareButton
+        }
+        .lineLimit(1)
+        .fixedSize()
     }
 
     @MainActor

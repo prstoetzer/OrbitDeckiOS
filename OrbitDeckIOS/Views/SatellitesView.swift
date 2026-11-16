@@ -87,12 +87,23 @@ struct SatellitesView: View {
             .padding()
 
             if let age = store.catalogAgeDays {
-                HStack {
-                    Text("\(store.satellites.count) objects")
-                    Text("•")
-                    Text(String(format: "freshest elements %.2f days old", age))
-                    Spacer()
-                    Text(store.statusMessage)
+                // One line when it fits; otherwise the catalog stats and the status
+                // message each get their own line, so the strip wraps between items
+                // rather than inside "0.53 days old" or the status text.
+                let stats = Text(verbatim: "\(store.satellites.count) objects · \(String(format: "freshest elements %.2f days old", age))")
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        stats.lineLimit(1)
+                        Spacer()
+                        Text(store.statusMessage).lineLimit(1)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        stats.lineLimit(1).minimumScaleFactor(0.8)
+                        if !store.statusMessage.isEmpty {
+                            Text(store.statusMessage)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .font(.caption)
                 .foregroundStyle(age > 14 ? ODTheme.warning : ODTheme.muted)
@@ -207,15 +218,9 @@ struct SatellitesView: View {
                         }
                         heardMark(satellite.id)
                     }
-                    HStack(spacing: 8) {
-                        Text(verbatim: "NORAD \(satellite.id)")
-                        if !satellite.internationalDesignator.isEmpty {
-                            Text(satellite.internationalDesignator)
-                        }
-                        Text(String(format: "%.1f min", satellite.periodMinutes))
-                    }
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(ODTheme.muted)
+                    catalogMetadata(satellite)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(ODTheme.muted)
                 }
 
                 Spacer()
@@ -223,10 +228,13 @@ struct SatellitesView: View {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(String(format: "%.1f°", satellite.inclinationDeg))
                         .font(.caption.monospacedDigit())
+                        .lineLimit(1)
                     Text(ODFormat.units(String(format: "%.0f–%.0f km", satellite.perigeeKm, satellite.apogeeKm)))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(ODTheme.muted)
+                        .lineLimit(1)
                 }
+                .fixedSize()
 
                 Button {
                     store.toggleFavorite(satellite.id)
@@ -254,11 +262,42 @@ struct SatellitesView: View {
                     Label("Delete Manual Satellite", systemImage: "trash")
                 }
             }
+            // A short label: the context menu is narrow, and "Manual Transponders"
+            // hyphenated there.
             Button {
                 store.select(satellite.id)
                 showingTransponderManager = true
             } label: {
-                Label("Manual Transponders", systemImage: "antenna.radiowaves.left.and.right")
+                Label("Transponders", systemImage: "antenna.radiowaves.left.and.right")
+            }
+        }
+    }
+
+    /// NORAD, designator and period as unbreakable tokens: one line when they fit,
+    /// otherwise the period drops to a second line instead of a token splitting
+    /// ("NORAD / 7530").
+    private func catalogMetadata(_ satellite: SatelliteRecord) -> some View {
+        let norad = Text(verbatim: "NORAD \(satellite.id)").lineLimit(1).fixedSize()
+        let designator = Text(verbatim: satellite.internationalDesignator).lineLimit(1).fixedSize()
+        let period = Text(String(format: "%.1f min", satellite.periodMinutes)).lineLimit(1).fixedSize()
+        let hasDesignator = !satellite.internationalDesignator.isEmpty
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                norad
+                if hasDesignator { designator }
+                period
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 8) {
+                    norad
+                    if hasDesignator { designator }
+                }
+                period
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                norad
+                if hasDesignator { designator }
+                period
             }
         }
     }

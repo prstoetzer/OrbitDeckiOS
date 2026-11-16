@@ -19,57 +19,90 @@ struct SkyRadarView: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let blips = computeBlips(at: context.date)
             let palette = store.satellitePalette
+            // The navigation bar already titles the screen; the shared header shows
+            // the active satellite instead, so tapping a row visibly switches it.
             VStack(spacing: 0) {
-                HStack {
-                    Text("Sky Radar").font(.headline)
-                    Spacer()
-                    Text("\(blips.count) above horizon")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(ODTheme.muted)
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 10)
-                .background(ODTheme.panel)
-
-                ScrollView {
-                    VStack(spacing: 14) {
-                        radar(blips, palette: palette)
-                            .aspectRatio(1, contentMode: .fit)
-                            .padding()
-
-                        if blips.isEmpty {
-                            Text("No catalog satellites are above the horizon right now.")
-                                .font(.caption).foregroundStyle(ODTheme.muted)
-                        } else {
-                            LazyVStack(spacing: 0) {
-                                ForEach(blips) { blip in
-                                    let selected = blip.id == store.selectedSatellite?.id
-                                    Button { store.select(blip.id) } label: {
-                                        HStack {
-                                            Circle()
-                                                .fill(palette.color(blip.id))
-                                                .frame(width: 8, height: 8)
-                                                .overlay { if selected { Circle().stroke(.white, lineWidth: 1.5).padding(-2) } }
-                                            Text(blip.name)
-                                                .fontWeight(selected ? .bold : .regular)
-                                            Spacer()
-                                            Text("el \(ODFormat.angle(blip.elevation)) · \(ODFormat.compass(blip.azimuth)) \(ODFormat.angle(blip.azimuth, decimals: 0))")
-                                                .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
-                                        }
-                                        .padding(.vertical, 6)
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    Divider()
-                                }
+                SelectedSatelliteHeader()
+                GeometryReader { geo in
+                    // Size the radar to the space actually available: full width in
+                    // portrait, and beside the list in landscape, where a width-sized
+                    // square would run far off the bottom of the screen.
+                    if geo.size.width > geo.size.height {
+                        let side = max(120, min(geo.size.height - 32, geo.size.width * 0.55))
+                        HStack(alignment: .top, spacing: 0) {
+                            radar(blips, palette: palette)
+                                .frame(width: side, height: side)
+                                .padding()
+                            ScrollView {
+                                blipList(blips, palette: palette)
+                                    .padding(.vertical)
                             }
-                            .padding(.horizontal)
+                        }
+                    } else {
+                        let side = max(120, min(geo.size.width - 32, geo.size.height - 32))
+                        ScrollView {
+                            VStack(spacing: 14) {
+                                radar(blips, palette: palette)
+                                    .frame(width: side, height: side)
+                                    .padding(.top)
+                                blipList(blips, palette: palette)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.bottom, 24)
                         }
                     }
-                    .padding(.bottom, 24)
                 }
             }
         }
+    }
+
+    /// The above-horizon satellites; tapping one makes it the active satellite,
+    /// which is marked here (scope icon, accent, bold) as well as in the header.
+    @ViewBuilder
+    private func blipList(_ blips: [RadarBlip], palette: SatellitePalette) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("\(blips.count) above horizon")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(ODTheme.muted)
+                .padding(.bottom, 6)
+            if blips.isEmpty {
+                Text("No catalog satellites are above the horizon right now.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(blips) { blip in
+                        let selected = blip.id == store.selectedSatellite?.id
+                        Button { store.select(blip.id) } label: {
+                            HStack {
+                                Circle()
+                                    .fill(palette.color(blip.id))
+                                    .frame(width: 8, height: 8)
+                                    .overlay { if selected { Circle().stroke(.white, lineWidth: 1.5).padding(-2) } }
+                                Text(blip.name)
+                                    .fontWeight(selected ? .bold : .regular)
+                                    .foregroundStyle(selected ? ODTheme.accent : .primary)
+                                    .lineLimit(1)
+                                if selected {
+                                    Image(systemName: "scope")
+                                        .font(.caption)
+                                        .foregroundStyle(ODTheme.accent)
+                                }
+                                Spacer()
+                                Text("el \(ODFormat.angle(blip.elevation)) · \(ODFormat.compass(blip.azimuth)) \(ODFormat.angle(blip.azimuth, decimals: 0))")
+                                    .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
+                                    .lineLimit(1).fixedSize()
+                            }
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal)
     }
 
     private func computeBlips(at date: Date) -> [RadarBlip] {
@@ -87,7 +120,8 @@ struct SkyRadarView: View {
         Canvas { context, size in
             let side = min(size.width, size.height)
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let outer = max(1, side / 2 - 22)
+            // Leave room for the compass letters inside the panel edge.
+            let outer = max(1, side / 2 - 30)
 
             for elevation in stride(from: 0.0, through: 90.0, by: 30.0) {
                 let r = outer * (90 - elevation) / 90
@@ -126,7 +160,7 @@ struct SkyRadarView: View {
 
             for (label, azimuth) in [("N", 0.0), ("E", 90.0), ("S", 180.0), ("W", 270.0)] {
                 let a = azimuth * .pi / 180
-                let p = CGPoint(x: center.x + (outer + 12) * sin(a), y: center.y - (outer + 12) * cos(a))
+                let p = CGPoint(x: center.x + (outer + 15) * sin(a), y: center.y - (outer + 15) * cos(a))
                 let resolved = context.resolve(Text(label).font(.caption.bold()).foregroundStyle(ODTheme.muted))
                 let size = resolved.measure(in: CGSize(width: 40, height: 40))
                 placedLabels.append(CGRect(x: p.x - size.width / 2, y: p.y - size.height / 2,

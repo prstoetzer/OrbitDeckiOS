@@ -22,13 +22,26 @@ struct SunMoonSnapshot: Sendable {
     let moonIllumination: Double
     let moonDistanceKm: Double
 
-    var moonPhaseName: String {
-        let names = [
-            "New", "Waxing crescent", "First quarter", "Waxing gibbous",
-            "Full", "Waning gibbous", "Last quarter", "Waning crescent"
-        ]
-        let index = Int(((moonPhaseAngle + 22.5).truncatingRemainder(dividingBy: 360)) / 45.0) % 8
-        return names[max(0, index)]
+    var moonPhaseName: String { Self.phaseName(elongation: moonPhaseAngle) }
+
+    /// Phase name from the Sun–Moon elongation (0° new, 90° first quarter, 180° full,
+    /// 270° last quarter). The four principal phases are instants, so they only name
+    /// a narrow band around them (about half a day, ~6° of elongation, roughly
+    /// 45–55% lit at the quarters); between them it's a crescent or gibbous.
+    static func phaseName(elongation phaseAngle: Double) -> String {
+        let a = (phaseAngle.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
+        let band = 6.0
+        func near(_ target: Double) -> Bool { abs(a - target) <= band }
+        if a <= band || a >= 360 - band { return "New" }
+        if near(90) { return "First quarter" }
+        if near(180) { return "Full" }
+        if near(270) { return "Last quarter" }
+        switch a {
+        case ..<90: return "Waxing crescent"
+        case ..<180: return "Waxing gibbous"
+        case ..<270: return "Waning gibbous"
+        default: return "Waning crescent"
+        }
     }
 }
 
@@ -1185,18 +1198,7 @@ enum FeatureEngine {
             guard let peak else { return nil }
             let radiant = raDecToAzEl(raDegrees: ra, decDegrees: dec, site: site, date: peak)
             let moon = sunMoon(site: site, at: peak)
-            let verdict: String
-            if radiant.elevation < 0 {
-                verdict = "Radiant below horizon at 02:00 UTC — little scatter here"
-            } else if radiant.elevation > 15 && zhr >= 50 {
-                verdict = "Strong — high rate with the radiant well up"
-            } else if radiant.elevation > 15 {
-                verdict = "Workable — radiant up, modest rate"
-            } else if zhr >= 50 {
-                verdict = "Marginal — high rate but the radiant is low"
-            } else {
-                verdict = "Weak — low rate and a low radiant"
-            }
+            let verdict = meteorScatterVerdict(zhr: zhr, radiantElevation: radiant.elevation)
             return MeteorShowerRecord(id: code, name: name, peak: peak,
                 daysUntilPeak: peak.timeIntervalSince(now) / 86400,
                 zhr: zhr, radiantAzimuth: radiant.azimuth,
@@ -1206,6 +1208,17 @@ enum FeatureEngine {
                 verdict: verdict + (moon.moonIllumination > 0.7 && moon.moonElevation > 0
                     ? "; bright Moon up (visual only, radio unaffected)" : ""))
         }.sorted { $0.peak < $1.peak }
+    }
+
+    /// Radio meteor-scatter verdict from a shower's ZHR and its radiant elevation at
+    /// 02:00 UTC on the peak date. Shared by Astronomy and the Propagation outlook so
+    /// the two screens never disagree.
+    static func meteorScatterVerdict(zhr: Int, radiantElevation: Double) -> String {
+        if radiantElevation < 0 { return "Radiant below horizon at 02:00 UTC — little scatter here" }
+        if radiantElevation > 15 && zhr >= 50 { return "Strong — high rate with the radiant well up" }
+        if radiantElevation > 15 { return "Workable — radiant up, modest rate" }
+        if zhr >= 50 { return "Marginal — high rate but the radiant is low" }
+        return "Weak — low rate and a low radiant"
     }
 
     static func jupiterRadioStatus(site: ObserverSite, at date: Date = .now) -> JupiterRadioStatus {
@@ -2908,7 +2921,9 @@ enum PropagationEngine {
         ("17 m", 18.1), ("15 m", 21.2), ("12 m", 24.9), ("10 m", 28.3), ("6 m", 50.1)
     ]
 
-    static func outlook(weather: SpaceWeatherSnapshot?, date: Date = .now) -> PropagationOutlookSnapshot {
+    /// `site` lets the meteor-scatter line use the same radiant/ZHR verdict as
+    /// Astronomy's shower table; without it the line only names the active shower.
+    static func outlook(weather: SpaceWeatherSnapshot?, date: Date = .now, site: ObserverSite? = nil) -> PropagationOutlookSnapshot {
         let flux = weather?.flux, kp = weather?.kp
         let dayMUF = simpleMUF(flux: flux, kp: kp, day: true)
         let nightMUF = simpleMUF(flux: flux, kp: kp, day: false)
@@ -2920,7 +2935,7 @@ enum PropagationEngine {
         let geomagnetic = geomagneticState(kp)
         let aurora = auroraVHF(kp)
         let absorption = absorptionState(kp)
-        let meteor = meteorScatter(date)
+        let meteor = meteorScatter(date, site: site)
         let es = sporadicE(date)
         var parts: [String] = []
         if let dayMUF, let nightMUF { parts.append(String(format: "MUF about %.0f MHz by day, %.0f at night", dayMUF, nightMUF)) }
@@ -2974,14 +2989,20 @@ enum PropagationEngine {
         return "severe — low bands absorbed"
     }
 
-    private static func meteorScatter(_ date: Date) -> String {
+    private static func meteorScatter(_ date: Date, site: ObserverSite?) -> String {
         var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(secondsFromGMT: 0)!
         let month = cal.component(.month, from: date), day = cal.component(.day, from: date)
         let md = month * 100 + day
         let showers = [(101,105,"Quadrantids"),(419,425,"Lyrids"),(503,510,"Eta Aquariids"),
                        (725,820,"Perseids"),(1018,1024,"Orionids"),(1115,1120,"Leonids"),(1210,1216,"Geminids")]
         if let shower = showers.first(where: { md >= $0.0 && md <= $0.1 }) {
-            return "\(shower.2) active — strong meteor scatter"
+            // Same verdict as Astronomy: the shower's ZHR and radiant at its peak.
+            let record = site.flatMap { site in
+                FeatureEngine.meteorShowers(site: site, now: date).first { $0.name == shower.2 }
+            }
+            guard let record else { return "\(shower.2) active" }
+            let verdict = FeatureEngine.meteorScatterVerdict(zhr: record.zhr, radiantElevation: record.radiantElevation)
+            return "\(shower.2) active (ZHR \(record.zhr)): " + verdict.prefix(1).lowercased() + verdict.dropFirst()
         }
         return "sporadic background (best near dawn)"
     }
