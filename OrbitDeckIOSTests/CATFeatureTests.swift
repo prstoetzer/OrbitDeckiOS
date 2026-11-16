@@ -57,10 +57,12 @@ struct CATFeatureTests {
         let t = try JSONDecoder().decode(CATTuning.self, from: old)
         #expect(t.tuneMode == .fullUplink)
         #expect(t.followSelection == false)
-        #expect(t.rigctldVFOMode == true)
+        // It ran the split method, so it keeps it; only brand-new configs start in VFO mode.
+        #expect(t.rigctldVFOMode == false)
+        #expect(CATTuning().rigctldVFOMode == true)
         // Round trip keeps the new fields.
-        var n = CATTuning(); n.tuneMode = .hold; n.followSelection = true; n.rigctldVFOMode = false
+        var n = CATTuning(); n.tuneMode = .hold; n.followSelection = true; n.rigctldVFOMode = true
         let back = try JSONDecoder().decode(CATTuning.self, from: JSONEncoder().encode(n))
-        #expect(back.tuneMode == .hold && back.followSelection && !back.rigctldVFOMode)
+        #expect(back.tuneMode == .hold && back.followSelection && back.rigctldVFOMode)
     }
 }

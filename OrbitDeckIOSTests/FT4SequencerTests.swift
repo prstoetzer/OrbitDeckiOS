@@ -13,7 +13,8 @@ struct FT4SequencerTests {
 
     @Test func gridReplyToCQGetsReport() throws {
         var s = seq()
-        let step = try #require(s.step([("N8HM K1ABC FN42", -7)], endedSlot: 11))
+        let stepResult = s.step([("N8HM K1ABC FN42", -7)], endedSlot: 11)
+        let step = try #require(stepResult)
         #expect(step.message == "K1ABC N8HM -07")
         #expect(step.txEven == true)          // they sent on odd slot 11 → we go even
         #expect(!step.logNow)
@@ -23,7 +24,8 @@ struct FT4SequencerTests {
     @Test func plainReportWhileCallingCQGetsRogerReport() throws {
         // They skipped the grid and sent a report straight away.
         var s = seq()
-        let step = try #require(s.step([("N8HM K1ABC -12", -3)], endedSlot: 4))
+        let stepResult = s.step([("N8HM K1ABC -12", -3)], endedSlot: 4)
+        let step = try #require(stepResult)
         #expect(step.message == "K1ABC N8HM R-03")
         #expect(step.txEven == false)
         #expect(s.reportIn == -12)
@@ -33,11 +35,13 @@ struct FT4SequencerTests {
     @Test func rogerReportGetsRR73AndLogsOnce() throws {
         var s = seq()
         s.engage("K1ABC", grid: "FN42", report: -5)
-        let first = try #require(s.step([("N8HM K1ABC R-09", -5)], endedSlot: 3))
+        let firstResult = s.step([("N8HM K1ABC R-09", -5)], endedSlot: 3)
+        let first = try #require(firstResult)
         #expect(first.message == "K1ABC N8HM RR73")
         #expect(first.logNow)
         // They repeat R-report (missed our RR73): resend RR73, no second log.
-        let again = try #require(s.step([("N8HM K1ABC R-09", -6)], endedSlot: 5))
+        let againResult = s.step([("N8HM K1ABC R-09", -6)], endedSlot: 5)
+        let again = try #require(againResult)
         #expect(again.message == "K1ABC N8HM RR73")
         #expect(!again.logNow)
     }
@@ -46,7 +50,8 @@ struct FT4SequencerTests {
         var s = seq()
         s.engage("K1ABC", report: -5)
         _ = s.step([("N8HM K1ABC R-09", -5)], endedSlot: 3)
-        let step = try #require(s.step([("N8HM K1ABC 73", -5)], endedSlot: 5))
+        let stepResult = s.step([("N8HM K1ABC 73", -5)], endedSlot: 5)
+        let step = try #require(stepResult)
         #expect(step.message == "K1ABC N8HM 73")
         #expect(step.stopAfterTx)
         #expect(!step.logNow)                 // already logged at RR73
@@ -55,12 +60,14 @@ struct FT4SequencerTests {
     @Test func repeatedRR73AfterCompletionResends73OnceWithoutRelogging() throws {
         var s = seq()
         s.engage("K1ABC", report: -5)
-        let fin = try #require(s.step([("N8HM K1ABC RR73", -5)], endedSlot: 7))
+        let finResult = s.step([("N8HM K1ABC RR73", -5)], endedSlot: 7)
+        let fin = try #require(finResult)
         #expect(fin.logNow && fin.stopAfterTx)
         s.complete()                          // our 73 went out
         #expect(s.workedCall.isEmpty)
         // They missed our 73 and send RR73 again: one retry, never logged twice.
-        let retry = try #require(s.step([("N8HM K1ABC RR73", -6)], endedSlot: 9))
+        let retryResult = s.step([("N8HM K1ABC RR73", -6)], endedSlot: 9)
+        let retry = try #require(retryResult)
         #expect(retry.message == "K1ABC N8HM 73")
         #expect(retry.stopAfterTx && !retry.logNow)
         s.complete()
@@ -92,7 +99,8 @@ struct FT4SequencerTests {
     @Test func reportWhileWorkingGetsRogerWithOurReport() throws {
         var s = seq()
         s.engage("K1ABC", grid: "FN42", report: 4)
-        let step = try #require(s.step([("N8HM K1ABC -15", -1)], endedSlot: 3))
+        let stepResult = s.step([("N8HM K1ABC -15", -1)], endedSlot: 3)
+        let step = try #require(stepResult)
         #expect(step.message == "K1ABC N8HM R+04")
         #expect(step.txEven == nil)           // parity only changes when engaging from CQ
     }

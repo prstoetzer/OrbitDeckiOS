@@ -413,7 +413,7 @@ struct APRSObjectWeatherTests {
         #expect(p.comment == "Hello")
         // A nested third-party header isn't unwrapped twice.
         #expect(APRS.parse("}W1AW>APRS:}K1ABC>APRS:>x").kind == .other)
-        let msg = APRS.parse("}W1AW>APRS,TCPIP:BLN1     :Net tonight")
+        let msg = APRS.parse("}W1AW>APRS,TCPIP::BLN1     :Net tonight")
         #expect(msg.isBulletin)
     }
 }
@@ -598,9 +598,13 @@ struct APRSISGateTests {
         let t0 = Date(timeIntervalSince1970: 1_800_000_000)
         let a = "W1AW-7>APZODK,RS0ISS*,qAR,N8HM-10:>hi"
         let b = "W1AW-7>APZODK,WIDE2-1,qAR,N8HM-10:>hi"     // same packet, other path
-        #expect(!dupes.isDuplicate(a, at: t0))
-        #expect(dupes.isDuplicate(b, at: t0.addingTimeInterval(5)))
-        #expect(!dupes.isDuplicate("W1AW-7>APZODK,qAR,N8HM-10:>other", at: t0.addingTimeInterval(6)))
-        #expect(!dupes.isDuplicate(a, at: t0.addingTimeInterval(31)))
+        let first = dupes.isDuplicate(a, at: t0)
+        #expect(!first)
+        let otherPath = dupes.isDuplicate(b, at: t0.addingTimeInterval(5))
+        #expect(otherPath)
+        let otherPacket = dupes.isDuplicate("W1AW-7>APZODK,qAR,N8HM-10:>other", at: t0.addingTimeInterval(6))
+        #expect(!otherPacket)
+        let afterWindow = dupes.isDuplicate(a, at: t0.addingTimeInterval(31))
+        #expect(!afterWindow)
     }
 }
