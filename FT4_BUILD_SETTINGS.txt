@@ -1,0 +1,55 @@
+OrbitDeck 0.9.14 — FT4 (ft8_lib) one-time Xcode setup
+======================================================
+
+You've already added the files to the target. Two Build Settings remain.
+Both go on the TARGET (not the project).
+
+OPEN BUILD SETTINGS
+-------------------
+1. Project Navigator (left): click the blue "OrbitDeckIOS" project at the top.
+2. In the editor, under TARGETS, select "OrbitDeckIOS" (the app target,
+   NOT the PROJECT entry above it).
+3. Click the "Build Settings" tab.
+4. In the filter bar, choose "All" and "Combined" so every setting shows.
+5. Use the search box on the right.
+
+SETTING 1 — Objective-C Bridging Header
+---------------------------------------
+1. Search: bridging
+2. Find "Objective-C Bridging Header" (under Swift Compiler - General).
+3. Double-click its (blank) value field and paste EXACTLY:
+
+OrbitDeckIOS/OrbitDeck-Bridging-Header.h
+
+4. Press Return.
+
+SETTING 2 — Header Search Paths
+-------------------------------
+1. Clear the search box, then search: header search
+2. Find "Header Search Paths".
+3. Double-click the value area -> popover opens -> click the "+" button ->
+   paste EXACTLY:
+
+$(SRCROOT)/OrbitDeckIOS/DigitalModes/ft8_lib
+
+4. Leave the dropdown beside it as "non-recursive". Close the popover.
+
+NOTES
+-----
+- No other flags. gzip is pure Swift, so there is NO libz to link.
+- The 10 .c files in ft8_lib must be in the target's "Compile Sources"
+  (Build Phases tab). Xcode adds them automatically when their Target
+  Membership box is checked. The .h files and OrbitDeck-Bridging-Header.h
+  must NOT be in Compile Sources.
+- If double-clicking a setting only shows a checkbox / limited options,
+  you're on the PROJECT, not the TARGET. Reselect "OrbitDeckIOS" under
+  TARGETS.
+
+VERIFY (optional, in Terminal at the repo root)
+-----------------------------------------------
+Confirm the two files exist where the settings point:
+  ls OrbitDeckIOS/OrbitDeck-Bridging-Header.h
+  ls OrbitDeckIOS/DigitalModes/ft8_lib/ft8/encode.h
+
+Then build. If the first C-interop build reports errors, tell Claude and
+it will fix them.
