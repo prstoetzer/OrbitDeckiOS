@@ -448,11 +448,11 @@ struct GraphCalcView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                HStack { Text("y ="); TextField("sin(x)", text: $f1).textFieldStyle(.odField); Text("y ="); TextField("optional second trace", text: $f2).textFieldStyle(.odField) }
+                HStack { Text("y ="); TextField("sin(x)", text: $f1).textFieldStyle(.odField); Text("y ="); TextField("optional", text: $f2).textFieldStyle(.odField).accessibilityLabel("Second trace, optional") }
                 HStack {
                     Text("x"); TextField("min", text: $xmin).textFieldStyle(.odField)
                     Text("to"); TextField("max", text: $xmax).textFieldStyle(.odField)
-                    Toggle("Auto y", isOn: $autoY)
+                    Toggle("Auto y", isOn: $autoY).lineLimit(1).fixedSize()
                     if !autoY { TextField("y min", text: $ymin).textFieldStyle(.odField); TextField("y max", text: $ymax).textFieldStyle(.odField) }
                 }
                 HStack(spacing: 8) {
@@ -776,7 +776,20 @@ struct ReferencesView:View{
     @State private var query = ""
     private var table:ReferenceTable{OrbitReferences.tables.first{$0.id==selected} ?? OrbitReferences.tables[0]}
     private var rows:[ReferenceRow]{guard !query.isEmpty else{return table.rows};let q=query.lowercased();return table.rows.filter{($0.a+" "+$0.b+" "+$0.c).lowercased().contains(q)}}
+    /// Approximate width of one body-text character, scaled with Dynamic Type.
+    @ScaledMetric(relativeTo: .body) private var charWidth: CGFloat = 10
+    /// Size the first two columns to the table's longest entry (capped at the old
+    /// fixed widths), so short tables like CTCSS leave the last column room
+    /// instead of wrapping "Motorola PL". An all-empty column takes no space.
+    private func columnWidth(_ value: (ReferenceRow) -> String, header: String, cap: CGFloat) -> CGFloat {
+        let longest = max(header.count, table.rows.map { value($0).count }.max() ?? 0)
+        guard longest > 0 else { return 0 }
+        return min(cap, max(3, CGFloat(longest)) * charWidth + 8)
+    }
+    private var widthA: CGFloat { columnWidth({ $0.a }, header: table.headers[safe: 0] ?? "", cap: 100) }
+    private var widthB: CGFloat { columnWidth({ $0.b }, header: table.headers[safe: 1] ?? "", cap: 180) }
     var body: some View {
+        let widthA = widthA, widthB = widthB
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 Menu {
@@ -798,16 +811,16 @@ struct ReferencesView:View{
                 TextField("Filter rows", text: $query).textFieldStyle(.odField)
 
                 HStack {
-                    Text(table.headers[safe: 0] ?? "").frame(width: 100, alignment: .leading)
-                    Text(table.headers[safe: 1] ?? "").frame(width: 180, alignment: .leading)
+                    Text(table.headers[safe: 0] ?? "").frame(width: widthA, alignment: .leading)
+                    Text(table.headers[safe: 1] ?? "").frame(width: widthB, alignment: .leading)
                     Text(table.headers[safe: 2] ?? "").frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .font(.caption.bold()).foregroundStyle(ODTheme.muted)
 
                 ForEach(rows) { r in
                     HStack(alignment: .top) {
-                        Text(r.a).font(.body.monospaced()).frame(width: 100, alignment: .leading)
-                        Text(r.b).frame(width: 180, alignment: .leading)
+                        Text(r.a).font(.body.monospaced()).frame(width: widthA, alignment: .leading)
+                        Text(r.b).frame(width: widthB, alignment: .leading)
                         Text(r.c).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Divider()
@@ -1381,8 +1394,7 @@ struct NotesView: View {
         .searchable(text: $query, prompt: "Search notes")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { newNote() } label: { Image(systemName: "square.and.pencil") }
-                    .accessibilityLabel("New note")
+                Button { newNote() } label: { Label("New note", systemImage: "plus") }
             }
         }
         .navigationDestination(item: $openNote) { url in NoteEditorView(url: url) }
@@ -1604,6 +1616,15 @@ enum ReadinessState: Sendable {
         case .optional: "OPTIONAL"
         }
     }
+    /// What VoiceOver says for the status icon.
+    var spokenLabel: String {
+        switch self {
+        case .ok: "Ready"
+        case .warn: "Needs attention"
+        case .missing: "Not set up"
+        case .optional: "Optional"
+        }
+    }
 }
 
 /// Where a readiness row's "fix" goes.
@@ -1736,6 +1757,7 @@ struct StationReadinessView: View {
                     Button { perform(item.fix) } label: {
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: item.state.symbol).foregroundStyle(item.state.color).frame(width: 22)
+                                .accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title).foregroundStyle(.primary)
                                 Text(item.detail).font(.caption).foregroundStyle(ODTheme.muted)
@@ -1745,6 +1767,8 @@ struct StationReadinessView: View {
                         }
                     }
                     .disabled(item.fix == nil)
+                    .accessibilityLabel("\(item.title), \(item.state.spokenLabel)")
+                    .accessibilityHint(item.detail)
                 }
             } footer: {
                 Text("Green is ready, amber needs a look, red blocks useful results; gray items are optional.")

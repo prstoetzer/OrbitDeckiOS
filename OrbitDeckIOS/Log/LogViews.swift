@@ -222,7 +222,7 @@ struct LogScreen: View {
         }
         .environment(\.editMode, .constant(selecting ? .active : .inactive))
         .navigationTitle("Log")
-        .navigationDestination(isPresented: $showAwards) { AwardsScreen() }
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if selecting {
                 ToolbarItem(placement: .cancellationAction) {
@@ -247,6 +247,18 @@ struct LogScreen: View {
         .sheet(isPresented: $showingNew) { QSOEditView(existing: nil) }
         .sheet(isPresented: $showSettings) { NavigationStack { LogSettingsView() } }
         .sheet(isPresented: $showReport) { NavigationStack { LogReportView(onlyIDs: reportIDs) } }
+        // A sheet, like the other Log tools. A `navigationDestination(isPresented:)` on this
+        // screen registered a destination with the detail column's NavigationStack, which on
+        // iPhone (split view collapsed into one stack) brought back the "‹ OrbitDeck" back
+        // button and squeezed the Log title to nothing.
+        .sheet(isPresented: $showAwards) {
+            NavigationStack {
+                AwardsScreen()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("Done") { showAwards = false } }
+                    }
+            }
+        }
         .sheet(item: $exportURL) { url in ShareSheet(items: [url]) }
         .fileImporter(isPresented: $importing,
                       allowedContentTypes: [UTType(filenameExtension: "adi") ?? .plainText, .plainText, .data]) { result in

@@ -378,14 +378,16 @@ struct RigControlSettingsView: View {
             HStack {
                 Text("Downlink transverter LO")
                 Spacer()
-                TextField("Hz", value: bindTuning(\.xvtrDownlinkHz), format: .number).multilineTextAlignment(.trailing)
+                TextField("0", value: bindTuning(\.xvtrDownlinkHz), format: .number).multilineTextAlignment(.trailing)
                     .keyboardType(.numbersAndPunctuation).frame(width: 130).textFieldStyle(.odField)
+                Text("Hz").foregroundStyle(ODTheme.muted)
             }
             HStack {
                 Text("Uplink transverter LO")
                 Spacer()
-                TextField("Hz", value: bindTuning(\.xvtrUplinkHz), format: .number).multilineTextAlignment(.trailing)
+                TextField("0", value: bindTuning(\.xvtrUplinkHz), format: .number).multilineTextAlignment(.trailing)
                     .keyboardType(.numbersAndPunctuation).frame(width: 130).textFieldStyle(.odField)
+                Text("Hz").foregroundStyle(ODTheme.muted)
             }
             Picker("Uplink CTCSS (other satellites)", selection: bindTuning(\.uplinkToneHz)) {
                 Text("Off").tag(0.0)
@@ -411,14 +413,21 @@ struct RigControlSettingsView: View {
                 NavigationLink {
                     CATSelfTestView(slotIndex: i)
                 } label: {
-                    Text(rig.config.twoRadios ? "Self-test Radio \(i + 1)" : "Self-test radio")
+                    Text(rig.config.twoRadios ? "Self-test radio \(i + 1)" : "Self-test radio")
                 }
                 .disabled(rig.connected || rig.connecting)
             }
-            Text(rig.connected || rig.connecting
-                 ? "Disconnect CAT to run a self-test."
-                 : "Connects to the radio on its own, reads the frequency and mode, sets the same mode back and checks the radio's acknowledgment, with hints for anything that fails.")
-                .font(.caption).foregroundStyle(ODTheme.muted)
+            if selfTestSlots.isEmpty {
+                // No radio chosen yet: say what unlocks the self-test instead of
+                // describing a row that isn't there.
+                Text("Choose a radio above to run a self-test.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            } else {
+                Text(rig.connected || rig.connecting
+                     ? "Disconnect CAT to run a self-test."
+                     : "Connects to the radio on its own, reads the frequency and mode, sets the same mode back and checks the radio's acknowledgment, with hints for anything that fails.")
+                    .font(.caption).foregroundStyle(ODTheme.muted)
+            }
         }
     }
 
@@ -616,15 +625,18 @@ struct CATSelfTestView: View {
     var body: some View {
         List {
             Section {
-                Button {
-                    Task { await rig.runSelfTest(slot: slotIndex) }
-                } label: {
-                    HStack {
+                // A bordered button so the system draws its disabled state (as on the
+                // rotator self-test screen).
+                HStack {
+                    Button {
+                        Task { await rig.runSelfTest(slot: slotIndex) }
+                    } label: {
                         Label(rig.selfTestRunning ? "Testing…" : "Run self-test", systemImage: "stethoscope")
-                        if rig.selfTestRunning { Spacer(); ProgressView() }
                     }
+                    .buttonStyle(.bordered)
+                    .disabled(rig.selfTestRunning || rig.connected || rig.connecting)
+                    if rig.selfTestRunning { Spacer(); ProgressView() }
                 }
-                .disabled(rig.selfTestRunning || rig.connected || rig.connecting)
                 Text("Uses the radio settings above. It reads the frequency and mode and sets the same mode back, so the radio is left as it was. Turn on the CAT monitor to see every frame.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             } header: {
@@ -1098,7 +1110,7 @@ struct RigctldServerSection: View {
                     Button("Unkey now", role: .destructive) { server.unkeyClient() }
                 }
             }
-            Text("Lets Gpredict, SatPC32, WSJT-X or a logger on your local network read or drive the radio through OrbitDeck's CAT link — in the client choose Hamlib NET rigctl (model 2) and enter an address below. VFOA is the downlink, VFOB the uplink; frequencies are the radio's dial. Reading never disturbs OrbitDeck. When a client sets a frequency, OrbitDeck pauses its own Doppler tuning for as long as that client stays connected, so let the client do Doppler (or only read).")
+            Text("Lets Gpredict, SatPC32, WSJT-X or a logger on your local network read or drive the radio through OrbitDeck's CAT link — in the client choose Hamlib NET rigctl (model 2) and enter this device's address (listed above once the server is running) and the TCP port. VFOA is the downlink, VFOB the uplink; frequencies are the radio's dial. Reading never disturbs OrbitDeck. When a client sets a frequency, OrbitDeck pauses its own Doppler tuning for as long as that client stays connected, so let the client do Doppler (or only read).")
                 .font(.caption).foregroundStyle(ODTheme.muted)
             HamlibServerLimitsNote()
         }

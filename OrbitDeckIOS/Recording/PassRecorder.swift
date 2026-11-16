@@ -28,6 +28,9 @@ final class PassRecorder: ObservableObject {
         didSet { source?.inputGain = inputGain; AudioGainStore.save(gainKey, inputGain) }
     }
     @Published var errorText = ""
+    /// Length of the clip the last Stop saved to the Log (nil once a new one starts, or
+    /// when nothing was saved) — the card's brief confirmation.
+    @Published private(set) var lastSavedDuration: TimeInterval?
 
     /// The voice-memo recorder (separate from pass recording, so both can run at once).
     static let memo = PassRecorder(memo: true)
@@ -88,6 +91,7 @@ final class PassRecorder: ObservableObject {
         // Recording shares the AudioHub capture, so it can run alongside a decoder or the
         // monitor — no exclusive claim.
         errorText = ""
+        lastSavedDuration = nil
         self.source = source
         self.sat = satellite
         self.startDate = Date()
@@ -148,6 +152,7 @@ final class PassRecorder: ObservableObject {
                     } else {
                         self?.qso?.addRecording(entry)
                     }
+                    self?.lastSavedDuration = duration
                 }
             }
         }

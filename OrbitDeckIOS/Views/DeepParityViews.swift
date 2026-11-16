@@ -919,7 +919,13 @@ struct DeepLearnView: View {
             ForEach(points) { p in if let y=p.y { LineMark(x:.value("x",p.x),y:.value("y",y)) } }
             PointMark(x:.value("Spacecraft",sx),y:.value("Spacecraft",sy)).symbolSize(80).foregroundStyle(ODTheme.warning)
             PointMark(x:.value("Earth",0),y:.value("Earth",0)).symbolSize(100).foregroundStyle(ODTheme.accent)
-        }.chartXScale(domain:-1.8...1.8).chartYScale(domain:-1.2...1.2).frame(height:280)
+        }
+        // Equal spans on both axes and a square plot area, so the ellipse is drawn
+        // true to shape. The fixed domain covers x from −1.8 (apogee at e = 0.8) to
+        // +1 (the circle at e = 0) and keeps Earth still while the slider moves.
+        .chartXScale(domain:-1.9...1.1).chartYScale(domain:-1.5...1.5)
+        .chartPlotStyle { plot in plot.aspectRatio(1, contentMode: .fit) }
+        .frame(height:280)
     }
 
     @ViewBuilder private func slider(_ label:String,_ value:Binding<Double>,_ range:ClosedRange<Double>,_ unit:String)->some View {

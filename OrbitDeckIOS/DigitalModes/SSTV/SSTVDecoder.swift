@@ -358,7 +358,7 @@ final class SSTVDecoder: ObservableObject {
             self?.recFile = nil
             if !decoded, let recorded { try? FileManager.default.removeItem(at: recorded) }
         }
-        status = decoded ? "Stopped — decoded \(modeName)" : "Stopped"
+        status = decoded ? "Idle — decoded \(modeName)" : "Idle"
     }
 
     // MARK: Auto start/stop by elevation
@@ -856,7 +856,7 @@ final class SSTVDecoder: ObservableObject {
         Task { @MainActor in
             guard let img = Self.image(from: final, width: w, height: h) else { return }
             self.image = img
-            self.status = self.isListening ? "Decoded \(label)" : "Stopped — saved \(label)"
+            self.status = self.isListening ? "Decoded \(label)" : "Idle — saved \(label)"
             self.save(img, mode: label, startSec: startSec)
             if let combined, let cimg = Self.image(from: combined.rgba, width: w, height: h) {
                 self.saveCombined(cimg, mode: m.name, copies: combined.count, group: combined.group)

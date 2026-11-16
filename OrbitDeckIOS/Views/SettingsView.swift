@@ -250,7 +250,7 @@ struct SettingsView: View {
                 } label: {
                     Label("Antenna rotator", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
                 }
-                Text("Point an az/el rotator at the selected satellite over a BLE serial adapter (GS-232, Easycomm, SPID) or a network connection (rotctld, PstRotator). Control is on the Home screen once a rotator is configured.")
+                Text(verbatim: "Point an az/el rotator at the selected satellite over a BLE serial adapter (\(RotatorProtocolKind.serialFamilies)) or a network connection (\(RotatorProtocolKind.networkFamilies)). Control is on the Home screen once a rotator is configured.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
@@ -279,7 +279,7 @@ struct SettingsView: View {
                     ForEach(FeatureVisibility.allCases) { Text($0.label).tag($0) }
                 } label: { Label("Remote audio (voice)", systemImage: "mic.and.signal.meter") }
                 .pickerStyle(.menu)
-                Text("These Home cards normally appear only when a USB or network audio interface is connected. Set one to \u{201C}Always\u{201D} to use it without an interface (it still prefers USB or network audio, falling back to the built-in microphone — hold the phone near your receiver), or \u{201C}Hidden\u{201D} to keep it off the Home screen even with an interface plugged in.")
+                Text("These Home cards normally appear only when a USB or network audio interface is connected. Set one to \u{201C}Always\u{201D} to use it without an interface (it still prefers USB or network audio, falling back to the built-in microphone — hold the phone near your receiver), or \u{201C}Hidden\u{201D} to keep it off the Home screen even with an interface plugged in. Remote audio needs a network (RS-BA1) radio and has no microphone fallback.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
                 Toggle("Use data mode for FT4", isOn: $ft4DataMode)
                 Text("When FT4 starts on a data-mode-capable radio, OrbitDeck sets the DATA sub-mode so audio uses the rig's ACC/USB data port, and restores plain SSB when FT4 stops: CI-V USB-D/LSB-D (IC-9700/9100/705/905/7100/7000), Hamlib PKTUSB/PKTLSB via rigctld (any supported radio), and DIG on the Yaesu FT-817/818/857/897. Turn this off if you feed audio through the mic/headphone jack instead.")
@@ -737,7 +737,7 @@ struct AboutView: View {
             }
 
             Section("Author") {
-                LabeledContent("Author", value: "Paul Stoetzer, N8HM")
+                LabeledContent("Developer", value: "Paul Stoetzer, N8HM")
             }
 
             Section("Project") {
@@ -1062,9 +1062,14 @@ struct AutoSwitchView: View {
                         Text("Switch-in elevation: \(ODFormat.angle(auto.settings.minElevation, decimals: 0))")
                     }
                 }
-                Picker("Higher priority rises", selection: $auto.settings.preemption) {
-                    Text("Switch immediately").tag(AutoSwitchSettings.Preemption.atRise)
-                    Text("Finish current pass").tag(AutoSwitchSettings.Preemption.afterPass)
+                HStack {
+                    Text("Higher priority rises")
+                    Spacer(minLength: 12)
+                    Picker("Higher priority rises", selection: $auto.settings.preemption) {
+                        Text("Switch immediately").tag(AutoSwitchSettings.Preemption.atRise)
+                        Text("Finish current pass").tag(AutoSwitchSettings.Preemption.afterPass)
+                    }
+                    .pickerStyle(.menu).labelsHidden()
                 }
                 if auto.settings.preemption == .atRise {
                     Stepper(value: $auto.settings.preemptElevation, in: -10...10, step: 1) {

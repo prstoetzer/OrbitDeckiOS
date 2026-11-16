@@ -7,15 +7,14 @@ import SwiftUI
 
 /// Full rotator setup screen (presented as a sheet from Settings).
 struct RotatorSettingsView: View {
-    @EnvironmentObject private var store: OrbitStore
     @EnvironmentObject private var rot: RotatorController
     @State private var showBLEPicker = false
 
     var body: some View {
         Form {
             Section {
-                Toggle("Enable rotator control", isOn: b(\.enabled))
-                Text("Point your az/el rotator at the selected satellite over a BLE serial adapter (GS-232, Easycomm, SPID, SAEBRTrack) or a network connection (rotctld, PstRotator, OZ9AAR URC). Bluetooth Classic (SPP) adapters are not supported on iOS. Green Heron RT-21 Az/El needs two independent serial links (one per axis), which a single BLE adapter can't drive, so it isn't offered.")
+                Toggle("Enable rotator control", isOn: $rot.config.enabled)
+                Text(verbatim: "Point your az/el rotator at the selected satellite over a BLE serial adapter (\(RotatorProtocolKind.serialFamilies)) or a network connection (\(RotatorProtocolKind.networkFamilies)). Bluetooth Classic (SPP) adapters are not supported on iOS. Green Heron RT-21 Az/El needs two independent serial links (one per axis), which a single BLE adapter can't drive, so it isn't offered.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
 
@@ -337,7 +336,12 @@ struct RotatorManualView: View {
                         .frame(width: 10, height: 10)
                     Text(rot.connected ? rot.statusText : "Not connected").font(.subheadline.weight(.semibold))
                 }
-                if rot.connected { RotatorPositionRows() }
+                if rot.connected {
+                    RotatorPositionRows()
+                } else {
+                    Text("Connect the rotator from the Home card to use these controls.")
+                        .font(.caption).foregroundStyle(ODTheme.muted)
+                }
             }
 
             Section("Target") {
@@ -380,11 +384,14 @@ struct RotatorManualView: View {
                         Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
+                    // The app-wide accent tint would otherwise override the destructive role's red.
+                    .tint(.red)
                     Button { rot.parkNow() } label: {
-                        Label("Park", systemImage: "parkingsign").frame(maxWidth: .infinity)
+                        Label("Park", systemImage: "house").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 }
+                .labelStyle(.titleAndIcon)
                 if !rot.config.proto.supportsStop {
                     Text("\(rot.config.proto.label) has no stop command: Stop holds, and the rotator finishes its current move.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
@@ -426,15 +433,19 @@ struct RotatorSelfTestView: View {
     var body: some View {
         List {
             Section {
-                Button {
-                    rot.runSelfTest()
-                } label: {
-                    HStack {
+                // A bordered button (rather than a bare row label in an HStack) so the
+                // disabled state is drawn by the system: grayed out, not white text with
+                // an accent icon.
+                HStack {
+                    Button {
+                        rot.runSelfTest()
+                    } label: {
                         Label("Run self-test", systemImage: "checklist")
-                        if rot.selfTestRunning { Spacer(); ProgressView().controlSize(.small) }
                     }
+                    .buttonStyle(.bordered)
+                    .disabled(rot.selfTestRunning || !rot.connected)
+                    if rot.selfTestRunning { Spacer(); ProgressView().controlSize(.small) }
                 }
-                .disabled(rot.selfTestRunning || !rot.connected)
                 Text(rot.connected
                      ? "Reads the position, sends a null move (no motion), then slews azimuth 5° and returns — the antenna moves. Tracking pauses during the test."
                      : "Connect the rotator from the Home card first.")
@@ -547,7 +558,7 @@ struct RotctldServerSection: View {
                     Button("Resume OrbitDeck tracking") { server.resumeTracking() }
                 }
             }
-            Text("Lets Gpredict or another Hamlib rotctld client on your local network point the connected rotator through OrbitDeck — enter an address below. A set-position, stop or park from the client pauses OrbitDeck's own tracking until that client disconnects; positions are sent as given (OrbitDeck's offsets and magnetic correction are not applied). Get-position reports the last commanded position.")
+            Text("Lets Gpredict or another Hamlib rotctld client on your local network point the connected rotator through OrbitDeck — in the client, enter this device's address (listed above once the server is running) and the TCP port. A set-position, stop or park from the client pauses OrbitDeck's own tracking until that client disconnects; positions are sent as given (OrbitDeck's offsets and magnetic correction are not applied). Get-position reports the last commanded position.")
                 .font(.caption).foregroundStyle(ODTheme.muted)
             HamlibServerLimitsNote()
         }

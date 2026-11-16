@@ -39,9 +39,9 @@ struct ConjunctionDetailSnapshot: Sendable {
     let curve: [ConjunctionCurvePoint]
 
     var awarenessLabel: String {
-        if missDistanceKm < 10 { return "Very close GP screening result" }
-        if missDistanceKm < 100 { return "Close GP screening result" }
-        if missDistanceKm < 800 { return "Within desktop awareness threshold" }
+        if missDistanceKm < 10 { return "Very close approach (screening estimate)" }
+        if missDistanceKm < 100 { return "Close approach (screening estimate)" }
+        if missDistanceKm < 800 { return "Within the awareness range" }
         return "Wide approach"
     }
 }

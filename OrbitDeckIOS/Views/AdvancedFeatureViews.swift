@@ -119,7 +119,7 @@ struct OscarLocatorView: View {
                     if let error {
                         Text(error).font(.caption).foregroundStyle(ODTheme.warning)
                     }
-                    Text("Lab-orbit edits now support A/B ghost comparison and guided orbit-design challenges. Both the live lab orbit and the frozen comparison orbit flow through the same propagator used by catalog satellites.")
+                    Text("Edit a lab orbit to see how each element changes the track. Freeze a copy to compare it with your edits as a ghost track, or try a guided orbit-design challenge. Lab orbits and their frozen copies are propagated exactly like catalog satellites.")
                         .font(.caption)
                         .foregroundStyle(ODTheme.muted)
                 }
@@ -175,8 +175,16 @@ struct OscarLocatorView: View {
                 ForEach(OscarDrive.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
-            Picker("Projection", selection: $projection) {
-                ForEach(OscarProjection.allCases) { Text($0.rawValue).tag($0) }
+            // Labeled rows so the menus sit on the trailing edge, in line with the
+            // toggles, instead of floating indented under the row labels.
+            HStack {
+                Text("Projection")
+                Spacer(minLength: 12)
+                Picker("Projection", selection: $projection) {
+                    ForEach(OscarProjection.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
             }
             Toggle("QTH range circle", isOn: $showRange)
             Toggle("Satellite footprint", isOn: $showFootprint)
@@ -260,10 +268,15 @@ struct OscarLocatorView: View {
             } label: {
                 Label("Go live", systemImage: "dot.radiowaves.left.and.right")
             }
-            Picker("Printable", selection: $pdfKind) {
-                ForEach(OscarPDFKind.allCases) { Text($0.rawValue).tag($0) }
+            HStack {
+                Text("Printable")
+                Spacer(minLength: 12)
+                Picker("Printable", selection: $pdfKind) {
+                    ForEach(OscarPDFKind.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
             }
-            .pickerStyle(.menu)
             if pdfKind != .baseMap {
                 Toggle("Clean transparencies (no overlay text)", isOn: $pdfCleanTransparencies)
                     .font(.caption)
@@ -870,7 +883,7 @@ struct ExportsView: View {
                         }
                     }
 
-                    SectionCard("Desktop reports") {
+                    SectionCard("Printable reports") {
                         Text("Printable operational reports using the same propagated results as the live screens. The complete satellite report includes analysis, passes, EQX, sky tracks, a 60-day illumination raster and 30-day progression; the two graphic reports are also available separately.")
                             .font(.caption).foregroundStyle(ODTheme.muted)
                         ViewThatFits {
@@ -901,7 +914,7 @@ struct ExportsView: View {
                     StationReportsCard()
 
                     SectionCard("Listings & reference orbits") {
-                        Text("Desktop-style compact pass, equator-crossing and stepped ephemeris exports. Position listings include az/el/range, range-rate, sub-point, altitude and Sun/shadow state.")
+                        Text("Compact pass, equator-crossing and stepped ephemeris exports. Position listings include az/el/range, range-rate, sub-point, altitude and Sun/shadow state.")
                             .font(.caption).foregroundStyle(ODTheme.muted)
                         ViewThatFits {
                             HStack {
@@ -1460,7 +1473,7 @@ struct OscarReferenceOrbitsView: View {
             Section {
                 Text("The first equator crossing of each UTC day for the loaded satellite: the time and longitude to set on a real OSCARLOCATOR. Northern-hemisphere stations use the ascending node; southern-hemisphere stations use the descending node.")
                     .font(.callout)
-                Picker("Days", selection: $days) { Text("30").tag(30); Text("60").tag(60) }
+                Picker("Days", selection: $days) { Text("30 days").tag(30); Text("60 days").tag(60) }
                     .pickerStyle(.segmented)
             }
             Section("First \(node) crossing per UTC day") {

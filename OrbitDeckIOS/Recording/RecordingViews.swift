@@ -28,8 +28,9 @@ struct HomeRecordingCard: View {
                 HStack(spacing: 10) {
                     Circle().fill(recorder.isRecording ? ODTheme.warning : ODTheme.muted)
                         .frame(width: 10, height: 10)
-                    Text(recorder.isRecording ? ODFormat.duration(recorder.elapsed) : "Ready")
+                    Text(headline)
                         .font(.subheadline.weight(.semibold)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.8)
                     Spacer()
                     Button(recorder.isRecording ? "Stop" : "Record") { toggle() }
                         .buttonStyle(.bordered)
@@ -40,10 +41,18 @@ struct HomeRecordingCard: View {
                     AudioLevelControl(title: "Recording level", gain: $recorder.inputGain, level: m.level)
                 }
                 VoiceMemoControl(satellite: satellite)
-                Text("Records the received audio from your USB (or network) audio interface, tagged with the satellite and time. Set the level so the meter rides in the green. Keeps recording with the screen locked or the app backgrounded during a pass.")
+                Text("Records the received audio from \(audio.inputDescription(allowMicFallback: visibility == .always)), tagged with the satellite and time. Set the level so the meter rides in the green. Keeps recording with the screen locked or the app backgrounded during a pass.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
+    }
+
+    /// Elapsed time while recording; after a Stop, a short "Saved to Log" (like the other
+    /// cards' status line) until the next recording starts.
+    private var headline: String {
+        if recorder.isRecording { return ODFormat.duration(recorder.elapsed) }
+        if let d = recorder.lastSavedDuration { return "Saved to Log · \(ODFormat.duration(d))" }
+        return "Ready"
     }
 
     private func toggle() {
@@ -95,8 +104,15 @@ struct HomeRemoteAudioCard: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(voice.isListening ? ODTheme.warning : ODTheme.accent)
+                    .disabled(!voice.isListening && !audio.icomAudioReady)
                 }
                 SatelliteStatusLine(satellite: satellite)
+                // Shown under Always with no network radio: there's no mic fallback here
+                // (the phone mic is the transmit side), so say why Listen is unavailable.
+                if !audio.icomAudioReady && !voice.isListening {
+                    Text("Needs an Icom network (RS-BA1) radio connected over CAT. None is connected, so there's nothing to listen to.")
+                        .font(.caption).foregroundStyle(ODTheme.warning)
+                }
 
                 if voice.isListening {
                     AudioLevelBar(level: voice.micLevel)

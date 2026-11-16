@@ -152,9 +152,11 @@ enum ODFormat {
         (useLocalTime ? localClock : utcClock).string(from: date)
     }
     /// The same clock in the *other* zone, for an unobtrusive secondary readout
-    /// (e.g. show local next to UTC, or vice-versa). Empty if both would match.
-    static func secondaryClock(_ date: Date) -> String {
-        (useLocalTime ? utcClock : localClock).string(from: date)
+    /// (e.g. show local next to UTC, or vice-versa). Empty when the device's zone
+    /// is on UTC at `date`, so the same time isn't shown twice.
+    static func secondaryClock(_ date: Date, timeZone: TimeZone = .current) -> String {
+        guard timeZone.secondsFromGMT(for: date) != 0 else { return "" }
+        return (useLocalTime ? utcClock : localClock).string(from: date)
     }
 
     static func angle(_ degrees: Double, decimals: Int = 1) -> String {
@@ -788,13 +790,27 @@ struct SatellitePickerSheet: View {
                 .buttonStyle(.plain)
             }
             .listStyle(.plain)
+            .overlay {
+                if results.isEmpty {
+                    if !trimmedSearch.isEmpty {
+                        ContentUnavailableView.search(text: trimmedSearch)
+                    } else if favoritesOnly {
+                        ContentUnavailableView("No favorites yet", systemImage: "star",
+                                               description: Text("Tap the star next to a satellite in the Satellites tab, or next to the active satellite's name, to make it a favorite."))
+                    }
+                }
+            }
             .searchable(text: $searchText, prompt: "Name, NORAD, or designator")
             .navigationTitle("Active Satellite")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Toggle("Favorites", isOn: $favoritesOnly)
-                        .toggleStyle(.button)
+                    Button { favoritesOnly.toggle() } label: {
+                        Label("Favorites", systemImage: favoritesOnly ? "star.fill" : "star")
+                    }
+                    .tint(favoritesOnly ? ODTheme.warning : ODTheme.accent)
+                    .accessibilityLabel("Favorites only")
+                    .accessibilityAddTraits(favoritesOnly ? .isSelected : [])
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -805,8 +821,10 @@ struct SatellitePickerSheet: View {
 
     /// Filtered by search + favorites toggle, with favorites floated to the top
     /// when no search is active.
+    private var trimmedSearch: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     private var results: [SatelliteRecord] {
-        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let needle = trimmedSearch.lowercased()
         let filtered = store.satellites.filter { satellite in
             if favoritesOnly && !store.preferences.favorites.contains(satellite.id) {
                 return false

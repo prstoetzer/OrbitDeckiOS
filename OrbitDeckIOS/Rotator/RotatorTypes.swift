@@ -37,6 +37,28 @@ enum RotatorProtocolKind: String, Codable, Sendable, CaseIterable, Identifiable 
         case .urc: "OZ9AAR URC (TCP/JSON)"
         }
     }
+    /// Short protocol family name for summaries ("GS-232", "Easycomm", …).
+    var familyName: String {
+        switch self {
+        case .gs232: "GS-232"
+        case .easycomm1, .easycomm2, .easycomm3: "Easycomm"
+        case .spid: "SPID"
+        case .saebrtrack: "SAEBRTrack"
+        case .rotctld: "rotctld"
+        case .pstRotator: "PstRotator"
+        case .urc: "OZ9AAR URC"
+        }
+    }
+    /// The offered serial (BLE) protocol families, e.g. "GS-232, Easycomm, SPID, SAEBRTrack".
+    /// Built from `allCases` so the Settings text can't drift from the picker.
+    static var serialFamilies: String { families(allCases.filter(\.isSerial)) }
+    /// The offered network protocol families, e.g. "rotctld, PstRotator, OZ9AAR URC".
+    static var networkFamilies: String { families(allCases.filter(\.isNetwork)) }
+    private static func families(_ kinds: [RotatorProtocolKind]) -> String {
+        var names: [String] = []
+        for k in kinds where !names.contains(k.familyName) { names.append(k.familyName) }
+        return names.joined(separator: ", ")
+    }
     var isNetwork: Bool { self == .rotctld || self == .pstRotator || self == .urc }
     var isSerial: Bool { !isNetwork }
     var usesTCP: Bool { self == .rotctld || self == .urc }

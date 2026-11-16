@@ -36,7 +36,7 @@ struct HomeSSTVCard: View {
                         .frame(width: 10, height: 10)
                     Text(headline).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
                     Spacer()
-                    Button(decoder.isListening ? "Stop" : "Decode") { toggle() }
+                    Button(decoder.isListening ? "Stop" : "Start") { toggle() }
                         .buttonStyle(.bordered)
                 }
                 if decoder.isArmed {
@@ -54,12 +54,18 @@ struct HomeSSTVCard: View {
                         .frame(maxHeight: 240).cornerRadius(6)
                 }
 
-                Picker("Mode", selection: Binding(
-                    get: { decoder.manualMode?.name ?? "" },
-                    set: { name in decoder.manualMode = SSTVModes.all.first { $0.name == name } }
-                )) {
-                    Text("Auto-detect (VIS)").tag("")
-                    ForEach(SSTVModes.all) { m in Text(m.name).tag(m.name) }
+                // Outside a Form a menu picker shows only its selection, so label it.
+                HStack {
+                    Text("Mode").font(.subheadline)
+                    Spacer(minLength: 8)
+                    Picker("Mode", selection: Binding(
+                        get: { decoder.manualMode?.name ?? "" },
+                        set: { name in decoder.manualMode = SSTVModes.all.first { $0.name == name } }
+                    )) {
+                        Text("Auto-detect (VIS)").tag("")
+                        ForEach(SSTVModes.all) { m in Text(m.name).tag(m.name) }
+                    }
+                    .pickerStyle(.menu).labelsHidden().fixedSize()
                 }
                 .disabled(decoder.isListening)
                 if decoder.manualMode == nil, !expectedModes.isEmpty {
@@ -70,7 +76,7 @@ struct HomeSSTVCard: View {
                 Toggle(isOn: $decoder.autoArm) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Auto start/stop by elevation").font(.subheadline)
-                        Text("Starts decoding when \(satellite.name) rises above the elevation below and stops after it sets. Keep OrbitDeck open while armed — iOS may suspend it in the background before audio starts.")
+                        Text("Starts decoding when \(satellite.name) rises above a minimum elevation you set and stops after it sets. Keep OrbitDeck open while armed — iOS may suspend it in the background before audio starts.")
                             .font(.caption2).foregroundStyle(ODTheme.muted)
                     }
                 }
@@ -100,7 +106,7 @@ struct HomeSSTVCard: View {
                 .onAppear { configureAuto() }
                 .onChange(of: satellite.id) { configureAuto() }
 
-                Text("Decodes SSTV live from your USB (or network) audio interface — the image builds as it receives. Saved images appear on the SSTV Images screen. Keeps decoding with the screen locked or the app backgrounded during a pass.")
+                Text("Decodes SSTV live from \(audio.inputDescription(allowMicFallback: visibility == .always)) — the image builds as it receives. Saved images appear on the SSTV Images screen. Keeps decoding with the screen locked or the app backgrounded during a pass.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
@@ -127,7 +133,7 @@ struct HomeSSTVCard: View {
             Toggle(isOn: $decoder.autoTune) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Auto-tune (Doppler)").font(.caption2)
-                    Text("Tracks the sync pulse to follow satellite Doppler; Tuning below is an added trim.")
+                    Text("Tracks the sync pulse to follow satellite Doppler; the Tuning slider below adds a trim.")
                         .font(.caption2).foregroundStyle(ODTheme.muted)
                 }
             }
@@ -146,32 +152,37 @@ struct HomeSSTVCard: View {
                 Text(String(format: "%+.3f%%", decoder.slant * 100))
                     .font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $decoder.slant, range: -0.02...0.02, step: 0.0005)
+            FineSlider(value: $decoder.slant, range: -0.02...0.02, step: 0.0005,
+                       label: "Slant", valueText: String(format: "%+.3f%%", decoder.slant * 100))
             HStack {
                 Text("Tuning").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%+.0f Hz", decoder.tuningHz))
                     .font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $decoder.tuningHz, range: -400...400, step: 5)
+            FineSlider(value: $decoder.tuningHz, range: -400...400, step: 5,
+                       label: "Tuning", valueText: String(format: "%+.0f Hz", decoder.tuningHz))
             HStack {
                 Text("H-shift").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%+.1f ms", decoder.hShiftMs)).font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $decoder.hShiftMs, range: -60...60, step: 0.5)
+            FineSlider(value: $decoder.hShiftMs, range: -60...60, step: 0.5,
+                       label: "H-shift", valueText: String(format: "%+.1f ms", decoder.hShiftMs))
             HStack {
                 Text("Contrast").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%.2f×", decoder.contrast)).font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $decoder.contrast, range: 0.5...2.5, step: 0.05)
+            FineSlider(value: $decoder.contrast, range: 0.5...2.5, step: 0.05,
+                       label: "Contrast", valueText: String(format: "%.2f×", decoder.contrast))
             HStack {
                 Text("Saturation").font(.caption2).foregroundStyle(ODTheme.muted).lineLimit(1)
                 Spacer()
                 Text(String(format: "%.2f×", decoder.saturation)).font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $decoder.saturation, range: 0...2.5, step: 0.05)
+            FineSlider(value: $decoder.saturation, range: 0...2.5, step: 0.05,
+                       label: "Saturation", valueText: String(format: "%.2f×", decoder.saturation))
             Button("Reset calibration") {
                 decoder.slant = 0; decoder.tuningHz = 0; decoder.hShiftMs = 0
                 decoder.contrast = 1; decoder.saturation = 1
@@ -511,12 +522,14 @@ struct SSTVReDecodeView: View {
                 Text("Slant").font(.caption2).foregroundStyle(ODTheme.muted)
                 Spacer(); Text(String(format: "%+.3f%%", slantPct)).font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $slantPct, range: -2...2, step: 0.05)
+            FineSlider(value: $slantPct, range: -2...2, step: 0.05,
+                       label: "Slant", valueText: String(format: "%+.3f%%", slantPct))
             HStack {
                 Text("Tuning").font(.caption2).foregroundStyle(ODTheme.muted)
                 Spacer(); Text(String(format: "%+.0f Hz", tuningHz)).font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $tuningHz, range: -400...400, step: 5)
+            FineSlider(value: $tuningHz, range: -400...400, step: 5,
+                       label: "Tuning", valueText: String(format: "%+.0f Hz", tuningHz))
             Button(working ? "Decoding…" : "Decode") { decode() }
                 .buttonStyle(.borderedProminent).disabled(working)
         }

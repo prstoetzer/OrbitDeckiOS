@@ -13,19 +13,24 @@ import SwiftUI
 //  Shared audio-level UI (used by both the FT4 and SSTV cards)
 // ---------------------------------------------------------------------------
 
-/// A horizontal peak-level bar: green → yellow → red as it approaches clipping.
+/// A horizontal peak-level bar: green → yellow → red as it approaches clipping. The
+/// track is drawn in the grid color (the card itself is `ODTheme.panel`), so a quiet input
+/// still reads as a meter rather than a stray dot.
 struct AudioLevelBar: View {
     let level: Float          // 0…1
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .leading) {
-                Capsule().fill(ODTheme.panel)
+                Capsule().fill(ODTheme.grid)
                 Capsule().fill(barColor)
                     .frame(width: g.size.width * CGFloat(min(1, max(0, level))))
                     .animation(.easeOut(duration: 0.18), value: level)
             }
         }
-        .frame(height: 6)
+        .frame(height: 8)
+        .accessibilityElement()
+        .accessibilityLabel("Audio level")
+        .accessibilityValue("\(Int((min(1, max(0, level)) * 100).rounded())) percent")
     }
     private var barColor: Color {
         level > 0.95 ? ODTheme.warning : (level > 0.7 ? .yellow : ODTheme.good)
@@ -76,35 +81,55 @@ struct SetupDisclosure<Content: View>: View {
 
 /// A slider flanked by −/＋ nudge buttons for precise adjustment. Generic over any
 /// BinaryFloatingPoint bound so both Float (gains) and Double (slant/tuning) work.
+/// `label` names the setting for VoiceOver ("Decrease Squelch"; the bare symbols read as
+/// "Remove"/"Add"), and `valueText`, when given, is the slider's spoken value — pass the
+/// same text the card shows, so VoiceOver doesn't read a percentage of the range instead.
 struct FineSlider<V: BinaryFloatingPoint>: View where V.Stride: BinaryFloatingPoint {
     @Binding var value: V
     let range: ClosedRange<V>
     let step: V
+    var label: String = ""
+    var valueText: String?
 
     var body: some View {
         HStack(spacing: 8) {
-            nudge("minus") { value = max(range.lowerBound, value - step) }
-            Slider(value: $value, in: range)
-            nudge("plus") { value = min(range.upperBound, value + step) }
+            nudge("minus", label.isEmpty ? "Decrease" : "Decrease \(label)") { value = max(range.lowerBound, value - step) }
+            slider
+            nudge("plus", label.isEmpty ? "Increase" : "Increase \(label)") { value = min(range.upperBound, value + step) }
         }
     }
-    private func nudge(_ symbol: String, _ action: @escaping () -> Void) -> some View {
+    @ViewBuilder private var slider: some View {
+        if label.isEmpty {
+            Slider(value: $value, in: range)
+        } else if let valueText {
+            Slider(value: $value, in: range).accessibilityLabel(label).accessibilityValue(valueText)
+        } else {
+            Slider(value: $value, in: range).accessibilityLabel(label)
+        }
+    }
+    private func nudge(_ symbol: String, _ name: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: "\(symbol).circle.fill").font(.title3) }
             .buttonStyle(.borderless)
+            .accessibilityLabel(name)
     }
 }
 
 /// A labeled gain slider + live level meter. The level source is smoothed (fast
 /// attack / slow release) and the bar turns amber/red near clipping, so there's no
 /// separate notice line — a line that popped in and out was distracting.
+///
+/// Every gain slider runs on the same decibel scale (20·log10 of the gain) and reads the
+/// same "1.00×" label, so equal moves are equal loudness steps and 1× sits where its dB
+/// value falls in the range: about a quarter of the way along an input slider, at the
+/// right end of a TX slider (which only attenuates). The −/＋ buttons step 1 dB.
 struct AudioLevelControl: View {
     let title: String
     @Binding var gain: Float
     let level: Float
     // Up to 40× so low line-level sources (e.g. an IC-821 ACC/DATA jack, well below
-    // headphone level) can be brought up without an external preamp.
+    // headphone level) can be brought up without an external preamp. The lower bound
+    // must be above 0 (the slider is logarithmic).
     var range: ClosedRange<Float> = 0.25...40
-    var step: Float = 0.25
     var showLevel: Bool = true
 
     var body: some View {
@@ -112,11 +137,24 @@ struct AudioLevelControl: View {
             HStack {
                 Text(title).font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
                 Spacer()
-                Text(String(format: "%.2f×", gain)).font(.caption2.monospacedDigit())
+                Text(Self.gainText(gain)).font(.caption2.monospacedDigit())
             }
-            FineSlider(value: $gain, range: range, step: step)
+            .accessibilityHidden(true)     // the slider carries the title and value
+            FineSlider(value: decibels, range: Self.db(range.lowerBound)...Self.db(range.upperBound), step: 1,
+                       label: title, valueText: Self.gainText(gain))
             if showLevel { AudioLevelBar(level: level) }
         }
+    }
+
+    /// The gain as shown and spoken.
+    nonisolated static func gainText(_ gain: Float) -> String { String(format: "%.2f×", gain) }
+    nonisolated static func db(_ gain: Float) -> Float { 20 * log10(max(gain, 1e-4)) }
+
+    /// The gain in dB, clamped into the range (a stored value outside it is left alone
+    /// until the slider is moved).
+    private var decibels: Binding<Float> {
+        Binding(get: { min(max(Self.db(gain), Self.db(range.lowerBound)), Self.db(range.upperBound)) },
+                set: { gain = min(max(powf(10, $0 / 20), range.lowerBound), range.upperBound) })
     }
 }
 
@@ -146,6 +184,18 @@ struct HomeFT4Card: View {
 
     /// Why FT4 can't start on the current transponder (FM-only), or nil.
     private var fmOnlyReason: String? { FT4Engine.fmOnlyReason(rig.transponder(for: satellite)) }
+
+    /// The callsign FT4 transmits and logs (Log settings' My call, else Settings).
+    private var myCall: String {
+        FT4Engine.operatorCallsign(logCall: qso.config.myCall, settingsCall: store.preferences.callsign)
+    }
+
+    /// Why Tune is unavailable: the engine's gate (the same one `toggleTune` enforces),
+    /// with the card's FM-only check for the transponder now selected.
+    private var tuneBlockedReason: String? {
+        FT4Engine.tuneBlockedReason(txEnabled: ft4.txEnabled, myCall: myCall,
+                                    fmOnly: fmOnlyReason, pttBlocked: rig.pttBlockedReason)
+    }
 
     private var visible: Bool {
         switch visibility { case .auto: audio.audioAvailable; case .always: true; case .off: false }
@@ -244,7 +294,10 @@ struct HomeFT4Card: View {
             guard let store, let rig, let qso else { return }
             let sat = store.selectedSatellite
             var q = QSORecord.prefilled(satellite: sat, transponder: sat.flatMap { rig.transponder(for: $0) },
-                                        myGrid: store.operatorGrid6, myCall: qso.config.myCall, defaultRst: "-10")
+                                        myGrid: store.operatorGrid6,
+                                        myCall: FT4Engine.operatorCallsign(logCall: qso.config.myCall,
+                                                                           settingsCall: store.preferences.callsign),
+                                        defaultRst: "-10")
             q.mode = "FT4"; q.call = call; q.grid = grid; q.rstSent = rSent; q.rstRcvd = rRcvd
             qso.add(q)
         }
@@ -398,8 +451,12 @@ struct HomeFT4Card: View {
                     // TX frequency marker (0–3 kHz spans the full width).
                     let x = geo.size.width * CGFloat(min(1, max(0, ft4.txAudioFreq / 3000)))
                     Rectangle().fill(.orange).frame(width: 2, height: 130).offset(x: x - 1)
+                    // Inset from the top and side edges (and backed, like the slot times) so the
+                    // label isn't clipped by the rounded corner or lost on a bright line.
                     Text("TX").font(.system(size: 9, weight: .bold)).foregroundStyle(.orange)
-                        .offset(x: min(geo.size.width - 18, max(0, x - 6)), y: 2)
+                        .padding(.horizontal, 2)
+                        .background(Color.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 2))
+                        .offset(x: min(geo.size.width - 22, max(4, x - 8)), y: 5)
                 }
             }
             .frame(height: 130)
@@ -443,7 +500,8 @@ struct HomeFT4Card: View {
         VStack(alignment: .leading, spacing: 8) {
             LiveMetersReader(meters: ft4.meters) { m in
                 AudioLevelControl(title: "Input (RX)", gain: $ft4.inputGain, level: m.level)
-                AudioLevelControl(title: "Output (TX)", gain: $ft4.outputGain, level: min(1, m.txLevel * ft4.outputGain), range: 0...1)
+                // TX only attenuates (full scale at 1×), down to −40 dB.
+                AudioLevelControl(title: "Output (TX)", gain: $ft4.outputGain, level: min(1, m.txLevel * ft4.outputGain), range: 0.01...1)
             }
             Text("Set input so the meter peaks in the green on a decode; keep TX modest — FT4 is ~100% duty cycle.")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
@@ -530,6 +588,7 @@ struct HomeFT4Card: View {
     /// Transmit + auto-sequence switches at their natural width (for the one-row layouts).
     @ViewBuilder private var txToggles: some View {
         Toggle("Transmit", isOn: $ft4.txEnabled).fixedSize()
+            .disabled(myCall.isEmpty && !ft4.txEnabled)     // no callsign: can't go on the air
         Toggle("Auto-seq", isOn: $ft4.autoSequence).fixedSize()
     }
 
@@ -538,7 +597,8 @@ struct HomeFT4Card: View {
         if ft4.isRunning {
             Button(ft4.isTuning ? "Stop" : "Tune") { ft4.toggleTune() }
                 .buttonStyle(.bordered).tint(ft4.isTuning ? ODTheme.warning : nil)
-                .disabled(fmOnlyReason != nil || (ft4.isTransmitting && !ft4.isTuning))
+                // Stop always works; starting needs the transmit gates (see `tuneBlockedReason`).
+                .disabled(!ft4.isTuning && (tuneBlockedReason != nil || ft4.isTransmitting))
                 .accessibilityHint("Transmits a steady tone for up to 10 seconds to set the drive level")
         }
     }
@@ -562,6 +622,7 @@ struct HomeFT4Card: View {
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle("Transmit", isOn: $ft4.txEnabled)
+                        .disabled(myCall.isEmpty && !ft4.txEnabled)
                     Toggle("Auto-seq", isOn: $ft4.autoSequence)
                     tuneButton
                 }
@@ -574,12 +635,16 @@ struct HomeFT4Card: View {
                 Label("Call CQ", systemImage: "megaphone.fill").frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(qso.config.myCall.isEmpty || fmOnlyReason != nil)
+            .disabled(myCall.isEmpty || fmOnlyReason != nil)
 
-            if qso.config.myCall.isEmpty {
-                Text("Set your callsign in Log settings to transmit.")
+            if myCall.isEmpty {
+                Text(FT4Engine.noCallsignReason)
                     .font(.caption2).foregroundStyle(ODTheme.warning)
-            } else if !ft4.seqStatus.isEmpty && !(ft4.txEnabled && !ft4.txMessage.isEmpty) {
+            } else if ft4.isRunning, !ft4.isTuning, let why = tuneBlockedReason, fmOnlyReason == nil {
+                // Why Tune is dimmed (FM-only already has its own line at the top).
+                Text(why).font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+            if !myCall.isEmpty, !ft4.seqStatus.isEmpty && !(ft4.txEnabled && !ft4.txMessage.isEmpty) {
                 // Show the sequence status here only when the Next-TX panel isn't up.
                 Text(ft4.seqStatus).font(.caption).foregroundStyle(ODTheme.accent)
             }
@@ -605,7 +670,7 @@ struct HomeFT4Card: View {
                     .textInputAutocapitalization(.characters).autocorrectionDisabled()
                     .textFieldStyle(.odField)
                 Toggle("Pounce", isOn: $ft4.pounceEnabled).fixedSize()
-                    .disabled(ft4.pounceTokens.isEmpty || qso.config.myCall.isEmpty)
+                    .disabled(ft4.pounceTokens.isEmpty || myCall.isEmpty)
             }
             if ft4.pounceEnabled && !ft4.pounceTokens.isEmpty {
                 Text("Waiting for \(ft4.pounceTokens.joined(separator: ", ")) — answers their CQ (or their call to you) automatically, once.")
@@ -624,7 +689,8 @@ struct HomeFT4Card: View {
                 Button("Clear spot") { ft4.txAudioFreq = (ft4.suggestedTxFreq / 10).rounded() * 10 }
                     .font(.caption2).buttonStyle(.borderless).disabled(!ft4.isRunning)
             }
-            FineSlider(value: $ft4.txAudioFreq, range: 300...2700, step: 10)
+            FineSlider(value: $ft4.txAudioFreq, range: 300...2700, step: 10,
+                       label: "TX frequency", valueText: "\(Int(ft4.txAudioFreq)) Hz")
 
             decoderSetup
             Divider().opacity(0.4)
@@ -643,14 +709,14 @@ struct HomeFT4Card: View {
                 Text("Call CQ, or tap a decoded station to answer it — the exchange (grid → report → RR73) and logging run automatically; your report is set from their decoded SNR.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             } else {
-                TextField("TX message (e.g. CQ N8HM FM18)", text: $messageDraft)
+                TextField("TX message (e.g. \(examplePlaceholder))", text: $messageDraft)
                     .textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.odField)
                     .focused($messageFocused)
                     .submitLabel(.done)
                     .onSubmit { ft4.txMessage = messageDraft.trimmingCharacters(in: .whitespaces).uppercased() }
                     .onAppear { messageDraft = ft4.txMessage }
                     .onChange(of: ft4.txMessage) { _, new in if !messageFocused { messageDraft = new } }
-                Toggle("Transmit on even slots", isOn: $ft4.txOnEvenSlots)
+                Toggle("Transmit on even slots", isOn: $ft4.txOnEvenSlots).font(.caption)
             }
             if !ft4.pttOverCAT {
                 Text("No CAT PTT — use VOX or key manually when the TX indicator shows. Configure a CAT radio (CI-V / Yaesu / Kenwood / rigctld / Icom network) for automatic keying.")
@@ -659,6 +725,14 @@ struct HomeFT4Card: View {
             Divider().opacity(0.4)
             cqBlockListEditor
         }
+    }
+
+    /// The manual-message example: a CQ with the operator's own call and grid when they're
+    /// set, else a neutral one.
+    private var examplePlaceholder: String {
+        let grid4 = String(store.operatorGrid6.prefix(4)).uppercased()
+        guard !myCall.isEmpty else { return "CQ W1AW FN31" }
+        return FT4Engine.isGrid(grid4) ? "CQ \(myCall) \(grid4)" : "CQ \(myCall)"
     }
 
     /// Watchdog, waterfall and decoder options.
@@ -682,6 +756,9 @@ struct HomeFT4Card: View {
             Toggle("Slot lines with UTC time", isOn: $ft4.waterfallSlotLines).font(.caption)
             Toggle("Subtract decoded signals (find weaker ones)", isOn: $ft4.subtraction).font(.caption)
             Toggle("Hide decodes with |DT| over 1.5 s", isOn: $ft4.dtFilter).font(.caption)
+            if ft4.isRunning, !ft4.decoderDiagnostics.isEmpty {
+                Text(ft4.decoderDiagnostics).font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
+            }
         }
     }
 
@@ -782,7 +859,7 @@ struct HomeFT4Card: View {
             // Opt-in PSKReporter reporting (needs callsign + grid).
             if pskEnabled {
                 let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-                let reporter = PSKReporter(receiverCall: qso.config.myCall,
+                let reporter = PSKReporter(receiverCall: myCall,
                                            receiverGrid: store.operatorGrid6,
                                            software: "OrbitDeck \(version)",
                                            antenna: satellite.name)
@@ -798,7 +875,7 @@ struct HomeFT4Card: View {
             // DATA on outside an active FT4 session.
             ODLog.shared.log("FT4 start: data-mode pref=\(ft4DataMode) rigConnected=\(rig.connected)", category: "ft4")
             rig.setDigitalDataMode(rig.connected && ft4DataMode)
-            ft4.start(source: source, myCall: qso.config.myCall, myGrid: store.operatorGrid6, satellite: satellite.name)
+            ft4.start(source: source, myCall: myCall, myGrid: store.operatorGrid6, satellite: satellite.name)
         } else {
             ft4.errorText = "No audio interface available."
         }
@@ -892,6 +969,10 @@ struct HomePacketCard: View {
                     .buttonStyle(.bordered)
                 }
                 infoLine
+                if packet.myAddress == nil {
+                    Text("Receive only — set your callsign in Settings to send, beacon or gate to APRS-IS.")
+                        .font(.caption2).foregroundStyle(ODTheme.muted)
+                }
                 profileRow
 
                 if packet.isRunning {
@@ -1045,9 +1126,10 @@ struct HomePacketCard: View {
                 }
                 .font(.caption)
             }
+            // Worded for both states: the To field is only on screen while packet runs.
             Text(profile.wrappedValue.format == .plainText
-                 ? "UISS-style unproto text: the To call is the AX.25 destination (CQ by default) and your text is sent as is — e.g. \(packet.myAddress?.description ?? "N0CALL")>CQ,\(profile.wrappedValue.path.isEmpty ? "…" : profile.wrappedValue.path):CQ \(String(store.operatorGrid6.prefix(4)))."
-                 : "APRS: To CQ (or blank) sends a status; a callsign sends an APRS message\(packet.settings.requestAcks ? " (numbered, for acks)" : "").")
+                 ? "UISS-style unproto text: a message's addressee is the AX.25 destination (CQ by default) and your text is sent as is — e.g. \(packet.myAddress?.description ?? "N0CALL")>CQ,\(profile.wrappedValue.path.isEmpty ? "…" : profile.wrappedValue.path):CQ \(String(store.operatorGrid6.prefix(4)))."
+                 : "APRS: a message to CQ (or to no one) goes out as a status; one to a callsign goes out as an APRS message\(packet.settings.requestAcks ? " (numbered, for acks)" : "").")
                 .font(.caption2).foregroundStyle(ODTheme.muted)
         }
     }
@@ -1075,7 +1157,7 @@ struct HomePacketCard: View {
                         Text(macroLabel(macro)).font(.caption).lineLimit(1)
                     }
                     .buttonStyle(.bordered)
-                    .disabled(packet.isTransmitting)
+                    .disabled(packet.isTransmitting || packet.myAddress == nil)
                 }
             }
         }
@@ -1105,7 +1187,7 @@ struct HomePacketCard: View {
                 .onSubmit(sendMessage)
             Button("Send", action: sendMessage)
                 .buttonStyle(.borderedProminent)
-                .disabled(messageText.isEmpty || packet.isTransmitting)
+                .disabled(messageText.isEmpty || packet.isTransmitting || packet.myAddress == nil)
         }
     }
 
@@ -1260,11 +1342,12 @@ struct HomePacketCard: View {
                         Spacer()
                         Text(String(format: "%.0f%%", packet.settings.outputLevel * 100)).font(.caption2.monospacedDigit())
                     }
-                    FineSlider(value: $packet.settings.outputLevel, range: 0.05...1, step: 0.05)
+                    FineSlider(value: $packet.settings.outputLevel, range: 0.05...1, step: 0.05, label: "TX audio level",
+                               valueText: String(format: "%.0f%%", packet.settings.outputLevel * 100))
                 }
                 Button { packet.sendTestTone() } label: { Label("Send 3 s test signal", systemImage: "waveform") }
                     .buttonStyle(.bordered)
-                    .disabled(!packet.isRunning || packet.isTransmitting)
+                    .disabled(!packet.isRunning || packet.isTransmitting || packet.myAddress == nil)
                 Toggle("Off-frequency decoders (±175/±350 Hz, 1200 only)", isOn: $packet.settings.offsetDecoders)
                     .disabled(packet.isRunning)
                 Toggle("Put the radio in data mode (CAT)", isOn: $packet.settings.useDataMode)
@@ -1273,27 +1356,44 @@ struct HomePacketCard: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
             }
             Group {
-                Stepper("SSID: -\(packet.settings.ssid)", value: $packet.settings.ssid, in: 0...15)
-                Picker("Position precision", selection: $packet.settings.positionPrecision) {
-                    ForEach(PacketPositionPrecision.allCases) { Text($0.label).tag($0) }
+                Stepper(value: $packet.settings.ssid, in: 0...15) {
+                    HStack {
+                        Text("SSID")
+                        Spacer()
+                        Text(packet.settings.ssid == 0 ? "None" : "-\(packet.settings.ssid)")
+                            .monospacedDigit().foregroundStyle(ODTheme.muted)
+                    }
                 }
+                // Outside a Form a menu picker shows only its selection, so label it.
                 HStack {
+                    Text("Position precision")
+                    Spacer(minLength: 8)
+                    Picker("Position precision", selection: $packet.settings.positionPrecision) {
+                        ForEach(PacketPositionPrecision.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.menu).labelsHidden().fixedSize()
+                }
+                // Full-width fields under their labels: the default text didn't fit beside them.
+                VStack(alignment: .leading, spacing: 3) {
                     Text("Position comment")
-                    Spacer()
                     TextField("{MYGRID4} via OrbitDeck", text: $packet.settings.beaconComment)
-                        .multilineTextAlignment(.trailing).textFieldStyle(.odField).frame(minWidth: 120, maxWidth: 190)
+                        .textFieldStyle(.odField)
                 }
                 Stepper(packet.settings.beaconMinutes == 0 ? "Timed beacon: off" : "Timed beacon: every \(packet.settings.beaconMinutes) min",
                         value: $packet.settings.beaconMinutes, in: 0...30)
-                Picker("Beacon sends", selection: $packet.settings.beaconContent) {
-                    ForEach(PacketBeaconContent.allCases) { Text($0.label).tag($0) }
+                HStack {
+                    Text("Beacon sends")
+                    Spacer(minLength: 8)
+                    Picker("Beacon sends", selection: $packet.settings.beaconContent) {
+                        ForEach(PacketBeaconContent.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.menu).labelsHidden().fixedSize()
                 }
                 if packet.settings.beaconContent != .position {
-                    HStack {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text("Status text")
-                        Spacer()
                         TextField("OrbitDeck {MYGRID4}", text: $packet.settings.statusText)
-                            .multilineTextAlignment(.trailing).textFieldStyle(.odField).frame(minWidth: 120, maxWidth: 190)
+                            .textFieldStyle(.odField)
                     }
                 }
                 Toggle("Beacon when the satellite is first heard", isOn: $packet.settings.beaconOnFirstHeard)
@@ -1315,8 +1415,13 @@ struct HomePacketCard: View {
             PacketAlertsSetup()
             PacketSatgateSetup()
             Group {
-                Picker("Duplex", selection: $packet.settings.duplex) {
-                    ForEach(PacketDuplex.allCases) { Text($0.label).tag($0) }
+                HStack {
+                    Text("Duplex")
+                    Spacer(minLength: 8)
+                    Picker("Duplex", selection: $packet.settings.duplex) {
+                        ForEach(PacketDuplex.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.menu).labelsHidden().fixedSize()
                 }
                 Stepper("PTT watchdog: \(packet.settings.pttWatchdogSeconds) s", value: $packet.settings.pttWatchdogSeconds, in: 1...60)
                 Stepper("Persistence: \(packet.settings.persistence)", value: $packet.settings.persistence, in: 0...255, step: 16)
@@ -1968,14 +2073,14 @@ struct HomeCWCard: View {
                 SetupDisclosure("Setup", isExpanded: $showSetup) { setup.padding(.top, 4) }
                     .font(.subheadline).tint(ODTheme.accent)
 
-                Text("Decodes Morse from your USB (or network) audio interface: CW beacons and CW on linear transponders. Runs alongside pass recording and keeps decoding with the screen locked.")
+                Text("Decodes Morse from \(audio.inputDescription(allowMicFallback: visibility == .always)): CW beacons and CW on linear transponders. Runs alongside pass recording and keeps decoding with the screen locked.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
         }
     }
 
     private var headline: String {
-        guard cw.isRunning else { return cw.lines.isEmpty ? "Idle" : "Stopped" }
+        guard cw.isRunning else { return "Idle" }
         let s = cw.settings
         if cw.pitchLocked { return "Locked at \(Int(cw.pitchHz.rounded())) Hz" }
         return cw.acquired ? "Tracking \(Int(cw.pitchHz.rounded())) Hz"
@@ -1999,7 +2104,9 @@ struct HomeCWCard: View {
     private var statusLine: some View {
         HStack(spacing: 8) {
             Group {
-                Text(cw.acquired ? "\(Int(cw.pitchHz.rounded())) Hz" : "— Hz")
+                // Verbatim: a localized Int interpolation adds grouping ("1,105 Hz"), unlike
+                // the headline's "Tracking 1105 Hz".
+                Text(verbatim: cw.acquired ? "\(Int(cw.pitchHz.rounded())) Hz" : "— Hz")
                 Text(cw.acquired ? String(format: "%.0f WPM", cw.wpm) : "— WPM")
                 Text(cw.acquired ? String(format: "SNR %.0f dB", cw.snrDb) : "SNR —")
                     .foregroundStyle(cw.acquired && cw.snrDb >= cw.settings.squelchDb ? ODTheme.good : ODTheme.muted)
@@ -2055,9 +2162,9 @@ struct HomeCWCard: View {
             .accessibilityLabel("CW spectrum")
             .accessibilityHint("Tap a signal to tune the decoder to it")
             HStack {
-                Text("\(Int(lo)) Hz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
+                Text(verbatim: "\(Int(lo)) Hz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
                 Spacer(); Text("Tap a trace to tune").font(.system(size: 8)).foregroundStyle(ODTheme.muted)
-                Spacer(); Text("\(Int(hi)) Hz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
+                Spacer(); Text(verbatim: "\(Int(hi)) Hz").font(.system(size: 8).monospacedDigit()).foregroundStyle(ODTheme.muted)
             }
         }
     }
@@ -2185,12 +2292,12 @@ struct HomeCWCard: View {
                 // control itself and keep both on one row without crowding the card.
                 HStack(spacing: 6) {
                     Picker("From", selection: s.searchLowHz) {
-                        ForEach([200.0, 300, 400, 500, 600, 800], id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+                        ForEach([200.0, 300, 400, 500, 600, 800], id: \.self) { Text(verbatim: "\(Int($0)) Hz").tag($0) }
                     }
                     .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
                     Text("to").font(.caption2).foregroundStyle(ODTheme.muted)
                     Picker("To", selection: s.searchHighHz) {
-                        ForEach([900.0, 1000, 1200, 1500, 2000], id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+                        ForEach([900.0, 1000, 1200, 1500, 2000], id: \.self) { Text(verbatim: "\(Int($0)) Hz").tag($0) }
                     }
                     .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
                     Spacer(minLength: 0)
@@ -2215,7 +2322,8 @@ struct HomeCWCard: View {
                     Spacer()
                     Text(String(format: "%.0f dB", s.wrappedValue.squelchDb)).font(.caption2.monospacedDigit())
                 }
-                FineSlider(value: s.squelchDb, range: 0...20, step: 1)
+                FineSlider(value: s.squelchDb, range: 0...20, step: 1,
+                           label: "Squelch", valueText: String(format: "%.0f dB", s.wrappedValue.squelchDb))
                 Text("Only prints while the tone stands this far above the noise. Lower it for weak signals; raise it if noise prints as stray letters.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }

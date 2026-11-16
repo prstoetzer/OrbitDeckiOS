@@ -1505,9 +1505,9 @@ struct OrbitExportService {
         let visible = FeatureEngine.historyWindow(samples, lower: lower, upper: upper)
         let subtitle: String
         if let first = visible.first?.epoch, let last = visible.last?.epoch {
-            subtitle = "Space-Track gp_history · \(human(first)) through \(human(last)) UTC · \(visible.count) archived element sets"
+            subtitle = "Space-Track element history · \(human(first)) through \(human(last)) UTC · \(visible.count) archived element sets"
         } else {
-            subtitle = "Space-Track gp_history · no samples in the selected window"
+            subtitle = "Space-Track element history · no samples in the selected window"
         }
         return planningReportPDF(title: "\(satellite.name) — orbital history",
                                  subtitle: subtitle, csvText: orbitalHistorySummaryCSV(visible))

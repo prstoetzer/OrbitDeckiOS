@@ -408,7 +408,7 @@ struct HomeView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(fleet.name)
                                             .foregroundStyle(fleet.id == store.selectedSatellite?.id ? ODTheme.accent : .primary)
-                                        Text("AOS \(ODFormat.utcShort.string(from: fleet.pass.aos)) · \(ODFormat.secondaryClock(fleet.pass.aos))")
+                                        Text(["AOS \(ODFormat.utcShort.string(from: fleet.pass.aos))", ODFormat.secondaryClock(fleet.pass.aos)].filter { !$0.isEmpty }.joined(separator: " · "))
                                             .font(.caption.monospacedDigit()).foregroundStyle(ODTheme.muted)
                                             .lineLimit(1).minimumScaleFactor(0.7)
                                     }
@@ -909,12 +909,12 @@ struct HomeAmsatQuickReport: View {
                         Text("AMSAT name").foregroundStyle(ODTheme.muted)
                         Spacer(minLength: 12)
                         Picker("AMSAT name", selection: $apiName) {
-                            ForEach(apiMatches, id: \.self) { Text($0).tag($0) }
+                            ForEach(apiMatches, id: \.self) { Text(AmsatStatusService.displayName(forAPIName: $0)).tag($0) }
                         }
                         .pickerStyle(.menu).labelsHidden().lineLimit(1)
                     }
                 } else if !apiName.isEmpty {
-                    MetricRow("AMSAT name", apiName)
+                    MetricRow("AMSAT name", AmsatStatusService.displayName(forAPIName: apiName))
                 }
                 MetricRow("Attribution", "\(call.uppercased()) · \(store.operatorGrid)")
 
@@ -948,7 +948,7 @@ struct HomeAmsatQuickReport: View {
             }
             Button("Cancel", role: .cancel) { pendingStatus = nil }
         } message: {
-            Text("This publicly posts \(pendingStatus ?? "") for \(apiName) as \((store.preferences.callsign ?? "").uppercased()) / \(store.operatorGrid) on amsat.org.")
+            Text("This publicly posts \(pendingStatus ?? "") for \(AmsatStatusService.displayName(forAPIName: apiName)) as \((store.preferences.callsign ?? "").uppercased()) / \(store.operatorGrid) on amsat.org.")
         }
     }
 

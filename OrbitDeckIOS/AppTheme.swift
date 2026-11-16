@@ -12,6 +12,31 @@ enum ODTheme {
     static let mapLand = Color(red: 44/255, green: 74/255, blue: 99/255)
     static let passElevationMid = Color(red: 0.23, green: 0.36, blue: 0.65)
     static let globeOcean = Color(red: 0.04, green: 0.10, blue: 0.17)
+
+    /// Unit symbols whose case carries meaning ("mHz" isn't "MHz"), so section
+    /// headers leave them alone.
+    private static let caseSensitiveUnits: Set<String> = ["Hz", "kHz", "MHz", "GHz", "dB", "dBm", "dBi", "dBd", "dBc", "dBW"]
+
+    /// Section-header casing: uppercases the title but keeps unit symbols as
+    /// written, so "Downlink 437.275 MHz" becomes "DOWNLINK 437.275 MHz", not "MHZ".
+    static func headerCase(_ title: String) -> String {
+        var out = ""
+        var word = ""
+        func flush() {
+            out += caseSensitiveUnits.contains(word) ? word : word.uppercased()
+            word = ""
+        }
+        for ch in title {
+            if ch.isLetter {
+                word.append(ch)
+            } else {
+                flush()
+                out.append(ch)
+            }
+        }
+        flush()
+        return out
+    }
 }
 
 extension View {
@@ -89,7 +114,7 @@ struct SectionCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
+            Text(ODTheme.headerCase(title))
                 .font(.caption.weight(.bold))
                 .foregroundStyle(ODTheme.accent)
             Divider().overlay(ODTheme.grid)

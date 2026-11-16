@@ -141,6 +141,9 @@ final class FT4Engine: ObservableObject {
     @Published private(set) var canDecodeDeep = false
     /// Tune carrier on the air (a steady tone at the TX audio frequency).
     @Published private(set) var isTuning = false
+    /// What the decoder saw in the last slot (sync candidates, blocks), for Setup —
+    /// distinguishes "no audio" from "signal but no sync" from "candidates but no decode".
+    @Published private(set) var decoderDiagnostics = ""
     /// Courtesy warning when the radio's RF power setting reads high (never blocks TX).
     @Published private(set) var rfPowerWarning: String?
 
@@ -356,7 +359,7 @@ final class FT4Engine: ObservableObject {
             errorText = "Audio is in use by \(AudioActivity.captureHolder ?? "another feature"). Stop it first."
             return
         }
-        errorText = ""; decodes.removeAll()
+        errorText = ""; decodes.removeAll(); decoderDiagnostics = ""
         self.source = source
         self.satName = satellite
         rxDeDopplerEnabled = audioDopplerRX
@@ -760,11 +763,14 @@ final class FT4Engine: ObservableObject {
             self.handleDecodes(found, endedSlot: endedSlotIndex)
             // Always report what the decoder saw this slot — distinguishes "no audio"
             // from "signal but no sync candidates" from "candidates but no decode".
+            // The candidate/block counts are diagnostics, shown in Setup rather than the headline.
             if !self.isTransmitting {
-                let s = haveAudio ? "\(found.count) decoded · \(result.candidates) cand · \(result.blocks) blk"
-                                  : "No RX audio this slot"
+                let s = haveAudio ? "\(found.count) decoded" : "No RX audio this slot"
                 if self.status != s { self.status = s }
             }
+            let diag = haveAudio ? "Last slot: \(found.count) decoded from \(result.candidates) sync candidates (\(result.blocks) blocks)"
+                                 : "Last slot: no RX audio"
+            if self.decoderDiagnostics != diag { self.decoderDiagnostics = diag }
 
             // TX watchdog: halt before deciding on this slot's transmission.
             self.enforceWatchdog()
@@ -796,8 +802,9 @@ final class FT4Engine: ObservableObject {
             await first.value
             self.handleDecodes(extra, endedSlot: endedSlotIndex)
             if !self.isTransmitting {
-                self.status = "\(found.count + extra.count) decoded (\(extra.count) after subtraction) · \(result.candidates) cand"
+                self.status = "\(found.count + extra.count) decoded (\(extra.count) after subtraction)"
             }
+            self.decoderDiagnostics = "Last slot: \(found.count + extra.count) decoded (\(extra.count) after subtraction) from \(result.candidates) sync candidates (\(result.blocks) blocks)"
         }
     }
 
@@ -1011,7 +1018,7 @@ final class FT4Engine: ObservableObject {
 
     /// Begin calling CQ (auto-seq will engage the first station that answers).
     func callCQ() {
-        guard !myCallSeq.isEmpty else { errorText = "Set your callsign in Log settings first."; return }
+        guard !myCallSeq.isEmpty else { errorText = FT4Engine.noCallsignReason; return }
         seq.reset()
         resetWatchdog()
         txMessage = myGridSeq.isEmpty ? "CQ \(myCallSeq)" : "CQ \(myCallSeq) \(myGridSeq)"
@@ -1333,6 +1340,14 @@ final class FT4Engine: ObservableObject {
             if pttAlreadyKeyed { Task { await rig?.setPTT(false) } }
             return
         }
+        // A manual message with the Transmit switch on is the one path that doesn't go
+        // through Call CQ / work(), which already require a callsign.
+        if myCallSeq.isEmpty {
+            errorText = FT4Engine.noCallsignReason
+            txEnabled = false
+            if pttAlreadyKeyed { Task { await rig?.setPTT(false) } }
+            return
+        }
         guard let tones = FT4Engine.encodeTones(txMessage) else { errorText = "Could not encode \"\(txMessage)\"."; return }
         let rate = source.sampleRate
         let tx = makeTXWaveform(tones: tones, slot: txSlot, rate: rate)
@@ -1438,14 +1453,43 @@ final class FT4Engine: ObservableObject {
     static let tuneSeconds = 10.0
     private var tuneGeneration = 0
 
+    /// Why Tune can't key right now, or nil. The carrier goes on the air like a burst
+    /// (CAT PTT, VOX or the speaker path), so it takes the same gates: the Transmit switch,
+    /// a callsign, and no FM-only or receive-only block. Like Call CQ there's no horizon
+    /// gate — levels are often set into a dummy load or before AOS.
+    nonisolated static func tuneBlockedReason(txEnabled: Bool, myCall: String,
+                                              fmOnly: String?, pttBlocked: String?) -> String? {
+        if let fmOnly { return fmOnly }
+        if let pttBlocked { return pttBlocked }
+        if myCall.trimmingCharacters(in: .whitespaces).isEmpty { return FT4Engine.noCallsignReason }
+        if !txEnabled { return "Turn on Transmit to tune." }
+        return nil
+    }
+
+    /// The operator's callsign for FT4 and packet: My call in Log settings when set,
+    /// otherwise the Settings → Operator identity callsign. Trimmed and uppercased.
+    nonisolated static func operatorCallsign(logCall: String, settingsCall: String?) -> String {
+        let fromLog = logCall.trimmingCharacters(in: .whitespaces)
+        if !fromLog.isEmpty { return fromLog.uppercased() }
+        return (settingsCall ?? "").trimmingCharacters(in: .whitespaces).uppercased()
+    }
+
+    /// Shown wherever transmitting needs the operator's callsign.
+    nonisolated static let noCallsignReason = "Set your callsign in Settings to transmit."
+
+    /// The live Tune gate (see `tuneBlockedReason`).
+    var tuneBlocked: String? {
+        FT4Engine.tuneBlockedReason(txEnabled: txEnabled, myCall: myCallSeq,
+                                    fmOnly: fmOnlyBlock, pttBlocked: rig?.pttBlockedReason)
+    }
+
     /// Start (or stop, if on) a steady tone at the TX audio frequency for up to
     /// `tuneSeconds`, through the normal PTT path, to set the drive level. Not while a
-    /// burst is on the air; refused where transmitting is blocked.
+    /// burst is on the air; refused where transmitting is blocked (`tuneBlocked`).
     func toggleTune() {
         if isTuning { Task { await endTransmit() }; return }
         guard isRunning, !isTransmitting, let source else { return }
-        if let why = rig?.pttBlockedReason { errorText = why; return }
-        if let why = fmOnlyBlock { errorText = why; return }
+        if let why = tuneBlocked { errorText = why; return }
         // Tune keys PTT itself; drop any pre-armed slot so its PTT state isn't orphaned.
         preArmTask?.cancel(); preArmTask = nil; pttArmed = false; armedSlotIndex = -1
         let rate = source.sampleRate
@@ -4143,9 +4187,7 @@ final class PacketEngine: ObservableObject {
 
     /// The operator's callsign (station setup in the log, else Settings).
     var myCall: String {
-        let fromLog = qso?.config.myCall.trimmingCharacters(in: .whitespaces) ?? ""
-        if !fromLog.isEmpty { return fromLog.uppercased() }
-        return (store?.preferences.callsign ?? "").trimmingCharacters(in: .whitespaces).uppercased()
+        FT4Engine.operatorCallsign(logCall: qso?.config.myCall ?? "", settingsCall: store?.preferences.callsign)
     }
     var myAddress: AX25Address? {
         guard let base = AX25Address(myCall.split(separator: "-").first.map(String.init) ?? "") else { return nil }
@@ -4256,7 +4298,8 @@ final class PacketEngine: ObservableObject {
     func start(satellite: SatelliteRecord?) {
         guard !isRunning else { return }
         errorText = ""
-        guard myAddress != nil else { errorText = "Set your callsign in Settings first."; return }
+        // Monitoring needs no callsign; every transmit path checks for one itself (`send`,
+        // the beacons, the test signal, the satgate login).
         guard AudioActivity.claimMode("Packet") else {
             errorText = "Audio is in use by \(AudioActivity.modeHolder ?? "another feature"). Stop it first."
             return
@@ -4570,7 +4613,8 @@ final class PacketEngine: ObservableObject {
         if !ownFrame { alertsAndSpeech(for: entry) }
         // Beacon when the satellite is first heard: one position on the first frame of
         // the pass that came through a digipeater, then the timed beacon carries on.
-        if !ownFrame, frame.wasDigipeated, settings.beaconOnFirstHeard, !firstHeardBeaconSent, isRunning {
+        if !ownFrame, frame.wasDigipeated, settings.beaconOnFirstHeard, !firstHeardBeaconSent, isRunning,
+           myAddress != nil {
             firstHeardBeaconSent = true
             if satelliteUpForBeacon, Date().timeIntervalSince(lastBeaconAt) >= Self.minBeaconInterval {
                 lastBeaconAt = Date()
@@ -4953,7 +4997,8 @@ final class PacketEngine: ObservableObject {
     /// APRS tocall; plain-text (UISS) frames use CQ or the station's call.
     @discardableResult
     func send(info: String, destination: AX25Address? = nil) -> UUID? {
-        guard isRunning, let me = myAddress else { return nil }
+        guard isRunning else { return nil }
+        guard let me = myAddress else { errorText = FT4Engine.noCallsignReason; return nil }
         let minEl = minElevation(for: store?.selectedSatellite?.id)
         if settings.blockBelowHorizon, let el = satelliteElevation(), el < minEl {
             let name = store?.selectedSatellite?.name ?? "The satellite"
@@ -5092,6 +5137,7 @@ final class PacketEngine: ObservableObject {
     /// for 1200 AFSK, scrambled flags (the real 9600 spectrum) for G3RUH.
     func sendTestTone() {
         guard isRunning, settings.transport == .builtInModem, let source, !isTransmitting else { return }
+        guard myAddress != nil else { errorText = FT4Engine.noCallsignReason; return }
         let fs = source.sampleRate
         let tone: [Float]
         if runningModem == .g3ruh9600 {
@@ -5126,7 +5172,8 @@ final class PacketEngine: ObservableObject {
     }
 
     private func beaconTick() {
-        guard isRunning, satelliteUpForBeacon,
+        // Receive-only (no callsign): skip quietly rather than flag an error every interval.
+        guard isRunning, myAddress != nil, satelliteUpForBeacon,
               Date().timeIntervalSince(lastBeaconAt) >= Self.minBeaconInterval - 1 else { return }
         lastBeaconAt = Date()
         switch settings.beaconContent {

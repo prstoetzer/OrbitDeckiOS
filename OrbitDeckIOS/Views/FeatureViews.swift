@@ -1090,9 +1090,13 @@ struct PlanningView: View {
             SelectedSatelliteHeader()
             Form {
                 Section {
-                    Picker("Planning", selection: $mode) {
+                    // The screen title already says "Planning": hide the visible label
+                    // and keep it for VoiceOver.
+                    Picker("Planning tool", selection: $mode) {
                         ForEach(PlanningMode.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.menu)
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
                     if isLoading { ProgressView("Computing…") }
                     if let error { Text(error).foregroundStyle(ODTheme.warning) }
                 }
@@ -1388,7 +1392,7 @@ struct ConjunctionView: View {
     @EnvironmentObject private var store: OrbitStore
     @State private var secondaryNorad: UInt?
     @State private var horizonHours = 6.0
-    @State private var thresholdKm = 800.0
+    @State private var thresholdKm = ConjunctionView.thresholdPresetsKm[2]
     @State private var conjunctions: [ConjunctionRecord] = []
     @State private var neighbors: [OrbitalNeighbor] = []
     @State private var selectedEventID: Date?
@@ -1426,8 +1430,9 @@ struct ConjunctionView: View {
                         Text("6 h").tag(6.0); Text("12 h").tag(12.0); Text("24 h").tag(24.0)
                     }
                     Picker("Alert threshold", selection: $thresholdKm) {
-                        Text(ODFormat.units("100 km")).tag(100.0); Text(ODFormat.units("500 km")).tag(500.0)
-                        Text(ODFormat.units("800 km")).tag(800.0); Text(ODFormat.units("2000 km")).tag(2000.0)
+                        ForEach(Self.thresholdPresetsKm, id: \.self) { km in
+                            Text(ODFormat.km(km, decimals: 0)).tag(km)
+                        }
                     }
                     Button("Screen pair") { screenPair() }
                         .disabled(isLoading || store.selectedSatellite == nil || secondary == nil)
@@ -1509,7 +1514,7 @@ struct ConjunctionView: View {
                         Button("Prepare neighborhood CSV") { prepareNeighborhood(primary) }
                         if let shareURL { ShareLink(item: shareURL) { Label("Share \(shareLabel)", systemImage: "square.and.arrow.up") } }
                     }
-                    Text("Deep-parity scan evaluates the full loaded catalog, then ranks exact propagated 3-D separation and relative velocity at the same epoch.")
+                    Text("Checks every satellite in the loaded catalog and lists the closest objects right now, by straight-line distance and relative speed.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 }
 
@@ -1540,7 +1545,24 @@ struct ConjunctionView: View {
             .onChange(of: secondaryNorad) {
                 conjunctions = []; selectedEventID = nil; detail = nil; shareURL = nil
             }
+            .onAppear {
+                // The unit system may have changed since this view was created: keep the
+                // selection on one of the current system's round presets.
+                let presets = Self.thresholdPresetsKm
+                if !presets.contains(thresholdKm),
+                   let nearest = presets.min(by: { abs($0 - thresholdKm) < abs($1 - thresholdKm) }) {
+                    thresholdKm = nearest
+                }
+            }
         }
+    }
+
+    /// Alert-threshold presets, stored in km but round in the displayed unit system
+    /// (100/500/800/2000 km, or 50/300/500/1250 mi).
+    static var thresholdPresetsKm: [Double] {
+        ODFormat.usesCustomary
+            ? [50.0, 300, 500, 1250].map { $0 / UnitConversion.miPerKm }
+            : [100.0, 500, 800, 2000]
     }
 
     private func screenPair() {
@@ -2052,7 +2074,7 @@ struct EMEView: View {
                 case .plan:
                     let plan = FeatureCompletionEngine.emePlan(from: timeline.date, days: 90)
                     Section("90-day plan") {
-                        Text("Sampled at 12:00 UTC each day. Desktop’s ★ criterion is Moon declination > +15° and path degradation < 1 dB.")
+                        Text("Sampled at 12:00 UTC each day. A ★ marks a good day: Moon declination > +15° and path degradation < 1 dB.")
                             .font(.caption).foregroundStyle(ODTheme.muted)
                         ForEach(plan) { row in
                             HStack {
@@ -2421,12 +2443,15 @@ struct AstronomyView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Astronomy", selection: $tab) {
+                // The screen title already says "Astronomy": hide the visible label
+                // and keep it for VoiceOver.
+                Picker("Astronomy tool", selection: $tab) {
                     ForEach(Array(names.enumerated()), id: \.offset) { index, name in
                         Text(name).tag(index)
                     }
                 }
                 .pickerStyle(.menu)
+                .labelsHidden()
                 if isLoading { ProgressView("Computing \(names[tab])…") }
                 if let error { Text(error).foregroundStyle(ODTheme.warning) }
             }
@@ -2701,11 +2726,11 @@ struct OrbitalHistoryView: View {
                     }
 
                     if let decayEstimate {
-                        Section("Archive-anchored decay") {
+                        Section("Decay estimate from the archive") {
                             LabeledContent("Estimate", value: decayText(decayEstimate.days))
-                            LabeledContent("Anchor", value: decayEstimate.source)
+                            LabeledContent("Based on", value: decayEstimate.source)
                             if let ndot = decayEstimate.fittedNdot {
-                                LabeledContent("Archive fitted n-dot", value: String(format: "%.6g rev/day²", ndot))
+                                LabeledContent("Fitted decay rate (n-dot)", value: String(format: "%.6g rev/day²", ndot))
                             }
                             Text(decayEstimate.note).font(.caption).foregroundStyle(ODTheme.muted)
                         }
@@ -2815,7 +2840,7 @@ struct OrbitalHistoryView: View {
                     }
                 }
                 Section {
-                    Text("Space-Track gp_history is archival data. OrbitDeck caches a successful fetch in Application Support and reloads it without another query. Blank historical cells remain missing rather than being interpreted as zero. The archive-decay anchor is used only when PERIOD spans at least six samples and 30 days with a positive mean-motion trend.")
+                    Text("This history comes from Space-Track's archive of past orbital elements. OrbitDeck saves a successful download on this device and reuses it without asking Space-Track again. Values missing from the archive are left blank, never treated as zero. The decay estimate uses the archived orbital-period trend only when it covers at least six element sets over 30 days or more and shows the orbit getting lower.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 }
             }
@@ -4474,7 +4499,7 @@ struct SitesView: View {
                         ))
                         .multilineTextAlignment(.trailing).textFieldStyle(.odField)
                     }
-                    Text("The primary site drives Track, passes, MUF, mutual visibility and every other observer-relative screen.")
+                    Text("The primary site drives Home, passes, MUF, mutual visibility and every other observer-relative screen.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 }
             }
@@ -4638,7 +4663,7 @@ struct AmsatStatusInteractiveView: View {
             Button("Post “\(reportStatus)”") { submitReport() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This will publicly post \(reportStatus) for \(apiName) as \((store.preferences.callsign ?? "").uppercased()) / \(store.operatorGrid) on amsat.org. The report is attributed and visible to other operators.")
+            Text("This will publicly post \(reportStatus) for \(AmsatStatusService.displayName(forAPIName: apiName)) as \((store.preferences.callsign ?? "").uppercased()) / \(store.operatorGrid) on amsat.org. The report is attributed and visible to other operators.")
         }
     }
 
@@ -4693,7 +4718,10 @@ struct AmsatStatusInteractiveView: View {
             Section("Public attributed report") {
                 if let sat = store.selectedSatellite { LabeledContent("Selected satellite", value: sat.name) }
                 if apiMatches.count > 1 {
-                    Picker("AMSAT mode name", selection: $apiName) { ForEach(apiMatches, id: \.self) { Text($0).tag($0) } }
+                    Picker("AMSAT mode name", selection: $apiName) {
+                        // Readable labels; the tag (and the report payload) stays the raw API name.
+                        ForEach(apiMatches, id: \.self) { Text(AmsatStatusService.displayName(forAPIName: $0)).tag($0) }
+                    }
                 } else {
                     HStack {
                         Text("AMSAT mode name")
@@ -5818,6 +5846,27 @@ private struct NearbyStatusRow: View {
     }
 }
 
+/// APRS-IS range steps that are round in the displayed unit system: 10 km steps over
+/// 10–500 km, or 5 mi steps over 5–300 mi. The range is always stored in whole km
+/// (the APRS-IS filter's unit), chosen so it displays as the round mile value.
+enum NearbyRangeStep {
+    static func km(fromMiles miles: Int) -> Int {
+        Int((Double(miles) / UnitConversion.miPerKm).rounded())
+    }
+
+    static func step(_ km: Int, up: Bool, customary: Bool) -> Int {
+        let step = customary ? 5.0 : 10.0
+        let bounds: ClosedRange<Double> = customary ? 5...300 : 10...500
+        let shown = customary ? Double(km) * UnitConversion.miPerKm : Double(km)
+        // Treat a value within a tenth of a step of a round value as on it, so a stored
+        // 97 km (60.3 mi) steps to 55 or 65 mi rather than 60 or 65.
+        let units = shown / step
+        let base = abs(units - units.rounded()) < 0.1 ? units.rounded() : (up ? units.rounded(.down) : units.rounded(.up))
+        let next = min(max((base + (up ? 1 : -1)) * step, bounds.lowerBound), bounds.upperBound)
+        return customary ? Self.km(fromMiles: Int(next)) : Int(next)
+    }
+}
+
 private struct NearbyAPRSPanel: View {
     @EnvironmentObject private var store: OrbitStore
     @ObservedObject var feed: APRSISFeed
@@ -5833,7 +5882,9 @@ private struct NearbyAPRSPanel: View {
             Section {
                 LabeledContent("Login", value: feed.loginCall.isEmpty ? "Set callsign in Settings" : "\(feed.loginCall) (receive-only)")
                 LabeledContent("Center", value: store.operatorGrid6)
-                Stepper("Range \(ODFormat.km(Double(rangeKm), decimals: 0))", value: $rangeKm, in: 10...500, step: 10)
+                Stepper("Range \(ODFormat.km(Double(rangeKm), decimals: 0))",
+                        onIncrement: { rangeKm = NearbyRangeStep.step(rangeKm, up: true, customary: ODFormat.usesCustomary) },
+                        onDecrement: { rangeKm = NearbyRangeStep.step(rangeKm, up: false, customary: ODFormat.usesCustomary) })
                     .disabled(feed.isActive)
                 HStack {
                     if feed.isActive {
@@ -5894,7 +5945,14 @@ private struct NearbyAPRSPanel: View {
                 }
             }
         }
-        .onAppear { if !feed.isActive { feed.callsign = store.preferences.callsign ?? "" } }
+        .onAppear {
+            if !feed.isActive { feed.callsign = store.preferences.callsign ?? "" }
+            // The 100 km default reads "62 mi" in US customary units; until the operator
+            // picks a range, use the round customary default (60 mi) instead.
+            if ODFormat.usesCustomary, UserDefaults.standard.object(forKey: "OrbitDeckIOS.nearby.aprsRangeKm") == nil {
+                rangeKm = NearbyRangeStep.km(fromMiles: 60)
+            }
+        }
     }
 
     private func connect() {

@@ -105,8 +105,20 @@ final class AudioHub: ObservableObject {
     /// An Icom network-audio radio is configured and connected.
     @Published private(set) var icomAudioReady = false
 
+    /// The connected USB interface's name as iOS reports it (e.g. "USB Audio CODEC").
+    @Published private(set) var usbInputName: String?
+
     /// The gate for the audio-feature Home cards.
     var audioAvailable: Bool { usbConnected || icomAudioReady }
+
+    /// Where a card's audio comes from, for its description — the same order
+    /// `makeRawSource` picks: the USB interface, else the network radio, else (when the
+    /// card is set to Always) the built-in microphone.
+    func inputDescription(allowMicFallback: Bool) -> String {
+        if usbConnected { return usbInputName.map { "your USB audio interface (\($0))" } ?? "your USB audio interface" }
+        if icomAudioReady { return "your network radio's audio" }
+        return allowMicFallback ? "the built-in microphone (hold the phone near the receiver)" : "your USB or network audio interface"
+    }
 
     private weak var rig: RigController?
     private var cancellables = Set<AnyCancellable>()
@@ -167,6 +179,11 @@ final class AudioHub: ObservableObject {
         let outRoute = route.outputs.contains { $0.portType == .usbAudio }
         let inAvail = (s.availableInputs ?? []).contains { $0.portType == .usbAudio }
         usbConnected = inRoute || outRoute || inAvail
+        let usbPort = route.inputs.first { $0.portType == .usbAudio }
+            ?? (s.availableInputs ?? []).first { $0.portType == .usbAudio }
+        let name = usbPort?.portName.trimmingCharacters(in: .whitespaces)
+        let newName = usbConnected && !(name ?? "").isEmpty ? name : nil
+        if usbInputName != newName { usbInputName = newName }
         icomAudioReady = rig?.icomAudioTransport != nil
         // If a network-audio capture is live and the RS-BA1 link just reconnected (new
         // transport), re-point the source at it so RX audio resumes — otherwise it stays

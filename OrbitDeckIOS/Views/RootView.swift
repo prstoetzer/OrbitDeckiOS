@@ -96,6 +96,16 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
+    /// Title for the navigation bar. The bar sits between the menu button and the
+    /// satellite switcher, so a name too long for it gets a shorter form there; the
+    /// menu keeps the full `title`.
+    var navigationTitle: String {
+        switch self {
+        case .oscarref: "Reference Orbits"
+        default: title
+        }
+    }
+
     var icon: String {
         switch self {
         case .home: "house"
@@ -159,7 +169,7 @@ enum OrbitDestination: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .radar, .gridfinder, .schedule, .sunmoon, .spacewx, .muf, .propagation, .tools, .graphcalc, .tinybasic,
              .datafeeds, .nearby, .learn, .references, .newlaunch, .sites, .astronomy, .eme, .log, .sstv,
-             .satellites, .calibrations, .autoswitch, .settings, .about, .notes, .help:
+             .satellites, .calibrations, .autoswitch, .settings, .about, .notes, .help, .ao7:
             return false
         default:
             return true
@@ -319,7 +329,7 @@ struct RootView: View {
                     .background(ODTheme.background.ignoresSafeArea())
                     // Show the app name on the landing page; other screens keep their
                     // own function title.
-                    .navigationTitle(shown == .home ? "OrbitDeck" : shown.title)
+                    .navigationTitle(shown == .home ? "OrbitDeck" : shown.navigationTitle)
                     .navigationBarTitleDisplayMode(.inline)
                     // On iPhone the split view collapses to a stack; hide the default
                     // "‹ OrbitDeck" back chevron (which reads as "go back", not "open
@@ -448,29 +458,26 @@ struct RootView: View {
         horizontalSizeClass == .compact && selection != nil
     }
 
-    /// One menu row. A real Button, so it activates only on a tap (not at the end of
-    /// a swipe) and VoiceOver announces it as a button; the icon is decorative and the
-    /// row's text is its label. The current screen is tinted and marked selected —
-    /// on iPhone the list selection is nil while the menu is open, so it falls back to
-    /// the last screen shown.
+    /// One menu row. Selection is left to the List (a Button inside a selectable
+    /// List fights its tap handling); VoiceOver still hears a button named by the
+    /// row's text, with the icon decorative. The current screen is tinted and marked
+    /// selected — on iPhone the list selection is nil while the menu is open, so it
+    /// falls back to the last screen shown.
     private func menuRow(_ destination: OrbitDestination) -> some View {
         let isCurrent = (selection ?? lastSelection) == destination
-        return Button { selection = destination } label: {
-            Label {
-                Text(destination.title)
-                    .fontWeight(isCurrent ? .semibold : .regular)
-                    .foregroundStyle(isCurrent ? ODTheme.accent : .primary)
-            } icon: {
-                Image(systemName: destination.icon)
-                    .foregroundStyle(ODTheme.accent)
-                    .accessibilityHidden(true)
-            }
-            .font(.body)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+        return Label {
+            Text(destination.title)
+                .fontWeight(isCurrent ? .semibold : .regular)
+                .foregroundStyle(isCurrent ? ODTheme.accent : .primary)
+        } icon: {
+            Image(systemName: destination.icon)
+                .foregroundStyle(ODTheme.accent)
+                .accessibilityHidden(true)
         }
+        .font(.body)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(destination.title)
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+        .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
         .tag(destination)
     }
 

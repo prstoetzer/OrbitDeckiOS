@@ -71,9 +71,14 @@ struct ScheduleView: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            VStack(spacing: 0) {
-                nowHeader(proxy)
-                scheduleList(proxy)
+            if favorites.isEmpty {
+                ContentUnavailableView("No favorite satellites", systemImage: "star",
+                                       description: Text("Star satellites on the Satellites screen to see their passes here."))
+            } else {
+                VStack(spacing: 0) {
+                    nowHeader(proxy)
+                    scheduleList(proxy)
+                }
             }
         }
         .task(id: scheduleKey) { await load() }
@@ -108,12 +113,7 @@ struct ScheduleView: View {
 
     private func scheduleList(_ proxy: ScrollViewProxy) -> some View {
             List {
-                if favorites.isEmpty {
-                    Section {
-                        Text("Mark satellites as favorites (★) to see their passes here.")
-                            .foregroundStyle(ODTheme.muted)
-                    }
-                } else {
+                Group {
                     ForEach(days, id: \.self) { day in
                         Section {
                             // Day label as a normal (non-sticky) row so it always
@@ -196,7 +196,7 @@ struct ScheduleView: View {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(ODFormat.primaryClock(entry.pass.aos)).font(.body.monospacedDigit())
                             .lineLimit(1).minimumScaleFactor(0.7)
-                        Text("\(ODFormat.secondaryClock(entry.pass.aos)) · max \(ODFormat.angle(entry.pass.maxElevation))")
+                        Text([ODFormat.secondaryClock(entry.pass.aos), "max \(ODFormat.angle(entry.pass.maxElevation))"].filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.caption2.monospacedDigit()).foregroundStyle(ODTheme.muted)
                             .lineLimit(1).minimumScaleFactor(0.7)
                     }

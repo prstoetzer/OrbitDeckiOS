@@ -1490,16 +1490,16 @@ enum FeatureEngine {
                                                    bstar: satellite.bstar, ndot: fitted, solar: 1)
             if result.1 == .observedNdot {
                 return .init(days: result.0, source: "element archive", fittedNdot: fitted,
-                             note: "Archive-fitted mean-motion trend anchors the decay model.")
+                             note: "The orbit-lowering trend in the archive sets the decay rate for this estimate.")
             }
             return .init(days: result.0, source: result.1.label, fittedNdot: fitted,
-                         note: "Archive trend fell outside the physical n-dot anchor range; using the model fallback.")
+                         note: "The archive trend is outside the physically plausible range, so the estimate falls back to the B* drag term.")
         }
         let result = OrbitDecayModel.estimate(meanMotion: satellite.meanMotionRevPerDay,
                                                ecc: satellite.eccentricity,
                                                bstar: satellite.bstar, ndot: 0, solar: 1)
         return .init(days: result.0, source: result.1.label, fittedNdot: nil,
-                     note: "Archive is too short, sparse, flat, or rising to supply a decay anchor.")
+                     note: "The archive is too short or sparse, or doesn't show the orbit getting lower, so the estimate falls back to the B* drag term.")
     }
 
     // MARK: - Zone / transit helpers
@@ -2217,7 +2217,7 @@ struct AmsatStatusService {
             let count = int(row["report_count"] ?? row["reports"] ?? row["count"])
             let status = String(describing: row["report"] ?? row["status"] ?? "")
             let last = String(describing: row["latest_reported_time"] ?? row["last_report"] ?? row["reported_time"] ?? "")
-            var g = grouped[name] ?? (pretty(name), 0, 0, "", "")
+            var g = grouped[name] ?? (displayName(forAPIName: name), 0, 0, "", "")
             g.reports += count
             if status.lowercased().hasPrefix("heard") {
                 g.heard += count
@@ -2240,10 +2240,15 @@ struct AmsatStatusService {
         if let s = value as? String { return Int(Double(s) ?? 0) }
         return 0
     }
-    private static func pretty(_ name: String) -> String {
+    /// A readable label for an AMSAT API name: "SO-131_[V/u_FM]" → "SO-131 (V/u FM)".
+    /// Display only; reports and queries always send the raw API name.
+    static func displayName(forAPIName name: String) -> String {
         name.replacingOccurrences(of: "_[", with: " (")
             .replacingOccurrences(of: "[", with: " (")
             .replacingOccurrences(of: "]", with: ")")
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
     }
 }
 

@@ -1116,7 +1116,7 @@
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "OrbitDeck adds satellite pass times to your calendar when you choose to.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "OrbitDeck connects to your radio, rotator, rigctld/rotctld server, ADS-B receiver or DX cluster on your local network, and can run rigctld/rotctld servers for other apps on your network. It is used only when you configure and connect one of these.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone) to record passes and decode SSTV, FT4 and packet, and records your spoken voice memos through the built-in microphone or a headset. Audio is used only while you record, decode or make a memo.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone), or the built-in microphone when you choose, to record passes and decode SSTV, FT4, CW and packet, and records your spoken voice memos through the built-in microphone or a headset. Audio is used only while you record, decode or make a memo.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "OrbitDeck can save decoded SSTV images to your photo library when you choose to export them.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -1156,7 +1156,7 @@
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "OrbitDeck adds satellite pass times to your calendar when you choose to.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "OrbitDeck connects to your radio, rotator, rigctld/rotctld server, ADS-B receiver or DX cluster on your local network, and can run rigctld/rotctld servers for other apps on your network. It is used only when you configure and connect one of these.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "OrbitDeck uses your location as the observer station for satellite pass predictions.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone) to record passes and decode SSTV, FT4 and packet, and records your spoken voice memos through the built-in microphone or a headset. Audio is used only while you record, decode or make a memo.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "OrbitDeck captures the received satellite audio from a connected USB audio interface (which iOS treats as a microphone), or the built-in microphone when you choose, to record passes and decode SSTV, FT4, CW and packet, and records your spoken voice memos through the built-in microphone or a headset. Audio is used only while you record, decode or make a memo.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "OrbitDeck can save decoded SSTV images to your photo library when you choose to export them.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
