@@ -2093,6 +2093,9 @@ struct HomeCWCard: View {
             if !rig.config.tuning.linearCW {
                 Text("On a linear transponder, set the mode to CW on the Live Doppler card so the radio uses its CW filter, then tune so the CW tone (pitch) falls inside the search range below.")
                     .font(.caption2).foregroundStyle(ODTheme.warning)
+            } else if cw.usesDeepCW {
+                Text("Tune so the CW pitch falls between \(Int(DeepCWSpec.lowHz)) and \(Int(DeepCWSpec.highHz)) Hz, the band DeepCW copies.")
+                    .font(.caption2).foregroundStyle(ODTheme.muted)
             } else {
                 Text("Tune so the CW pitch falls inside the \(Int(cw.settings.searchLowHz))–\(Int(cw.settings.searchHighHz)) Hz search range; tap the spectrum to pick a signal.")
                     .font(.caption2).foregroundStyle(ODTheme.muted)
@@ -2287,6 +2290,15 @@ struct HomeCWCard: View {
                 .font(.caption2).foregroundStyle(ODTheme.muted)
 
             VStack(alignment: .leading, spacing: 3) {
+                Text("Decoder").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
+                Picker("Decoder", selection: s.engine) {
+                    ForEach(CWDecoderEngine.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Text(decoderNote).font(.caption2).foregroundStyle(ODTheme.muted)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Search range").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
                 // Compact menus: `.font` doesn't shrink a menu picker's label, so size the
                 // control itself and keep both on one row without crowding the card.
@@ -2306,42 +2318,8 @@ struct HomeCWCard: View {
                     .font(.caption2).foregroundStyle(ODTheme.muted)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Filter bandwidth").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
-                Picker("Bandwidth", selection: s.bandwidthHz) {
-                    ForEach(CWSettings.bandwidths, id: \.self) { Text("\(Int($0)) Hz").tag($0) }
-                }
-                .pickerStyle(.segmented)
-                Text("Narrower rejects more noise and neighbors; wider follows fast code (over ~30 WPM use 200 Hz) and Doppler better.")
-                    .font(.caption2).foregroundStyle(ODTheme.muted)
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text("Squelch").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
-                    Spacer()
-                    Text(String(format: "%.0f dB", s.wrappedValue.squelchDb)).font(.caption2.monospacedDigit())
-                }
-                FineSlider(value: s.squelchDb, range: 0...20, step: 1,
-                           label: "Squelch", valueText: String(format: "%.0f dB", s.wrappedValue.squelchDb))
-                Text("Only prints while the tone stands this far above the noise. Lower it for weak signals; raise it if noise prints as stray letters.")
-                    .font(.caption2).foregroundStyle(ODTheme.muted)
-            }
-
-            Toggle("Fixed speed", isOn: s.fixedSpeed).font(.subheadline).toggleStyle(.switch)
-            if s.wrappedValue.fixedSpeed {
-                Stepper(value: s.fixedWPM, in: 5...50, step: 1) {
-                    Text("\(Int(s.wrappedValue.fixedWPM)) WPM").font(.subheadline.monospacedDigit())
-                }
-            } else {
-                Stepper(value: s.minWPM, in: 5...(s.wrappedValue.maxWPM - 5), step: 1) {
-                    Text("Slowest \(Int(s.wrappedValue.minWPM)) WPM").font(.subheadline.monospacedDigit())
-                }
-                Stepper(value: s.maxWPM, in: (s.wrappedValue.minWPM + 5)...60, step: 1) {
-                    Text("Fastest \(Int(s.wrappedValue.maxWPM)) WPM").font(.subheadline.monospacedDigit())
-                }
-                Text("The speed is measured from the code itself, within this range. Farnsworth-spaced code is handled.")
-                    .font(.caption2).foregroundStyle(ODTheme.muted)
+            if !cw.usesDeepCW {
+                classicSettings(s)
             }
 
             Toggle(isOn: s.afc) {
@@ -2356,6 +2334,57 @@ struct HomeCWCard: View {
             Button("Restore defaults") { cw.settings = CWSettings() }
                 .font(.caption).buttonStyle(.borderless)
         }
+    }
+
+    /// Settings that only shape the Classic decoder's text (bandwidth, squelch, speed).
+    @ViewBuilder private func classicSettings(_ s: Binding<CWSettings>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Filter bandwidth").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
+            Picker("Bandwidth", selection: s.bandwidthHz) {
+                ForEach(CWSettings.bandwidths, id: \.self) { Text("\(Int($0)) Hz").tag($0) }
+            }
+            .pickerStyle(.segmented)
+            Text("Narrower rejects more noise and neighbors; wider follows fast code (over ~30 WPM use 200 Hz) and Doppler better.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text("Squelch").font(.caption2.weight(.semibold)).foregroundStyle(ODTheme.muted)
+                Spacer()
+                Text(String(format: "%.0f dB", s.wrappedValue.squelchDb)).font(.caption2.monospacedDigit())
+            }
+            FineSlider(value: s.squelchDb, range: 0...20, step: 1,
+                       label: "Squelch", valueText: String(format: "%.0f dB", s.wrappedValue.squelchDb))
+            Text("Only prints while the tone stands this far above the noise. Lower it for weak signals; raise it if noise prints as stray letters.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+
+        Toggle("Fixed speed", isOn: s.fixedSpeed).font(.subheadline).toggleStyle(.switch)
+        if s.wrappedValue.fixedSpeed {
+            Stepper(value: s.fixedWPM, in: 5...50, step: 1) {
+                Text("\(Int(s.wrappedValue.fixedWPM)) WPM").font(.subheadline.monospacedDigit())
+            }
+        } else {
+            Stepper(value: s.minWPM, in: 5...(s.wrappedValue.maxWPM - 5), step: 1) {
+                Text("Slowest \(Int(s.wrappedValue.minWPM)) WPM").font(.subheadline.monospacedDigit())
+            }
+            Stepper(value: s.maxWPM, in: (s.wrappedValue.minWPM + 5)...60, step: 1) {
+                Text("Fastest \(Int(s.wrappedValue.maxWPM)) WPM").font(.subheadline.monospacedDigit())
+            }
+            Text("The speed is measured from the code itself, within this range. Farnsworth-spaced code is handled.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+    }
+
+    private var decoderNote: String {
+        if cw.settings.engine == .classic {
+            return "Tracks one tone and times its dits and dahs, using the settings below."
+        }
+        if !DeepCWModel.isAvailable {
+            return "The DeepCW model isn't in this build, so the Classic decoder is copying."
+        }
+        return "A neural network (DeepCW by e04) copies the 400–1200 Hz band, including weak signals and uneven fists. Keep the CW pitch in that range. Text appears in bursts, about two seconds behind the audio."
     }
 
     private func toggle() {

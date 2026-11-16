@@ -3,6 +3,7 @@ import Combine
 import UIKit
 import Network
 import Accelerate
+import CoreML
 
 // ===========================================================================
 //  FT4Engine.swift — full-duplex FT4 over an AudioSource, using ft8_lib (MIT)
@@ -6010,9 +6011,27 @@ enum CWMorse {
     }
 }
 
+/// Which decoder turns the CW audio into text.
+enum CWDecoderEngine: String, Codable, CaseIterable, Identifiable, Sendable {
+    /// The DeepCW neural network (bundled Core ML model).
+    case deepCW
+    /// OrbitDeck's tone-tracking demodulator.
+    case classic
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .deepCW: "DeepCW"
+        case .classic: "Classic"
+        }
+    }
+}
+
 /// CW decoder settings (persisted as one JSON blob; every field decodes tolerantly so
 /// settings saved by an older or newer build still load).
 struct CWSettings: Codable, Equatable, Sendable {
+    /// Text decoder. DeepCW falls back to Classic when its model isn't bundled.
+    var engine: CWDecoderEngine = .deepCW
     /// Tone search range (Hz of audio).
     var searchLowHz: Double = 300
     var searchHighHz: Double = 1200
@@ -6049,6 +6068,7 @@ struct CWSettings: Codable, Equatable, Sendable {
         fixedWPM = (try? c.decodeIfPresent(Double.self, forKey: .fixedWPM)) ?? d.fixedWPM
         afc = (try? c.decodeIfPresent(Bool.self, forKey: .afc)) ?? d.afc
         timestamps = (try? c.decodeIfPresent(Bool.self, forKey: .timestamps)) ?? d.timestamps
+        engine = (try? c.decodeIfPresent(CWDecoderEngine.self, forKey: .engine)) ?? d.engine
     }
 
     static func load() -> CWSettings {
@@ -6601,6 +6621,510 @@ final class CWDemodulator: @unchecked Sendable {
     }
 }
 
+// MARK: - DeepCW neural decoder
+//
+// DeepCW (e04/deepcw-engine, MIT License; see DigitalModes/DeepCW/LICENSE) is a small
+// CTC network that reads a 400–1200 Hz log-magnitude spectrogram of 3.2 kHz audio and
+// emits character probabilities. OrbitDeck bundles it converted to Core ML
+// (tools/deepcw/convert_deepcw.py). The pipeline below follows the engine's MIT
+// reference decoder: resample to 3.2 kHz, STFT, noise-quantile log1p normalization,
+// 12 s windows every second whose CTC posteriors are blended across the overlap, then
+// greedy CTC decoding that only commits text once it has stopped changing.
+
+/// Fixed parameters of the bundled model (its model.onnx.json).
+enum DeepCWSpec {
+    static let sampleRate = 3200.0
+    static let fftLength = 256
+    static let hop = 48
+    static let outputStride = 2
+    /// Audio samples per output (CTC) frame.
+    static let outputHop = hop * outputStride
+    /// First spectrogram bin (400 Hz at 12.5 Hz per bin) and the bin count (to 1200 Hz).
+    static let firstBin = 32
+    static let bins = 65
+    static let lowHz = 400.0, highHz = 1200.0
+    /// The Core ML model runs a fixed 12 s window: 801 spectrogram frames in, 401 out.
+    static let windowSamples = 38_400
+    static let windowFrames = 1 + windowSamples / hop
+    static let outputFrames = (windowFrames - 1) / outputStride + 1
+    static let chars: [Character] = Array(",./0123456789?ABCDEFGHIJKLMNOPQRSTUVWXYZ ")
+    static let classes = 42
+    static let blank = 41
+    static let space = 40
+    static let noiseQuantile = 0.9
+    static let framesPerSecond = sampleRate / Double(outputHop)
+}
+
+/// The bundled Core ML model, loaded once on first use.
+enum DeepCWModel {
+    private final class BundleToken {}
+
+    /// The compiled model in the app bundle (also found from a test host, where
+    /// `Bundle.main` can be the test runner).
+    static let url: URL? = {
+        let bundles = [Bundle.main, Bundle(for: BundleToken.self)] + Bundle.allBundles
+        return bundles.lazy.compactMap { $0.url(forResource: "DeepCW", withExtension: "mlmodelc") }.first
+    }()
+    /// Whether the model is in the app bundle (decoding falls back to Classic if not).
+    static var isAvailable: Bool { url != nil }
+
+    nonisolated(unsafe) static let shared: MLModel? = {
+        guard let url else { return nil }
+        let config = MLModelConfiguration()
+        // Float32 weights: the GPU keeps full precision (the Neural Engine would run
+        // float16, which measurably hurts weak-signal decoding).
+        config.computeUnits = .cpuAndGPU
+        return try? MLModel(contentsOf: url, configuration: config)
+    }()
+
+    /// CTC log-probabilities (`outputFrames` × `classes`, row-major) for one normalized
+    /// spectrogram window (`windowFrames` × `bins`, row-major).
+    static func logProbs(_ spectrogram: [Float]) -> [Float]? {
+        guard let model = shared else { return nil }
+        return logProbs(spectrogram, model: model)
+    }
+
+    static func logProbs(_ spectrogram: [Float], model: MLModel) -> [Float]? {
+        guard spectrogram.count == DeepCWSpec.windowFrames * DeepCWSpec.bins,
+              let input = try? MLMultiArray(shape: [1, 1, NSNumber(value: DeepCWSpec.windowFrames),
+                                                    NSNumber(value: DeepCWSpec.bins)], dataType: .float32)
+        else { return nil }
+        input.withUnsafeMutableBufferPointer(ofType: Float.self) { ptr, strides in
+            let rowStride = strides[2], colStride = strides[3]
+            for t in 0..<DeepCWSpec.windowFrames {
+                for f in 0..<DeepCWSpec.bins {
+                    ptr[t * rowStride + f * colStride] = spectrogram[t * DeepCWSpec.bins + f]
+                }
+            }
+        }
+        guard let features = try? MLDictionaryFeatureProvider(dictionary: ["spectrogram": MLFeatureValue(multiArray: input)]),
+              let result = try? model.prediction(from: features),
+              let out = result.featureValue(for: "log_probs")?.multiArrayValue,
+              out.shape.count == 3, out.shape[1].intValue == DeepCWSpec.outputFrames,
+              out.shape[2].intValue == DeepCWSpec.classes
+        else { return nil }
+        var values = [Float](repeating: 0, count: DeepCWSpec.outputFrames * DeepCWSpec.classes)
+        let strides = out.strides.map(\.intValue)
+        if out.dataType == .float32 {
+            out.withUnsafeBufferPointer(ofType: Float.self) { ptr in
+                for t in 0..<DeepCWSpec.outputFrames {
+                    for c in 0..<DeepCWSpec.classes {
+                        values[t * DeepCWSpec.classes + c] = ptr[t * strides[1] + c * strides[2]]
+                    }
+                }
+            }
+        } else {
+            for t in 0..<DeepCWSpec.outputFrames {
+                for c in 0..<DeepCWSpec.classes {
+                    values[t * DeepCWSpec.classes + c] = out[t * strides[1] + c * strides[2]].floatValue
+                }
+            }
+        }
+        return values
+    }
+}
+
+/// Capture rate → 3.2 kHz. A windowed-sinc low-pass at 1.6 kHz (transition to 2 kHz)
+/// keeps the noise above the model's band from aliasing into 400–1200 Hz; rates that
+/// are a multiple of 3.2 kHz decimate exactly, others decimate to ≥ 6.4 kHz first and
+/// then interpolate linearly.
+final class DeepCWResampler {
+    private let decim: Int
+    private let taps: [Float]
+    private let step: Double
+    private var carry: [Float] = []
+    private var mid: [Float] = []
+    private var pos = 0.0
+
+    init(inputRate: Double) {
+        let exact = inputRate.truncatingRemainder(dividingBy: DeepCWSpec.sampleRate) == 0
+        decim = exact ? max(1, Int(inputRate / DeepCWSpec.sampleRate)) : max(1, Int(inputRate / (2 * DeepCWSpec.sampleRate)))
+        step = inputRate / Double(decim) / DeepCWSpec.sampleRate
+        let n = Int(3.3 * inputRate / 400) | 1
+        let fc = 1600.0 / inputRate, mid = Double(n - 1) / 2
+        var h = (0..<n).map { i -> Double in
+            let x = Double(i) - mid
+            let sinc = x == 0 ? 2 * fc : sin(2 * Double.pi * fc * x) / (Double.pi * x)
+            return sinc * (0.54 - 0.46 * cos(2 * Double.pi * Double(i) / Double(n - 1)))
+        }
+        let sum = h.reduce(0, +)
+        h = h.map { $0 / sum }
+        taps = h.map(Float.init)
+    }
+
+    func process(_ input: [Float]) -> [Float] {
+        carry.append(contentsOf: input)
+        let L = taps.count
+        if carry.count >= L {
+            let n = (carry.count - L) / decim + 1
+            var filtered = [Float](repeating: 0, count: n)
+            carry.withUnsafeBufferPointer { src in
+                vDSP_desamp(src.baseAddress!, vDSP_Stride(decim), taps, &filtered, vDSP_Length(n), vDSP_Length(L))
+            }
+            carry.removeFirst(n * decim)
+            mid.append(contentsOf: filtered)
+        }
+        if step == 1 {
+            defer { mid.removeAll(keepingCapacity: true) }
+            return mid
+        }
+        var out: [Float] = []
+        while pos + 1 < Double(mid.count) {
+            let i = Int(pos), f = Float(pos - Double(i))
+            out.append(mid[i] * (1 - f) + mid[i + 1] * f)
+            pos += step
+        }
+        let drop = min(Int(pos), mid.count)
+        if drop > 0 { mid.removeFirst(drop); pos -= Double(drop) }
+        return out
+    }
+}
+
+/// STFT front end: reflect padding, periodic Hann window, |rfft| over 400–1200 Hz,
+/// normalized by the 90th-percentile noise level (Rayleigh-corrected) then log1p.
+final class DeepCWFrontEnd {
+    private let log2n = vDSP_Length(8)
+    private let fft: FFTSetup
+    private let window: [Float]
+
+    init() {
+        fft = vDSP_create_fftsetup(8, FFTRadix(kFFTRadix2))!
+        let n = DeepCWSpec.fftLength
+        window = (0..<n).map { 0.5 - 0.5 * cos(2 * Float.pi * Float($0) / Float(n)) }
+    }
+
+    deinit { vDSP_destroy_fftsetup(fft) }
+
+    /// Normalized spectrogram (`frames` × `bins`, row-major) of `audio` at 3.2 kHz.
+    func spectrogram(_ audio: ArraySlice<Float>) -> (values: [Float], frames: Int) {
+        let n = DeepCWSpec.fftLength, half = n / 2, hop = DeepCWSpec.hop, bins = DeepCWSpec.bins
+        let a = Array(audio)
+        guard a.count > half else { return ([], 0) }
+        // Reflect padding (the edge sample isn't repeated).
+        var padded = [Float](repeating: 0, count: a.count + n)
+        for i in 0..<half { padded[i] = a[half - i] }
+        for i in 0..<a.count { padded[half + i] = a[i] }
+        for j in 0..<half { padded[half + a.count + j] = a[a.count - 2 - j] }
+        let frames = 1 + (padded.count - n) / hop
+        var mags = [Float](repeating: 0, count: frames * bins)
+        var frame = [Float](repeating: 0, count: n)
+        var re = [Float](repeating: 0, count: half), im = [Float](repeating: 0, count: half)
+        for t in 0..<frames {
+            padded.withUnsafeBufferPointer { p in
+                vDSP_vmul(p.baseAddress! + t * hop, 1, window, 1, &frame, 1, vDSP_Length(n))
+            }
+            re.withUnsafeMutableBufferPointer { rp in
+                im.withUnsafeMutableBufferPointer { ip in
+                    var split = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
+                    frame.withUnsafeBufferPointer { fp in
+                        fp.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: half) {
+                            vDSP_ctoz($0, 2, &split, 1, vDSP_Length(half))
+                        }
+                    }
+                    vDSP_fft_zrip(fft, &split, 1, log2n, FFTDirection(FFT_FORWARD))
+                }
+            }
+            // vDSP's real FFT is scaled by 2 relative to the plain DFT.
+            for k in 0..<bins {
+                let b = DeepCWSpec.firstBin + k
+                mags[t * bins + k] = 0.5 * (re[b] * re[b] + im[b] * im[b]).squareRoot()
+            }
+        }
+        normalize(&mags)
+        return (mags, frames)
+    }
+
+    func normalize(_ mags: inout [Float]) {
+        guard !mags.isEmpty else { return }
+        var sorted = mags
+        vDSP.sort(&sorted, sortOrder: .ascending)
+        let q = DeepCWSpec.noiseQuantile
+        let quantile = Double(sorted[Int((q * Double(sorted.count - 1)).rounded(.down))])
+        let rayleigh = (-2 * log(1 - q)).squareRoot()
+        let noise = Float(max(quantile / rayleigh, Double(sorted[sorted.count - 1]) * 1e-3, 1e-5))
+        for i in mags.indices { mags[i] = log1p(mags[i] / noise) }
+    }
+}
+
+/// Blends the overlapping windows' CTC posteriors (smoothstep-weighted toward each
+/// window's edges) and decodes them greedily, committing characters only once the
+/// frames under them can no longer change.
+final class DeepCWStitcher {
+    struct Committed: Equatable {
+        var text: String
+        var leadingSpace: Bool
+        var firstFrame: Int
+        var lastFrame: Int
+    }
+
+    static let leftContext = Int((4 * DeepCWSpec.framesPerSecond).rounded())
+    static let freezeGuard = Int((2 * DeepCWSpec.framesPerSecond).rounded())
+    static let wordGapFrames = (134 + DeepCWSpec.outputStride - 1) / DeepCWSpec.outputStride
+
+    private enum Previous { case none, char, space }
+    private let k = DeepCWSpec.classes, blank = DeepCWSpec.blank, space = DeepCWSpec.space
+    private var base = 0
+    private var sums: [Float] = []
+    private var weights: [Float] = []
+    private(set) var covered = 0
+    private(set) var frozen = 0
+    private var committed = 0
+    private var previous = Previous.none
+    private var blankRun = 0
+    private var hasText = false
+
+    var contextStart: Int { max(0, frozen - Self.leftContext) }
+
+    /// First output frame of the window ending at `endSample`.
+    func windowStart(endSample: Int) -> Int {
+        let earliest = Int((Double(endSample - DeepCWSpec.windowSamples) / Double(DeepCWSpec.outputHop)).rounded(.up))
+        return max(contextStart, earliest)
+    }
+
+    /// Add one window's log-probabilities (`frames` × classes, row-major) starting at
+    /// output frame `start`.
+    func add(start: Int, logits: [Float], final: Bool) {
+        let n = logits.count / k
+        guard n > 0 else { if final { frozen = covered }; return }
+        let end = start + n
+        let grow = end - base - weights.count
+        if grow > 0 {
+            sums.append(contentsOf: [Float](repeating: 0, count: grow * k))
+            weights.append(contentsOf: [Float](repeating: 0, count: grow))
+        }
+        let lp = Self.dilated(Self.logSoftmax(logits, k), k: k, blank: blank)
+        func smooth(_ v: Double) -> Double { let t = min(max(v, 0), 1); return t * t * (3 - 2 * t) }
+        for f in min(n, max(0, frozen - start))..<n {
+            let left = start == 0 ? 1 : smooth(Double(f) / DeepCWSpec.framesPerSecond / 2)
+            let right = final ? 1 : smooth(Double(n - 1 - f) / DeepCWSpec.framesPerSecond / 1)
+            let w = Float(max(1e-3, left * right))
+            let row = start + f - base
+            for c in 0..<k { sums[row * k + c] += w * lp[f * k + c] }
+            weights[row] += w
+        }
+        covered = max(covered, end)
+        frozen = final ? covered : max(frozen, end - Self.freezeGuard)
+    }
+
+    /// Decode what's settled (everything when `final`); nil when nothing new committed.
+    func take(final: Bool) -> Committed? {
+        let a = committed
+        guard covered - a > 0 else { return nil }
+        let count = covered - a
+        var argmax = [Int](repeating: blank, count: count)
+        for f in 0..<count {
+            let row = a + f - base
+            let w = weights[row]
+            guard w > 0 else { continue }
+            var best = blank, bestValue = -Float.infinity
+            for c in 0..<k {
+                let v = sums[row * k + c] / w
+                if v > bestValue { bestValue = v; best = c }
+            }
+            argmax[f] = best
+        }
+        // Long blank runs between characters become word spaces.
+        var idx = argmax
+        var prev = previous == .char ? -2 : (previous == .space ? space : -1)
+        var f = 0
+        while f < count {
+            if idx[f] != blank { prev = idx[f]; f += 1; continue }
+            let runStart = f
+            while f < count && idx[f] == blank { f += 1 }
+            let next = f < count ? idx[f] : -1
+            let run = f - runStart + (runStart == 0 ? blankRun : 0)
+            if run >= Self.wordGapFrames, prev != -1, prev != space, next >= 0, next != space {
+                for i in runStart..<f { idx[i] = space }
+            }
+        }
+        // CTC collapse into character spans (absolute frames).
+        var spans: [(char: Character, start: Int, end: Int)] = []
+        var last = -1
+        for (i, c) in idx.enumerated() {
+            if c == blank { last = -1; continue }
+            if c == last { spans[spans.count - 1].end = a + i; continue }
+            last = c
+            spans.append((DeepCWSpec.chars[c], a + i, a + i))
+        }
+        let limit = final ? Int.max : frozen
+        var commitCount = 0
+        for (i, s) in spans.enumerated() {
+            if s.end + 1 >= limit { break }
+            if s.char != " " { commitCount = i + 1 }
+        }
+        var result: Committed?
+        if commitCount > 0 {
+            var lead = !hasText || previous == .space
+            var text = "", pendingSpace = false
+            for s in spans[..<commitCount] {
+                if s.char == " " {
+                    if text.isEmpty { lead = true } else { pendingSpace = true }
+                    continue
+                }
+                if pendingSpace { text.append(" "); pendingSpace = false }
+                text.append(s.char)
+            }
+            let first = spans[..<commitCount].first { $0.char != " " }?.start ?? spans[0].start
+            result = Committed(text: text, leadingSpace: lead, firstFrame: first, lastFrame: spans[commitCount - 1].end)
+            hasText = true
+            committed = spans[commitCount - 1].end + 1
+            previous = .char
+            blankRun = 0
+        }
+        // Advance over settled blanks/spaces up to the next character.
+        let nextChar = spans[commitCount...].first { $0.char != " " }
+        let release = min(final ? covered : frozen, nextChar?.start ?? Int.max) - 1
+        var p = previous, run = blankRun
+        var fr = committed
+        while fr < release {
+            if argmax[fr - a] == space { p = .space; run = 0 } else { run += 1 }
+            fr += 1
+        }
+        if release > committed { previous = p; blankRun = run; committed = release }
+        let drop = min(committed - base, weights.count)
+        if drop > 0 {
+            sums.removeFirst(drop * k)
+            weights.removeFirst(drop)
+            base += drop
+        }
+        return result
+    }
+
+    static func logSoftmax(_ x: [Float], _ k: Int) -> [Float] {
+        var out = x
+        for r in 0..<(x.count / k) {
+            var peak = -Float.infinity
+            for c in 0..<k { peak = max(peak, x[r * k + c]) }
+            var sum: Float = 0
+            for c in 0..<k { sum += expf(x[r * k + c] - peak) }
+            let norm = peak + logf(sum)
+            for c in 0..<k { out[r * k + c] = x[r * k + c] - norm }
+        }
+        return out
+    }
+
+    /// One-frame max dilation of every character class (not blank), renormalized, so a
+    /// character the windows place a frame apart still lines up when blended.
+    static func dilated(_ lp: [Float], k: Int, blank: Int) -> [Float] {
+        let n = lp.count / k
+        var out = lp
+        for r in 0..<n {
+            for c in 0..<k where c != blank {
+                var m = lp[r * k + c]
+                if r > 0 { m = max(m, lp[(r - 1) * k + c]) }
+                if r + 1 < n { m = max(m, lp[(r + 1) * k + c]) }
+                out[r * k + c] = m
+            }
+        }
+        return logSoftmax(out, k)
+    }
+}
+
+/// Streaming DeepCW decoder over capture audio. Not thread-safe; drive it from one
+/// queue. Text comes out as single characters, `" "` word spaces and `"\n"` after a long
+/// silence, like `CWDemodulator.drainText()`.
+final class DeepCWStream {
+    static let stepSamples = Int(DeepCWSpec.sampleRate)
+    static let firstStepSamples = 2 * stepSamples
+    /// A silence this long (output frames) between characters starts a new line.
+    static let lineBreakFrames = Int(10 * DeepCWSpec.framesPerSecond)
+
+    private let resampler: DeepCWResampler
+    private let frontEnd = DeepCWFrontEnd()
+    private let stitcher = DeepCWStitcher()
+    private let infer: ([Float]) -> [Float]?
+    private var audio: [Float] = []
+    private var audioBase = 0
+    private var nextEnd = DeepCWStream.firstStepSamples
+    private var lastCharFrame: Int?
+    private var output: [String] = []
+    private var total: Int { audioBase + audio.count }
+
+    /// nil when the model isn't bundled (or fails to load).
+    convenience init?(inputRate: Double) {
+        guard DeepCWModel.shared != nil else { return nil }
+        self.init(inputRate: inputRate, infer: DeepCWModel.logProbs)
+    }
+
+    /// `infer` maps a normalized `windowFrames` × `bins` window to `outputFrames` ×
+    /// `classes` log-probabilities (injectable for tests).
+    init(inputRate: Double, infer: @escaping ([Float]) -> [Float]?) {
+        resampler = DeepCWResampler(inputRate: inputRate)
+        self.infer = infer
+    }
+
+    func process(_ input: [Float]) {
+        let y = resampler.process(input)
+        guard !y.isEmpty else { return }
+        audio.append(contentsOf: y)
+        // Behind by more than a step (a slow device): run only the newest window.
+        while total - nextEnd >= Self.stepSamples { nextEnd += Self.stepSamples }
+        if total >= nextEnd {
+            run(start: stitcher.windowStart(endSample: nextEnd), end: nextEnd, final: false)
+            nextEnd += Self.stepSamples
+        }
+        trim()
+    }
+
+    /// Decode everything still pending (on stop).
+    func flush() {
+        guard total > 0 else { return }
+        var lastStart = -1
+        while true {
+            let start = stitcher.contextStart
+            let end = min(total, start * DeepCWSpec.outputHop + DeepCWSpec.windowSamples)
+            // Finish in one window if the last one didn't move things on (e.g. a failed
+            // prediction), so this can't loop.
+            let final = end >= total || start == lastStart
+            run(start: start, end: final ? total : end, final: final)
+            if final { break }
+            lastStart = start
+        }
+    }
+
+    func drainText() -> [String] {
+        defer { output.removeAll(keepingCapacity: true) }
+        return output
+    }
+
+    private func run(start: Int, end: Int, final: Bool) {
+        let startSample = max(start * DeepCWSpec.outputHop, audioBase)
+        let lo = startSample - audioBase, hi = min(end, total) - audioBase
+        let (spec, frames) = hi - lo >= DeepCWSpec.fftLength ? frontEnd.spectrogram(audio[lo..<hi]) : ([], 0)
+        if frames > 0, frames <= DeepCWSpec.windowFrames {
+            // Left-pad short windows with silence to the model's fixed 801 frames, then
+            // keep only the output frames that belong to real audio.
+            var window = [Float](repeating: 0, count: DeepCWSpec.windowFrames * DeepCWSpec.bins)
+            let pad = DeepCWSpec.windowFrames - frames
+            window.replaceSubrange(pad * DeepCWSpec.bins..<DeepCWSpec.windowFrames * DeepCWSpec.bins, with: spec)
+            if let lp = infer(window) {
+                let expected = (frames - 1) / DeepCWSpec.outputStride + 1
+                stitcher.add(start: start, logits: Array(lp.suffix(expected * DeepCWSpec.classes)), final: final)
+            }
+        } else if final {
+            stitcher.add(start: start, logits: [], final: true)
+        }
+        if let c = stitcher.take(final: final) { emit(c) }
+    }
+
+    private func emit(_ c: DeepCWStitcher.Committed) {
+        if let last = lastCharFrame, c.firstFrame - last > Self.lineBreakFrames {
+            output.append("\n")
+        } else if c.leadingSpace, lastCharFrame != nil {
+            output.append(" ")
+        }
+        for ch in c.text { output.append(String(ch)) }
+        lastCharFrame = c.lastFrame
+    }
+
+    /// Drop audio no future window can start before.
+    private func trim() {
+        let keepFrom = stitcher.contextStart * DeepCWSpec.outputHop
+        let drop = min(keepFrom - audioBase, audio.count)
+        if drop > 0 { audio.removeFirst(drop); audioBase += drop }
+    }
+}
+
 /// A transcript line: decoded text since the last long silence, with the UTC time its
 /// first character arrived.
 struct CWTranscriptLine: Identifiable, Equatable, Sendable {
@@ -6648,6 +7172,9 @@ final class CWDecoder: ObservableObject {
 
     static let maxLines = 300
 
+    /// DeepCW is selected and its model is bundled (otherwise Classic decodes).
+    var usesDeepCW: Bool { settings.engine == .deepCW && DeepCWModel.isAvailable }
+
     private var source: AudioSource?
     /// The next character starts a new line (after a long silence or on start).
     private var lineOpen = false
@@ -6655,6 +7182,9 @@ final class CWDecoder: ObservableObject {
     // Work-queue state (DSP + rendering); never touched on the main thread.
     private let work = DispatchQueue(label: "org.orbitdeck.cw.decode", qos: .userInitiated)
     private nonisolated(unsafe) var demod: CWDemodulator?
+    /// DeepCW text decoder, when selected and bundled; the classic demodulator still
+    /// runs beside it for the pitch, speed, SNR and spectrum readouts.
+    private nonisolated(unsafe) var deep: DeepCWStream?
     private nonisolated(unsafe) var activeMirror = false
     private nonisolated(unsafe) var settingsMirror = CWSettings()
     private nonisolated(unsafe) var lockedMirror = false
@@ -6706,8 +7236,10 @@ final class CWDecoder: ObservableObject {
         work.async { [weak self] in
             guard let self else { return }
             self.demod?.flush()
-            let text = self.demod?.drainText() ?? []
-            self.demod = nil; self.activeMirror = false
+            self.deep?.flush()
+            let classic = self.demod?.drainText() ?? []
+            let text = self.deep.map { $0.drainText() } ?? classic
+            self.demod = nil; self.deep = nil; self.activeMirror = false
             self.levelSmoothed = 0
             Task { @MainActor in self.append(text) }
         }
@@ -6771,8 +7303,14 @@ final class CWDecoder: ObservableObject {
             let d = CWDemodulator(inputRate: rateMirror, settings: settingsMirror)
             d.pitchLocked = lockedMirror
             demod = d
+            deep = makeDeep(rate: rateMirror, settings: settingsMirror)
         }
         demod?.process(frames)
+        deep?.process(frames)
+    }
+
+    private nonisolated func makeDeep(rate: Double, settings: CWSettings) -> DeepCWStream? {
+        settings.engine == .deepCW ? DeepCWStream(inputRate: rate) : nil
     }
 
     private nonisolated func resetSession(rate: Double?, settings: CWSettings, locked: Bool) {
@@ -6783,15 +7321,19 @@ final class CWDecoder: ObservableObject {
             let d = CWDemodulator(inputRate: rate, settings: settings)
             d.pitchLocked = locked
             demod = d
+            deep = makeDeep(rate: rate, settings: settings)
         } else {
             demod = nil
+            deep = nil
         }
     }
 
     private nonisolated func applySettings(_ s: CWSettings) {
-        settingsMirror = s
         let rangeChanged = demod.map { $0.settings.searchLowHz != s.searchLowHz || $0.settings.searchHighHz != s.searchHighHz } ?? false
+        let engineChanged = settingsMirror.engine != s.engine
+        settingsMirror = s
         demod?.update(s)
+        if engineChanged, demod != nil { deep = makeDeep(rate: rateMirror, settings: s) }
         if rangeChanged { waterRows = []; waterFloor = 0 }
     }
 
@@ -6818,7 +7360,8 @@ final class CWDecoder: ObservableObject {
             Task { @MainActor in if self.isRunning { self.meters.setLevel(level) } }
             return
         }
-        let text = d.drainText()
+        let classic = d.drainText()
+        let text = deep.map { $0.drainText() } ?? classic
         let snap = d.snapshot
         let rows = d.drainRows()
         let image = rows.isEmpty ? nil : renderWaterfall(rows)

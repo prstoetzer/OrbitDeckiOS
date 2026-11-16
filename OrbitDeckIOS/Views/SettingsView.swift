@@ -814,6 +814,8 @@ struct AcknowledgmentsView: View {
     private let entries: [Entry] = [
         Entry(name: "ft8_lib", use: "FT4 encoding and decoding.", license: "MIT License",
               text: "Copyright (c) 2018 Kārlis Goba\n\n" + AcknowledgmentsView.mitBody),
+        Entry(name: "DeepCW", use: "Neural network CW decoding (model converted to Core ML).", license: "MIT License",
+              text: "Copyright (c) 2026 e04\n\n" + AcknowledgmentsView.mitBody),
         Entry(name: "SatelliteKit", use: "SGP4/SDP4 orbit propagation.", license: "MIT License",
               text: "Copyright (c) 2018-25 Gavin Eadie\n\n" + AcknowledgmentsView.mitBody),
         Entry(name: "d3-celestial", use: "Constellation lines on the sky charts.", license: "BSD 3-Clause License",

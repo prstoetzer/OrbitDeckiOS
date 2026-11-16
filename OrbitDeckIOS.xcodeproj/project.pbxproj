@@ -54,6 +54,7 @@
 		2E14383C303F15A60001B31F /* FT4Engine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E143814303F15A60001B31F /* FT4Engine.swift */; };
 		2E14383D303F15A60001B31F /* message.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E14382C303F15A60001B31F /* message.c */; };
 		2E14383E303F15A60001B31F /* text.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E14382E303F15A60001B31F /* text.c */; };
+		2E1A49C630ABC94000041895 /* DeepCW.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = 2E1A49C530ABC94000041895 /* DeepCW.mlpackage */; };
 		2E75B92E303228E000338037 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */; };
 		2E946B4130308C7600960A39 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2E946B4030308C7600960A39 /* Assets.xcassets */; };
 		2EF6017B308E897800906C11 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2EF6017A308E897800906C11 /* WidgetKit.framework */; };
@@ -190,6 +191,7 @@
 		2E14382D303F15A60001B31F /* text.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = text.h; sourceTree = "<group>"; };
 		2E14382E303F15A60001B31F /* text.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = text.c; sourceTree = "<group>"; };
 		2E143830303F15A60001B31F /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
+		2E1A49C530ABC94000041895 /* DeepCW.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; name = DeepCW.mlpackage; path = DeepCW/DeepCW.mlpackage; sourceTree = "<group>"; };
 		2E75B92D303228E000338037 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		2E75B92F3037404300338037 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2E946B4030308C7600960A39 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -356,6 +358,7 @@
 		2E143810303F12EA0001B31F /* DigitalModes */ = {
 			isa = PBXGroup;
 			children = (
+				2E1A49C530ABC94000041895 /* DeepCW.mlpackage */,
 				2E143814303F15A60001B31F /* FT4Engine.swift */,
 				2E143815303F15A60001B31F /* FT4Views.swift */,
 				2E143831303F15A60001B31F /* ft8_lib */,
@@ -716,6 +719,7 @@
 				2E1437DD303DCFC70001B31F /* RigController.swift in Sources */,
 				2E1437DE303DCFC70001B31F /* RigTypes.swift in Sources */,
 				2E1437DF303DCFC70001B31F /* CATViews.swift in Sources */,
+				2E1A49C630ABC94000041895 /* DeepCW.mlpackage in Sources */,
 				2E0DC92730437DC800E1F00A /* DebugLog.swift in Sources */,
 				E05000020000000000000011 /* Services/PassAlarmService.swift in Sources */,
 				F08994C001BC8C8619BC6225 /* Views/Components.swift in Sources */,
