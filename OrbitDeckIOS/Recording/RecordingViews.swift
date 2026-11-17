@@ -78,6 +78,10 @@ struct HomeRemoteAudioCard: View {
     @EnvironmentObject private var audio: AudioHub
     @EnvironmentObject private var voice: RemoteVoiceController
     @AppStorage(FeatureVisibility.remoteAudioKey) private var visibility = FeatureVisibility.auto
+    @Environment(\.scenePhase) private var scenePhase
+    /// True while a finger is on the talk control. A `GestureState` resets when the gesture
+    /// is canceled (not just when it ends), so a canceled press still unkeys.
+    @GestureState private var talkHeld = false
     let satellite: SatelliteRecord
 
     private var visible: Bool {
@@ -137,7 +141,8 @@ struct HomeRemoteAudioCard: View {
         return ODTheme.muted
     }
 
-    /// Hold-to-talk: press starts TX, release ends it.
+    /// Hold-to-talk: press starts TX; release, a canceled gesture, the control leaving the
+    /// screen or the app leaving the foreground ends it.
     private var pttButton: some View {
         Text(voice.isTransmitting ? "ON AIR — release to stop" : "HOLD TO TRANSMIT")
             .font(.callout.weight(.bold))
@@ -150,9 +155,12 @@ struct HomeRemoteAudioCard: View {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { _ in if !voice.isTransmitting { voice.startTX() } }
-                    .onEnded { _ in voice.stopTX() }
+                    .updating($talkHeld) { _, held, _ in held = true }
+                    .onEnded { _ in voice.talkReleased() }
             )
+            .onChange(of: talkHeld) { _, held in held ? voice.talkPressed() : voice.talkReleased() }
+            .onChange(of: scenePhase) { _, phase in if phase != .active { voice.talkReleased() } }
+            .onDisappear { voice.talkReleased() }
     }
 }
 

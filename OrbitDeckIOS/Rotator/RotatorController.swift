@@ -31,6 +31,9 @@ final class RotatorController: ObservableObject {
     @Published var commandedEl: Double = 0
     @Published var flipActive = false           // the current/upcoming pass is flown flipped
     @Published var lastTx = ""                  // live send telemetry for the Home card
+    /// The last point command failed: `commandedAz`/`commandedEl` are the requested target,
+    /// not yet delivered; the loop is retrying (with backoff).
+    @Published private(set) var pointRetrying = false
     private var txSeq = 0
 
     /// What the loop points at. Setting it commands the new target at once; anything
@@ -38,7 +41,7 @@ final class RotatorController: ObservableObject {
     @Published var target: RotatorTarget = .satellite {
         didSet {
             holding = false; stalled = false
-            lastAz = nil; lastEl = nil                     // bypass the deadband for the new target
+            sendGate.reset()                               // bypass the deadband (and any retry backoff) for the new target
             if (target == .satellite) != (oldValue == .satellite) { releaseEngaged() }
             retick()
         }
@@ -112,9 +115,7 @@ final class RotatorController: ObservableObject {
     private var transport: CATTransport?
     private var timer: DispatchSourceTimer?
     private var isTicking = false
-    private var lastAz: Double?
-    private var lastEl: Double?
-    private var lastSendAt: Date?
+    private var sendGate = RotatorSendGate()  // deadband / keepalive / failed-send retry
     private static let keepaliveSec = 2.0
     private var parked = false
     private var wantConnection = false      // operator intent — false after a manual disconnect()
@@ -178,7 +179,7 @@ final class RotatorController: ObservableObject {
             do {
                 try await t.connect()
                 connected = true; connecting = false; statusText = "Connected"
-                lastAz = nil; lastEl = nil; lastSendAt = nil; parked = false; az450PreCommit = false
+                sendGate.reset(); pointRetrying = false; parked = false; az450PreCommit = false
                 plan = nil; noPlanKey = nil; noPlanUntil = nil; spidSetEchoes = nil
                 holding = false; stalled = false; actualAz = nil; actualEl = nil; readBackError = ""
                 lastPollAt = nil; pollFailures = 0; sentAz = nil; sentEl = nil; progressRef = nil
@@ -198,7 +199,7 @@ final class RotatorController: ObservableObject {
         wantConnection = false
         let t = transport; transport = nil
         connected = false; statusText = "Not connected"; flipActive = false
-        actualAz = nil; actualEl = nil; stalled = false; pendingSwitch = nil
+        actualAz = nil; actualEl = nil; stalled = false; pendingSwitch = nil; pointRetrying = false
         let parkFrame = RotatorCodec.point(config.proto, az: Double(config.parkAz), el: Double(config.parkEl),
                                            azimuthOnly: config.azimuthOnly)
         if monitorEnabled, t != nil { monitor(true, parkFrame) }
@@ -437,7 +438,7 @@ final class RotatorController: ObservableObject {
     func switchToPending() {
         guard pendingSwitch != nil else { return }
         releaseEngaged()
-        lastAz = nil; lastEl = nil
+        sendGate.reset()
         retick()
     }
 
@@ -534,15 +535,13 @@ final class RotatorController: ObservableObject {
     /// and self-heal a datagram dropped during path setup. Reliable transports
     /// (rotctld/TCP, BLE serial) send only on movement: re-issuing an unchanged
     /// SET buys nothing and can make some controllers restart an in-progress move.
+    /// A failed send is retried (`RotatorSendGate`'s backoff) on any transport.
     private func sendTarget(az: Double, el: Double) async {
-        let db = Double(config.deadbandDeg)
-        // An azimuth-only controller ignores elevation, so elevation changes alone
-        // never warrant a resend.
-        let elMoved = !config.azimuthOnly && abs(el - (lastEl ?? 0)) >= db
-        let moved = lastAz == nil || abs(az - (lastAz ?? 0)) >= db || elMoved
-        let keepalive = (config.proto == .pstRotator)
-            && (lastSendAt == nil || Date().timeIntervalSince(lastSendAt ?? .distantPast) >= Self.keepaliveSec)
-        if moved || keepalive { await command(az: az, el: el) }
+        let send = sendGate.shouldSend(az: az, el: el, deadband: Double(config.deadbandDeg),
+                                       azimuthOnly: config.azimuthOnly,
+                                       keepaliveSec: config.proto == .pstRotator ? Self.keepaliveSec : nil,
+                                       now: Date())
+        if send { await command(az: az, el: el) }
     }
 
     private func command(az: Double, el: Double) async {
@@ -551,11 +550,26 @@ final class RotatorController: ObservableObject {
         let err = await sendPoint(az: sendAz, el: el, generation: generation)
         // Stopped while this point waited for the link: it was dropped, not sent.
         guard generation == motionGeneration else { return }
-        commandedAz = az; commandedEl = el          // show the true bearing
+        commandedAz = az; commandedEl = el          // the requested target, as a true bearing
         txSeq += 1
-        lastTx = err == nil ? "TX #\(txSeq): ok" : "TX #\(txSeq): \(err ?? "")"
-        lastAz = az; lastEl = el; lastSendAt = Date()
-        sentAz = sendAz; sentEl = max(0, el)
+        let now = Date()
+        if let err {
+            // Keep the deadband reference (and `sentAz`/`sentEl`) at the last point that
+            // actually went out, so the loop retries this target after the backoff.
+            sendGate.recordFailure(now: now)
+            let wait = Int(RotatorSendGate.backoff(failures: sendGate.failures))
+            lastTx = "TX #\(txSeq): \(err) · retrying in \(wait) s"
+            if !pointRetrying {
+                ODLog.shared.log(String(format: "rotator: point az %.0f el %.0f failed (%@) — retrying", az, el, err),
+                                 category: "rotator")
+            }
+            pointRetrying = true
+        } else {
+            sendGate.recordSuccess(az: az, el: el, now: now)
+            lastTx = "TX #\(txSeq): ok"
+            sentAz = sendAz; sentEl = max(0, el)
+            if pointRetrying { pointRetrying = false }
+        }
     }
 
     /// Send a mechanical position (offsets/declination already applied). Returns nil on
@@ -796,7 +810,7 @@ final class RotatorController: ObservableObject {
             while isTicking { await Self.gcdDelay(0.05) }
             await performSelfTest()
             selfTestRunning = false
-            lastAz = nil; lastEl = nil
+            sendGate.reset()
             retick()
         }
     }
@@ -1068,7 +1082,7 @@ extension RotatorController {
     /// Restart OrbitDeck's own pointing loop after external control.
     func serverResumeTracking() {
         guard connected, timer == nil, !reconnecting else { return }
-        lastAz = nil; lastEl = nil; lastSendAt = nil
+        sendGate.reset()
         startLoop()
         statusText = "Tracking resumed"
         ODLog.shared.log("rotctld server: external control ended — OrbitDeck tracking resumed", category: "rotator")
@@ -1092,7 +1106,13 @@ extension RotatorController {
         let errText = await sendPoint(az: az, el: el) ?? ""
         let ok = errText.isEmpty
         lastTx = ok ? "TX #\(txSeq): ok (rotctld server)" : "TX #\(txSeq): \(errText)"
-        lastAz = az; lastEl = el; lastSendAt = Date()
+        // The client sees a failure in its reply and resends; only a delivered point
+        // becomes the reference for stall detection and the deadband.
+        if ok {
+            sendGate.recordSuccess(az: az, el: el, now: Date())
+            sentAz = az; sentEl = max(0, el)
+            if pointRetrying { pointRetrying = false }
+        }
         return ok
     }
 }

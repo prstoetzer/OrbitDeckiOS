@@ -12,7 +12,7 @@ import CoreML
 //  the same time (full duplex). RX audio is fed to ft8_lib's monitor/decoder on
 //  UTC-aligned 7.5 s slots; TX is a continuous-phase 4-FSK synthesis of the
 //  encoded tones played back through the same interface. PTT is keyed over CAT
-//  when the radio supports it (RigController.setPTT); otherwise the operator uses
+//  when the radio supports it (RigController.acquirePTT); otherwise the operator uses
 //  VOX or manual PTT, aided by the on-screen TX indicator.
 //
 //  FT4 is ~100% duty cycle — the UI warns operators to limit power out of respect
@@ -294,7 +294,9 @@ final class FT4Engine: ObservableObject {
     // pre-arm hop and the boundary's main-actor Task).
     private nonisolated(unsafe) var preArmTimer: DispatchSourceTimer?
     private var preArmTask: Task<Void, Never>?
-    private var pttArmed = false            // PTT pre-keyed for the upcoming TX slot
+    private var armedLease: PTTLease? {     // PTT pre-keyed for the upcoming TX slot
+        didSet { if armedLease != nil { sessionKeyed = true } }
+    }
     private var armedSlotIndex = -1         // starting-slot index we've armed for
     private var dialSteppedForSlot = -1     // guard against double-stepping the dial
     private var dialStepTask: Task<Void, Never>?   // the boundary's in-flight dial step
@@ -303,6 +305,18 @@ final class FT4Engine: ObservableObject {
     private var lateStartPending = false    // a re-check is already queued
     private var txSlotIndex = -1            // slot the current burst belongs to
     private var txOnAirMessage = ""         // message the current burst is sending
+
+    // PTT safety. Every key is a lease from the rig's PTT authority; every path that ends
+    // a session, a burst or an arm hands its lease back (`releaseLease`). `sessionGeneration`
+    // is bumped by start() and stop(), so a pre-arm, boundary or late-start task that
+    // resumes after an await into a different (or no) session gives its key back instead
+    // of transmitting.
+    private var sessionGeneration = 0
+    private var txLease: PTTLease? {        // the burst's or Tune's key
+        didSet { if txLease != nil { sessionKeyed = true } }
+    }
+    private var sessionKeyed = false        // FT4 keyed CAT PTT at some point this session
+    private var burstID = 0                 // bumped per burst/tune, for its end timer
 
     // RX buffer for the current slot (filled on the audio thread).
     private nonisolated(unsafe) var rxBuffer: [Float] = []
@@ -342,7 +356,36 @@ final class FT4Engine: ObservableObject {
     /// Analysis ticks (0.1 s each) per waterfall line for a visible history in seconds.
     nonisolated static func ticksPerLine(forSeconds s: Int) -> Int { s <= 12 ? 1 : (s <= 24 ? 2 : 4) }
 
-    func attach(rig: RigController, qso: QSOStore) { self.rig = rig; self.qso = qso }
+    func attach(rig: RigController, qso: QSOStore) {
+        self.rig = rig; self.qso = qso
+        // The PTT authority took a key away (max key time, CAT disconnect or link drop,
+        // Stop all): stop the audio so a VOX radio can't carry on, and clear the TX state.
+        for owner in [PTTOwner.ft4, .tune] {
+            rig.onPTTForcedRelease(owner) { [weak self] lease, reason in self?.pttForciblyReleased(lease, reason: reason) }
+        }
+    }
+
+    /// Whether a task that captured `generation` still belongs to the running session.
+    private func sessionIsCurrent(_ generation: Int) -> Bool { generation == sessionGeneration && isRunning }
+
+    /// Hand a PTT lease back (unkey, or cancel a key still in flight). Nil or stale leases
+    /// are ignored, so every early return can call this.
+    private func releaseLease(_ lease: PTTLease?) {
+        guard let lease else { return }
+        rig?.releasePTT(lease)
+    }
+
+    private func pttForciblyReleased(_ lease: PTTLease, reason: String) {
+        if armedLease == lease { armedLease = nil }
+        guard txLease == lease else { return }
+        txLease = nil
+        source?.stopPlayback()
+        burstID += 1        // the burst's end timer must not touch the next one
+        isTransmitting = false
+        isTuning = false
+        errorText = "Transmit stopped: \(reason)."
+        status = isRunning ? "Listening…" : "Idle"
+    }
 
     /// Whether FT4 must not start on this transponder: FM-only (not linear, FM downlink).
     /// Linear transponders — AO-7 included — are never gated. nil = allowed.
@@ -418,7 +461,12 @@ final class FT4Engine: ObservableObject {
         waterBytes.removeAll(keepingCapacity: true); waterRowSlots.removeAll(keepingCapacity: true); waterWidth = 0
         waterFloor = 0; wfAccum = []; wfAccumFrames = 0; wfTicks = 0
         spectrum.setMarks([])
-        preArmTask = nil; pttArmed = false; armedSlotIndex = -1; dialSteppedForSlot = -1
+        // A new session: tasks from an earlier one see the new generation and stand down.
+        // (Nothing should be held here — stop() released it — but never drop a key silently.)
+        sessionGeneration += 1
+        releaseLease(armedLease); releaseLease(txLease)
+        preArmTask = nil; armedLease = nil; txLease = nil; armedSlotIndex = -1; dialSteppedForSlot = -1
+        sessionKeyed = false
         scheduleSlotTimer()
         schedulePreArmTimer()
         scheduleAnalysisTimer()
@@ -427,6 +475,7 @@ final class FT4Engine: ObservableObject {
 
     func stop() {
         guard isRunning else { return }
+        sessionGeneration += 1
         isTuning = false
         slotTimer?.cancel(); slotTimer = nil
         preArmTimer?.cancel(); preArmTimer = nil
@@ -441,8 +490,14 @@ final class FT4Engine: ObservableObject {
             rig.holdDoppler = false
             Task { await rig.stepDopplerNow() }
         }
-        if isTransmitting || pttArmed { Task { await rig?.setPTT(false) } }
-        pttArmed = false; armedSlotIndex = -1; dialSteppedForSlot = -1
+        // Unkey: FT4's leases (a pre-arm or burst key still in flight too) and, when nobody
+        // else holds the transmitter, a plain PTT-off if this session ever keyed (or a key
+        // frame is still unanswered) — not otherwise, so a hand-mic or foot-switch
+        // transmission isn't cut by stopping FT4.
+        releaseLease(armedLease); releaseLease(txLease)
+        rig?.releasePTT(owners: [.ft4, .tune], unkeyIfIdle: sessionKeyed)
+        armedLease = nil; txLease = nil; burstID += 1
+        armedSlotIndex = -1; dialSteppedForSlot = -1
         dialStepTask = nil; txSlotIndex = -1; txOnAirMessage = ""
         isTransmitting = false
         isRunning = false
@@ -498,16 +553,25 @@ final class FT4Engine: ObservableObject {
         guard armedSlotIndex != upcoming else { return }             // already armed
         armedSlotIndex = upcoming
         let keyPTT = pttOverCAT
+        let generation = sessionGeneration
         preArmTask = Task { @MainActor in
             if self.dialSteppedForSlot != upcoming {
                 await rig.stepDopplerNow()
+                guard self.sessionIsCurrent(generation) else { return }
                 self.dialSteppedForSlot = upcoming
             }
-            if keyPTT {
-                // Refused (e.g. a receive-only transponder): not armed, so the boundary
-                // path tries again and aborts the burst with the reason.
-                self.pttArmed = await rig.setPTT(true)
+            guard keyPTT, !Task.isCancelled, self.sessionIsCurrent(generation) else { return }
+            // Refused (e.g. a receive-only transponder): not armed, so the boundary path
+            // tries again and aborts the burst with the reason.
+            let lease = rig.confirmedPTT(await rig.acquirePTT(.ft4))
+            // Stopped, restarted, canceled by Tune or re-armed while the key was in flight:
+            // give it back rather than leave the radio keyed.
+            guard self.sessionIsCurrent(generation), !Task.isCancelled, self.armedSlotIndex == upcoming,
+                  !self.isTransmitting, self.armedLease == nil else {
+                self.releaseLease(lease)
+                return
             }
+            self.armedLease = lease
         }
     }
 
@@ -746,6 +810,7 @@ final class FT4Engine: ObservableObject {
 
         let first = Task { @MainActor in
             if haveAudio, !self.canDecodeDeep { self.canDecodeDeep = true }
+            let generation = self.sessionGeneration
             // Ensure any pre-arm (dial step + PTT) for this starting slot has settled, so a
             // retune is never in flight once the burst goes on the air.
             await self.preArmTask?.value
@@ -753,7 +818,7 @@ final class FT4Engine: ObservableObject {
             // slot that just ended and the one starting — the only moment we retune, so the
             // radio holds one frequency through each RX/TX slot. Skip it if the pre-arm
             // already stepped for this slot (a TX slot arms in the previous slot's tail).
-            if let rig = self.rig, rig.holdDoppler, self.dialSteppedForSlot != startingSlot {
+            if self.sessionIsCurrent(generation), let rig = self.rig, rig.holdDoppler, self.dialSteppedForSlot != startingSlot {
                 self.dialSteppedForSlot = startingSlot
                 // Kept as a task so a late start in this slot can wait for it to land.
                 let step = Task { @MainActor in await rig.stepDopplerNow() }
@@ -773,18 +838,22 @@ final class FT4Engine: ObservableObject {
                                  : "Last slot: no RX audio"
             if self.decoderDiagnostics != diag { self.decoderDiagnostics = diag }
 
+            // Stopped or restarted while this boundary was being handled: no TX decision.
+            // (stop() released any pre-armed key; a lease seen here is released anyway.)
+            guard self.sessionIsCurrent(generation) else { return }
+
             // TX watchdog: halt before deciding on this slot's transmission.
             self.enforceWatchdog()
 
-            let armed = self.pttArmed
-            self.pttArmed = false
+            let armed = self.armedLease
+            self.armedLease = nil
             let wantTx = self.txEnabled && !self.txMessage.isEmpty
                 && ((startingSlot % 2 == 0) == self.txOnEvenSlots)
             if wantTx {
-                self.beginTransmit(slot: startingSlot, pttAlreadyKeyed: armed)
-            } else if armed {
+                self.beginTransmit(slot: startingSlot, preArmed: armed)
+            } else {
                 // Pre-armed PTT but this slot won't transmit after all — release it.
-                await self.rig?.setPTT(false)
+                self.releaseLease(armed)
             }
         }
 
@@ -1261,10 +1330,11 @@ final class FT4Engine: ObservableObject {
         }
         // Usual ordering: let any pre-arm / boundary dial step land, step the dial for this
         // slot if nothing has yet, THEN key PTT and play — never retune on the air.
+        let generation = sessionGeneration
         await preArmTask?.value
         await dialStepTask?.value
         func stillWanted() -> Bool {
-            isRunning && !isTransmitting && txEnabled && !txMessage.isEmpty && lateStartSlot() == slot
+            sessionIsCurrent(generation) && !isTransmitting && txEnabled && !txMessage.isEmpty && lateStartSlot() == slot
         }
         guard stillWanted() else { return }
         if let rig, rig.holdDoppler, dialSteppedForSlot != slot {
@@ -1275,10 +1345,10 @@ final class FT4Engine: ObservableObject {
             guard stillWanted() else { return }
         }
         // A pre-arm for this slot (TX was already due) has PTT up — hand it over.
-        let armed = pttArmed && armedSlotIndex == slot
-        if armed { pttArmed = false }
+        let armed = armedSlotIndex == slot ? armedLease : nil
+        if armed != nil { armedLease = nil }
         ODLog.shared.log("FT4 late start in slot \(slot)", category: "ft4")
-        beginTransmit(slot: slot, pttAlreadyKeyed: armed, lateStart: true)
+        beginTransmit(slot: slot, preArmed: armed, lateStart: true)
     }
 
     /// Swap the on-air burst to the current `txMessage`, keeping the play position: both
@@ -1331,14 +1401,16 @@ final class FT4Engine: ObservableObject {
     /// Start the burst for `slot`. `lateStart` plays from the slot clock's current offset
     /// (the elapsed part of the waveform is skipped) so the symbols land where the other
     /// stations' decoders expect them; otherwise the burst plays from its start.
-    private func beginTransmit(slot txSlot: Int, pttAlreadyKeyed: Bool = false, lateStart: Bool = false) {
-        guard let source, !isTransmitting else { return }
+    /// `preArmed` is the pre-arm's key for this slot: it becomes the burst's, or is released
+    /// on every path that doesn't transmit.
+    private func beginTransmit(slot txSlot: Int, preArmed: PTTLease? = nil, lateStart: Bool = false) {
+        guard isRunning, let source, !isTransmitting else { releaseLease(preArmed); return }
         // No uplink on the tracked transponder: don't key, and don't play TX audio either
         // (a radio on VOX would transmit it on the downlink).
         if let why = rig?.pttBlockedReason ?? fmOnlyBlock {
             errorText = why
             if fmOnlyBlock != nil { txEnabled = false }
-            if pttAlreadyKeyed { Task { await rig?.setPTT(false) } }
+            releaseLease(preArmed)
             return
         }
         // A manual message with the Transmit switch on is the one path that doesn't go
@@ -1346,14 +1418,23 @@ final class FT4Engine: ObservableObject {
         if myCallSeq.isEmpty {
             errorText = FT4Engine.noCallsignReason
             txEnabled = false
-            if pttAlreadyKeyed { Task { await rig?.setPTT(false) } }
+            releaseLease(preArmed)
             return
         }
-        guard let tones = FT4Engine.encodeTones(txMessage) else { errorText = "Could not encode \"\(txMessage)\"."; return }
+        guard let tones = FT4Engine.encodeTones(txMessage) else {
+            errorText = "Could not encode \"\(txMessage)\"."
+            releaseLease(preArmed)
+            return
+        }
         let rate = source.sampleRate
         let tx = makeTXWaveform(tones: tones, slot: txSlot, rate: rate)
         txLock.lock(); txBuffer = tx; txIndex = 0; txDone = false; txPeak = 0; txLock.unlock()
         isTransmitting = true
+        txLease = preArmed
+        burstID += 1
+        let burst = burstID
+        let generation = sessionGeneration
+        let pttAlreadyKeyed = preArmed != nil
         txSlotIndex = txSlot
         txOnAirMessage = txMessage
         status = "Transmitting: \(txMessage)"
@@ -1371,17 +1452,18 @@ final class FT4Engine: ObservableObject {
             // PTT is already up when the slot was pre-armed; otherwise key it now. If CAT
             // PTT refuses (the transponder changed to receive-only meanwhile), abort.
             if !pttAlreadyKeyed, let rig = self.rig {
-                let keyed = await rig.setPTT(true)
-                if !keyed, self.pttOverCAT {
-                    self.errorText = rig.pttBlockedReason ?? "CAT PTT failed — burst not sent."
+                let lease = rig.confirmedPTT(await rig.acquirePTT(.ft4))
+                // Stopped, restarted or ended while the key was in flight: give it back.
+                guard self.sessionIsCurrent(generation), self.isTransmitting, self.burstID == burst else {
+                    self.releaseLease(lease)
+                    return
+                }
+                if lease == nil, self.pttOverCAT {
+                    self.errorText = rig.pttRefusalReason(for: .ft4) ?? "CAT PTT failed — burst not sent."
                     await self.endTransmit()
                     return
                 }
-                // Stopped while PTT-on was in flight: the stop's PTT-off went out first.
-                if keyed, !self.isTransmitting || self.txSlotIndex != txSlot {
-                    if !self.isTransmitting { await rig.setPTT(false) }
-                    return
-                }
+                self.txLease = lease
             }
             // Diagnostic: how late the burst starts relative to the slot boundary. WSJT-X
             // stations see this as the decode's dT; aim for well under a few hundred ms.
@@ -1408,8 +1490,8 @@ final class FT4Engine: ObservableObject {
                 try source.startPlayback(pull: { [weak self] count in self?.pullTX(count) ?? [] })
             } catch { errorText = error.localizedDescription; await endTransmit(); return }
             try? await Task.sleep(nanoseconds: UInt64(txDuration * 1_000_000_000))
-            // A tune started right after this burst owns the TX state now.
-            if !self.isTuning { await endTransmit() }
+            // A tune or another burst started after this one owns the TX state now.
+            if self.burstID == burst, !self.isTuning { await endTransmit() }
         }
     }
 
@@ -1440,7 +1522,12 @@ final class FT4Engine: ObservableObject {
     private func endTransmit() async {
         guard isTransmitting else { return }
         source?.stopPlayback()
-        await rig?.setPTT(false)
+        // Unkey (or cancel a key still in flight). The authority sends it before any later key.
+        let lease = txLease
+        txLease = nil
+        releaseLease(lease)
+        if lease == nil { rig?.releasePTT(owners: [.ft4, .tune]) }
+        burstID += 1
         isTransmitting = false
         status = isRunning ? "Listening…" : "Idle"
         if isTuning { isTuning = false; return }
@@ -1491,8 +1578,11 @@ final class FT4Engine: ObservableObject {
         if isTuning { Task { await endTransmit() }; return }
         guard isRunning, !isTransmitting, let source else { return }
         if let why = tuneBlocked { errorText = why; return }
-        // Tune keys PTT itself; drop any pre-armed slot so its PTT state isn't orphaned.
-        preArmTask?.cancel(); preArmTask = nil; pttArmed = false; armedSlotIndex = -1
+        // Tune keys PTT itself; drop any pre-armed slot (a key still in flight included) so
+        // its PTT state isn't orphaned.
+        preArmTask?.cancel(); preArmTask = nil; armedSlotIndex = -1
+        releaseLease(armedLease); armedLease = nil
+        rig?.releasePTT(owners: [.ft4])
         let rate = source.sampleRate
         let n = Int(Self.tuneSeconds * rate)
         let dphi = 2 * Double.pi * txAudioFreq / rate
@@ -1508,23 +1598,26 @@ final class FT4Engine: ObservableObject {
         isTuning = true
         isTransmitting = true
         tuneGeneration += 1
+        burstID += 1
         let generation = tuneGeneration
+        let session = sessionGeneration
         status = "Tuning \(Int(txAudioFreq)) Hz…"
         ODLog.shared.log("FT4 tune on at \(Int(txAudioFreq)) Hz", category: "ft4")
         let pull = makeTXPull()
         Task {
             if let rig = self.rig {
-                let keyed = await rig.setPTT(true)
-                if !keyed, self.pttOverCAT {
-                    self.errorText = rig.pttBlockedReason ?? "CAT PTT failed — tune not sent."
-                    await self.endTransmit(); return
-                }
-                // Stop tapped while the PTT-on was still in flight: its PTT-off went out
-                // first, so unkey again rather than leave a carrier up.
-                if keyed, !self.isTuning || self.tuneGeneration != generation {
-                    if !self.isTransmitting { await rig.setPTT(false) }
+                let lease = rig.confirmedPTT(await rig.acquirePTT(.tune, maxKeySeconds: Self.tuneSeconds + 10))
+                // Stop tapped (or FT4 stopped) while the key was still in flight: give it
+                // back rather than leave a carrier up.
+                guard self.isTuning, self.tuneGeneration == generation, self.sessionIsCurrent(session) else {
+                    self.releaseLease(lease)
                     return
                 }
+                if lease == nil, self.pttOverCAT {
+                    self.errorText = rig.pttRefusalReason(for: .tune) ?? "CAT PTT failed — tune not sent."
+                    await self.endTransmit(); return
+                }
+                self.txLease = lease
             }
             guard self.isTuning, self.tuneGeneration == generation else { return }
             do {
@@ -4128,6 +4221,8 @@ final class PacketEngine: ObservableObject {
     private nonisolated(unsafe) var txIndex = 0
     private var meterTimer: DispatchSourceTimer?
     private var transmissionID = 0
+    /// The CAT PTT key of the frame on the air (nil = not keyed over CAT).
+    private var pttLease: PTTLease?
     /// Half duplex: decodes are ignored until this time (our own transmission and the
     /// receiver turnaround guard).
     private var rxBlankedUntil = Date.distantPast
@@ -4172,6 +4267,17 @@ final class PacketEngine: ObservableObject {
 
     func attach(rig: RigController, audio: AudioHub, store: OrbitStore, qso: QSOStore) {
         self.rig = rig; self.audio = audio; self.store = store; self.qso = qso
+        // The PTT authority took the key away (max key time, CAT disconnect or link drop,
+        // Stop all): stop the frame's audio so a VOX radio can't carry on.
+        rig.onPTTForcedRelease(.packet) { [weak self] lease, reason in
+            guard let self, self.pttLease == lease else { return }
+            self.pttLease = nil
+            self.transmissionID += 1
+            self.source?.stopPlayback()
+            self.isTransmitting = false
+            self.errorText = "Transmit stopped: \(reason)."
+            if self.isRunning { self.status = self.listeningStatus }
+        }
     }
 
     private func save() {
@@ -4326,10 +4432,16 @@ final class PacketEngine: ObservableObject {
         housekeepingTimer?.cancel(); housekeepingTimer = nil
         meterTimer?.cancel(); meterTimer = nil
         if speech.isSpeaking { speech.stopSpeaking(at: .immediate) }
-        if let source {
-            source.stopPlayback(); source.stop()
-            if isTransmitting { Task { await rig?.setPTT(false) } }
-        }
+        // A transmission in progress (or still keying) is no longer current: its watchdog
+        // and end-of-frame paths just release their key.
+        transmissionID += 1
+        source?.stopPlayback(); source?.stop()
+        // Unkey whatever the source: our lease (a key still in flight too) and, mid-frame,
+        // a plain PTT-off when nobody else holds the transmitter (also sent whenever a key
+        // frame is still unanswered — see `RigController.releasePTT(owners:)`).
+        let wasKeyed = pttLease != nil
+        rig?.releasePTT(pttLease); pttLease = nil
+        rig?.releasePTT(owners: [.packet], unkeyIfIdle: wasKeyed || isTransmitting)
         source = nil
         demodQueue.sync { demod = nil }
         if engagedDataMode { rig?.setDigitalDataMode(false, client: "packet"); engagedDataMode = false }
@@ -4388,8 +4500,9 @@ final class PacketEngine: ObservableObject {
             rig.setDigitalDataMode(true, client: "packet")
             engagedDataMode = true
         }
-        // Stuck-PTT recovery: make sure the radio isn't left keyed from a previous run.
-        if rig?.pttCapable ?? false { Task { await rig?.setPTT(false) } }
+        // Stuck-PTT recovery: make sure the radio isn't left keyed from a previous run
+        // (never touching another owner's key).
+        rig?.releasePTT(owners: [.packet], unkeyIfIdle: true)
         startMeter()
     }
 
@@ -5101,27 +5214,55 @@ final class PacketEngine: ObservableObject {
         let thisTX = transmissionID
         isTransmitting = true
         status = label
-        let keyed = rig?.pttSupported ?? false
-        if keyed { await rig?.setPTT(true) }
         let watchdog = Double(max(1, settings.pttWatchdogSeconds))
+        var lease: PTTLease?
+        if let rig, rig.pttSupported {
+            lease = rig.confirmedPTT(await rig.acquirePTT(.packet, maxKeySeconds: watchdog + 5))
+            // Stopped (or superseded) while the key was in flight: give it back, send nothing.
+            guard transmissionID == thisTX, isRunning, isTransmitting else {
+                rig.releasePTT(lease)
+                return
+            }
+            // Refused (receive-only transponder, another owner on the air) or failed:
+            // don't play the frame unkeyed.
+            guard lease != nil else {
+                errorText = rig.pttRefusalReason(for: .packet) ?? "CAT PTT failed — frame not sent."
+                isTransmitting = false
+                status = listeningStatus
+                return
+            }
+            pttLease = lease
+        }
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(watchdog * 1_000_000_000))
-            guard let self, self.isTransmitting, self.transmissionID == thisTX else { return }
+            guard let self else { return }
+            // Whatever happened since, THIS transmission's key comes down (a stale lease
+            // is ignored, so a later transmission is never touched).
+            self.rig?.releasePTT(lease)
+            guard self.isTransmitting, self.transmissionID == thisTX else { return }
             self.source?.stopPlayback()
-            if keyed { await self.rig?.setPTT(false) }
+            if self.pttLease == lease { self.pttLease = nil }
             self.isTransmitting = false
             self.errorText = "PTT watchdog: unkeyed after \(Int(watchdog)) s."
         }
         do {
             try source.startPlayback(pull: { [weak self] n in self?.pullTX(n) ?? [] })
         } catch {
+            // No audio: unkey now rather than hold a dead carrier for the frame time.
             errorText = error.localizedDescription
+            rig?.releasePTT(lease)
+            if pttLease == lease { pttLease = nil }
+            if transmissionID == thisTX { isTransmitting = false; status = listeningStatus }
+            return
         }
         let seconds = min(watchdog, Double(samples.count) / source.sampleRate + 0.15)
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-        guard transmissionID == thisTX, isTransmitting else { return }
-        source.stopPlayback()
-        if keyed { await rig?.setPTT(false) }
+        let current = transmissionID == thisTX && isTransmitting
+        if current { source.stopPlayback() }
+        // THIS transmission's key comes down whatever `isTransmitting` says now.
+        rig?.releasePTT(lease)
+        if pttLease == lease { pttLease = nil }
+        guard current else { return }
         isTransmitting = false
         // Half duplex: blank our own echo plus a 150 ms turnaround guard.
         rxBlankedUntil = Date().addingTimeInterval(0.15)

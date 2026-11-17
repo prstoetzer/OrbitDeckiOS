@@ -801,3 +801,321 @@ enum CTCSS {
         return bestErr <= 10 ? best : nil
     }
 }
+
+// MARK: - PTT authority
+
+/// Who has the transmitter keyed (or is keying it). One owner holds the lease at a time.
+enum PTTOwner: String, CaseIterable, Sendable {
+    case ft4, tune, packet, voice, network
+
+    var label: String {
+        switch self {
+        case .ft4: "FT4"
+        case .tune: "FT4 Tune"
+        case .packet: "packet"
+        case .voice: "remote voice"
+        case .network: "a network (rigctld) client"
+        }
+    }
+
+    /// Longest this owner may keep the transmitter keyed before the authority unkeys it.
+    /// A backstop above the owner's own limit: an FT4 burst ≈ 5 s, Tune 10 s, the packet
+    /// watchdog ≤ 60 s, remote voice and a rigctld client 3 min.
+    var maxKeySeconds: TimeInterval {
+        switch self {
+        case .ft4: 30
+        case .tune: 20
+        case .packet: 65
+        case .voice, .network: 190
+        }
+    }
+
+    /// Whether a key survives the app going to the background. FT4 and packet are
+    /// operator-started sessions built to keep running — and transmitting (the FT4
+    /// sequence, packet beacons and acks) — with the screen locked. Nobody can hold the
+    /// talk button, tap Tune or watch a network client's key from the background.
+    var continuesInBackground: Bool { self == .ft4 || self == .packet }
+}
+
+/// One grant of the transmitter. `generation` is unique per grant, so a stale lease (one
+/// released, timed out or replaced since) can never key or unkey someone else's transmission.
+struct PTTLease: Equatable, Sendable {
+    let owner: PTTOwner
+    let generation: Int
+}
+
+/// The single authority over the uplink radio's CAT PTT. Every key and unkey goes through
+/// it, in request order, one at a time (FIFO), so an unkey is never overtaken by a key
+/// requested before it. Releasing a lease cancels its key if that hasn't gone out yet (or
+/// stops it mid-way, between the split/FT-847 pre-key steps and the key frame); if the key
+/// frame already went out, the release's unkey follows it. A keyed lease is unkeyed by the
+/// authority itself after its owner's maximum key time (never more than
+/// `globalMaxKeySeconds`). The radio I/O, the sleep and the timer are injected (`Port`),
+/// so the ordering is testable without a radio.
+@MainActor
+final class PTTAuthority {
+    enum KeyOutcome: Sendable {
+        /// The key frame went out.
+        case keyed
+        /// Nothing was keyed (no link, refused, or released before the key frame).
+        case notSent
+        /// The key frame was attempted but the send failed: the radio may have keyed.
+        case failed
+    }
+
+    struct Port {
+        /// Key the radio. `stillWanted` turns false once the grant is released; check it
+        /// before the key frame (and inside any pre-key wait) and return `.notSent` then.
+        var key: @MainActor (_ stillWanted: @escaping @MainActor () -> Bool) async -> KeyOutcome
+        /// Unkey the radio. True when the unkey frame was sent.
+        var unkey: @MainActor () async -> Bool
+        var sleep: @MainActor (_ ms: Int) async -> Void
+        /// Run `action` on the main actor after `seconds` (the max-key-time timer).
+        var schedule: @MainActor (_ seconds: TimeInterval, _ action: @escaping @MainActor @Sendable () -> Void) -> Void
+        var log: @MainActor (String) -> Void = { _ in }
+    }
+
+    /// No owner keeps the transmitter keyed longer than this.
+    static let globalMaxKeySeconds: TimeInterval = 240
+
+    private struct Grant {
+        let lease: PTTLease
+        var keyed: Bool
+        let maxKey: TimeInterval
+    }
+    private enum Op {
+        case key(generation: Int, CheckedContinuation<PTTLease?, Never>)
+        case unkey
+    }
+
+    private let port: Port
+    private var grant: Grant?
+    private var generation = 0
+    private var queue: [(id: Int, op: Op)] = []
+    private var draining = false
+    private var lastOpID = 0
+    private var completedOpID = 0
+    private var unkeyResults: [Int: Bool] = [:]
+    /// A key frame went out (or may have) and no unkey has been sent since.
+    private(set) var keyFrameOut = false
+    /// Sticky: an unkey on a disconnect or link drop couldn't be confirmed while the radio
+    /// may have been keyed (or a key frame was still unanswered at teardown). Cleared only
+    /// by a confirmed unkey (`confirmUnkeyAfterReconnect`).
+    private(set) var unkeyUnconfirmed = false
+    /// While `keyFrameOut` outlives its grant (an unkey that failed), the max-key timer
+    /// retries the unkey every this many seconds, up to `unkeyRetryLimit` times.
+    static let unkeyRetrySeconds: TimeInterval = 5
+    static let unkeyRetryLimit = 60
+
+    /// Called when the authority takes a lease away from its owner (`releaseAll`: max key
+    /// time, disconnect, link drop, background, Stop all), so the owner can stop its audio
+    /// and clear its UI. Not called for an owner's own release.
+    var onForcedRelease: ((PTTLease, String) -> Void)?
+
+    init(port: Port) { self.port = port }
+
+    /// The owner holding (or keying) the transmitter, if any.
+    var holder: PTTOwner? { grant?.lease.owner }
+    /// True while a granted key is on the air.
+    var isKeyed: Bool { grant?.keyed ?? false }
+    /// True when the radio may be transmitting because of us: a grant is held or pending,
+    /// or a key frame went out without a successful unkey since.
+    var mayBeKeyed: Bool { grant != nil || keyFrameOut }
+    /// Whether `lease` is the current grant (pending or keyed).
+    func holds(_ lease: PTTLease?) -> Bool { lease != nil && grant?.lease == lease }
+
+    /// Ask for the transmitter and key it. Returns the lease once the key frame is out, or
+    /// nil when it's held by another grant, the radio refused or couldn't be keyed, or the
+    /// grant was released before the key went out.
+    func acquire(_ owner: PTTOwner, maxKeySeconds: TimeInterval? = nil) async -> PTTLease? {
+        if let held = grant {
+            port.log("PTT: \(owner.label) refused — the transmitter is in use by \(held.lease.owner.label)")
+            return nil
+        }
+        generation += 1
+        let lease = PTTLease(owner: owner, generation: generation)
+        grant = Grant(lease: lease, keyed: false,
+                      maxKey: min(maxKeySeconds ?? owner.maxKeySeconds, Self.globalMaxKeySeconds))
+        let granted = await withCheckedContinuation { c in
+            _ = enqueue(.key(generation: lease.generation, c))
+        }
+        // The key landed, but the grant may have been taken away (`releaseAll`) between the
+        // key finishing and this task resuming. The owner never stored it, so its
+        // forced-release handler had nothing to stop: report a refusal instead.
+        return confirmed(granted)
+    }
+
+    /// `lease` if it's still the current grant, else nil. Owners pass every lease they get
+    /// through this (after any await) before storing it or starting audio.
+    func confirmed(_ lease: PTTLease?) -> PTTLease? { holds(lease) ? lease : nil }
+
+    /// Give a lease back: unkey (after its key, if that's still in flight) or cancel a key
+    /// that hasn't gone out. A stale lease is ignored, so a late release can never drop
+    /// someone else's key. Returns the unkey's operation id (see `waitFor`).
+    @discardableResult
+    func release(_ lease: PTTLease?) -> Int? {
+        guard let lease, grant?.lease == lease else { return nil }
+        grant = nil
+        port.log("PTT: \(lease.owner.label) released")
+        return enqueue(.unkey)
+    }
+
+    /// Release whatever any of `owners` holds, a key still in flight included (for a stop
+    /// that doesn't know whether its key landed). Another owner's grant is left alone. With
+    /// `unkeyIfIdle`, an unkey is also sent when nobody holds the transmitter.
+    @discardableResult
+    func release(owners: Set<PTTOwner>, unkeyIfIdle: Bool = false) -> Int? {
+        if let held = grant {
+            guard owners.contains(held.lease.owner) else { return nil }
+            return release(held.lease)
+        }
+        return unkeyIfIdle ? enqueue(.unkey) : nil
+    }
+
+    /// Take the transmitter away from whoever holds it (telling the owner through
+    /// `onForcedRelease`) and unkey. With `forceUnkey` the unkey is sent even when nothing
+    /// is held. Returns the unkey's operation id, if one was queued.
+    @discardableResult
+    func releaseAll(reason: String, forceUnkey: Bool = false) -> Int? {
+        let held = grant
+        grant = nil
+        guard held != nil || forceUnkey || keyFrameOut else { return nil }
+        let id = enqueue(.unkey)
+        if let held {
+            port.log("PTT: \(held.lease.owner.label) unkeyed — \(reason)")
+            onForcedRelease?(held.lease, reason)
+        }
+        return id
+    }
+
+    /// The app went to the background: release a grant whose owner can't continue there
+    /// (see `PTTOwner.continuesInBackground`).
+    @discardableResult
+    func releaseForBackground() -> Int? {
+        guard let held = grant, !held.lease.owner.continuesInBackground else { return nil }
+        return releaseAll(reason: "OrbitDeck went to the background")
+    }
+
+    // MARK: Disconnect / reconnect
+
+    /// Disconnect or link drop: take every grant away (a key in flight too) and queue an
+    /// unconditional unkey. Pass the result to `finishShutdownUnkey` once the links are
+    /// still open but before they close.
+    func beginShutdownUnkey(reason: String) -> (op: Int?, mayBeKeyed: Bool) {
+        let mayBeKeyed = self.mayBeKeyed
+        return (releaseAll(reason: reason, forceUnkey: true), mayBeKeyed)
+    }
+
+    /// Wait (bounded) for the shutdown unkey. Returns false when it couldn't be confirmed
+    /// while the radio may have been keyed; that sets `unkeyUnconfirmed`, so the next
+    /// connection sends a PTT-off before anything else.
+    func finishShutdownUnkey(_ started: (op: Int?, mayBeKeyed: Bool), timeoutMs: Int) async -> Bool {
+        let sent = await waitFor(started.op, timeoutMs: timeoutMs)
+        if (!sent && started.mayBeKeyed) || keyFrameOut { unkeyUnconfirmed = true }
+        return sent || !started.mayBeKeyed
+    }
+
+    /// The links are being torn down: a key frame still unanswered by an unkey means the
+    /// radio may be latched in transmit, so the next connection must unkey it.
+    func noteTeardown() {
+        if keyFrameOut { unkeyUnconfirmed = true }
+    }
+
+    /// After a (re)connect, before the Doppler loop starts: if an unkey was never confirmed,
+    /// send a PTT-off now. True when there was nothing to do or the unkey went out (the
+    /// flag is cleared only then).
+    func confirmUnkeyAfterReconnect(timeoutMs: Int) async -> Bool {
+        guard unkeyUnconfirmed else { return true }
+        port.log("PTT: sending the unconfirmed unkey on the new connection")
+        let op = releaseAll(reason: "reconnected after an unconfirmed unkey", forceUnkey: true)
+        guard await waitFor(op, timeoutMs: timeoutMs) else { return false }
+        unkeyUnconfirmed = false
+        return true
+    }
+
+    /// Wait up to `timeoutMs` for operation `id` (from a release) to finish. True when it
+    /// finished and, for an unkey, the frame was sent; true for nil (nothing was queued).
+    func waitFor(_ id: Int?, timeoutMs: Int) async -> Bool {
+        guard let id else { return true }
+        var waited = 0
+        while completedOpID < id, waited < timeoutMs { await port.sleep(20); waited += 20 }
+        guard completedOpID >= id else { return false }
+        return unkeyResults[id] ?? true
+    }
+
+    // MARK: Serial execution
+
+    private func enqueue(_ op: Op) -> Int {
+        lastOpID += 1
+        queue.append((lastOpID, op))
+        if !draining {
+            draining = true
+            Task { await self.drain() }
+        }
+        return lastOpID
+    }
+
+    private func drain() async {
+        while !queue.isEmpty {
+            let (id, op) = queue.removeFirst()
+            switch op {
+            case .key(let gen, let c):
+                c.resume(returning: await runKey(gen))
+            case .unkey:
+                let sent = await port.unkey()
+                if sent { keyFrameOut = false } else { port.log("PTT: unkey could not be sent") }
+                unkeyResults[id] = sent
+                unkeyResults = unkeyResults.filter { $0.key > id - 32 }
+            }
+            completedOpID = id
+        }
+        draining = false
+    }
+
+    private func runKey(_ gen: Int) async -> PTTLease? {
+        // Released (or replaced) before its turn: the key never goes out.
+        guard grant?.lease.generation == gen else { return nil }
+        let outcome = await port.key { [weak self] in self?.grant?.lease.generation == gen }
+        if outcome != .notSent { keyFrameOut = true }
+        let current = grant?.lease.generation == gen
+        if outcome == .keyed, current, var g = grant {
+            g.keyed = true
+            grant = g
+            armMaxKeyTimer(g)
+            return g.lease
+        }
+        // Not keyed — or released while keying, in which case that release's unkey is
+        // already queued behind this key.
+        if current {
+            grant = nil
+            if outcome == .failed { _ = enqueue(.unkey) }   // the key frame may have gone out
+        }
+        return nil
+    }
+
+    private func armMaxKeyTimer(_ g: Grant) {
+        let lease = g.lease
+        let limit = g.maxKey
+        port.schedule(limit) { [weak self] in
+            guard let self else { return }
+            if self.grant?.lease == lease, self.grant?.keyed == true {
+                let s = Int(limit)
+                let text = s < 60 ? "\(s) s" : (s % 60 == 0 ? "\(s / 60) min" : "\(s / 60) min \(s % 60) s")
+                self.releaseAll(reason: "keyed for \(text) (maximum key time)")
+            } else if self.grant == nil, self.keyFrameOut {
+                // Released, but its unkey never went out (e.g. the link was down): the
+                // backstop keeps trying rather than trusting the grant alone.
+                self.retryUnkey(attempt: 1)
+            }
+        }
+    }
+
+    /// Send another unkey while a key frame is unanswered and nobody holds the transmitter
+    /// (a new grant brings its own timer), then check again a little later.
+    private func retryUnkey(attempt: Int) {
+        guard grant == nil, keyFrameOut, attempt <= Self.unkeyRetryLimit else { return }
+        port.log("PTT: unkey unconfirmed — retrying (\(attempt))")
+        _ = enqueue(.unkey)
+        port.schedule(Self.unkeyRetrySeconds) { [weak self] in self?.retryUnkey(attempt: attempt + 1) }
+    }
+}

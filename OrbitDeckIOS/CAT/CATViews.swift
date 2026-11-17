@@ -893,6 +893,17 @@ struct HomeRigControlCard: View {
                         }
                     }
                 }
+                // A PTT-off on disconnect/link drop that couldn't be confirmed: kept until
+                // dismissed, since a reconnect clears the ordinary error line.
+                if let warning = rig.pttWarning {
+                    HStack(alignment: .top, spacing: 8) {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.semibold)).foregroundStyle(ODTheme.warning)
+                        Spacer()
+                        Button("Dismiss") { rig.pttWarning = nil }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
                 if rig.connected {
                     Divider().opacity(0.4)
                     switchBanner
@@ -1036,6 +1047,7 @@ struct StopAllButton: View {
     @EnvironmentObject private var rotator: RotatorController
     @EnvironmentObject private var ft4: FT4Engine
     @EnvironmentObject private var packet: PacketEngine
+    @EnvironmentObject private var voice: RemoteVoiceController
     @ObservedObject private var rigServer = RigctldServer.shared
     @ObservedObject private var rotServer = RotctldServer.shared
     @State private var confirm = false
@@ -1052,31 +1064,31 @@ struct StopAllButton: View {
                 Button("Stop all", role: .destructive) { stopAll() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Releases PTT, stops FT4 and packet, ends rigctld/rotctld client control, disconnects the radio, and parks and disconnects the rotator.")
+                Text("Releases PTT, stops FT4, packet and remote-voice transmit, ends rigctld/rotctld client control, disconnects the radio, and parks and disconnects the rotator.")
             }
         }
     }
 
     private var available: Bool {
         rig.connected || rig.connecting || rotator.connected || ft4.isRunning || packet.isRunning
-            || rigServer.externalControl || rigServer.clientKeyed || rotServer.externalControl
+            || voice.isTransmitting || rigServer.externalControl || rigServer.clientKeyed || rotServer.externalControl
     }
 
-    /// Release PTT and any network-client control, stop the digital engines, disconnect
-    /// CAT, park + disconnect the rotator.
+    /// Release PTT and any network-client control, stop the digital engines and remote-voice
+    /// transmit, disconnect CAT, park + disconnect the rotator.
     private func stopAll() {
         ODLog.shared.log("Stop all", category: "cat")
-        // The engines unkey on stop; release PTT explicitly too, before CAT goes away.
-        let wasConnected = rig.connected
         ft4.stop()
         packet.stop()
+        voice.stopTX()
         // A network client's key and Doppler hold, and a rotctld client's pause.
         rigServer.releaseForStopAll()
         rotServer.resumeTracking()
-        Task {
-            if wasConnected { await rig.setPTT(false) }
-            if rig.connected || rig.connecting { rig.disconnect() }
-        }
+        // The engines release their keys on stop; take any other key away too. The PTT
+        // authority sends this unkey before the disconnect's own (unconditional) PTT-off
+        // and exit sequence, in that order, before the links close.
+        rig.releaseAllPTT(reason: "Stop all")
+        if rig.connected || rig.connecting { rig.disconnect() }
         if rotator.connected { rotator.disconnect() }
     }
 }
@@ -1099,6 +1111,7 @@ struct RigctldServerSection: View {
             if server.enabled {
                 HamlibServerStatusRows(port: server.port, listening: server.listening, errorText: server.errorText,
                                        clientCount: server.clientCount, lastCommand: server.lastCommand)
+                HamlibClientApprovalRows(kind: .rigctld)
                 if server.externalControl {
                     Text("A client is tuning the radio — OrbitDeck's Doppler tuning is paused until it disconnects.")
                         .font(.caption).foregroundStyle(ODTheme.warning)
@@ -1110,7 +1123,7 @@ struct RigctldServerSection: View {
                     Button("Unkey now", role: .destructive) { server.unkeyClient() }
                 }
             }
-            Text("Lets Gpredict, SatPC32, WSJT-X or a logger on your local network read or drive the radio through OrbitDeck's CAT link — in the client choose Hamlib NET rigctl (model 2) and enter this device's address (listed above once the server is running) and the TCP port. VFOA is the downlink, VFOB the uplink; frequencies are the radio's dial. Reading never disturbs OrbitDeck. When a client sets a frequency, OrbitDeck pauses its own Doppler tuning for as long as that client stays connected, so let the client do Doppler (or only read).")
+            Text("Lets Gpredict, SatPC32, WSJT-X or a logger on your local network read or drive the radio through OrbitDeck's CAT link — in the client choose Hamlib NET rigctl (model 2) and enter this device's address (listed above once the server is running) and the TCP port. VFOA is the downlink, VFOB the uplink; frequencies are the radio's dial. Reading never disturbs OrbitDeck. A client on another device must be allowed before OrbitDeck answers it, and T 0 only releases that client's own key. When a client sets a frequency, OrbitDeck pauses its own Doppler tuning for as long as that client stays connected, so let the client do Doppler (or only read).")
                 .font(.caption).foregroundStyle(ODTheme.muted)
             HamlibServerLimitsNote()
         }
@@ -1176,7 +1189,7 @@ struct HamlibServerStatusRows: View {
 /// The iOS/security caveats shared by both servers.
 struct HamlibServerLimitsNote: View {
     var body: some View {
-        Text("iOS keeps the server running only while OrbitDeck is in the foreground, or while a background audio session (pass recording, decoding, remote voice) is active. Local network only; there is no authentication, so use it on a network you trust.")
+        Text("iOS keeps the server running only while OrbitDeck is in the foreground, or while a background audio session (pass recording, decoding, remote voice) is active. Local network only (not over VPN or cellular). New clients need your approval unless you allowed them before; the connection itself isn't encrypted, so use it on a network you trust.")
             .font(.caption).foregroundStyle(ODTheme.muted)
     }
 }

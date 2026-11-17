@@ -303,6 +303,11 @@ struct RotatorPositionRows: View {
                                                   : String(format: "%.0f°", rot.commandedEl),
                       valueColor: ODTheme.warning)
         }
+        if rot.pointRetrying {
+            Label("This position hasn't reached the rotator yet — the last point command failed; retrying.",
+                  systemImage: "arrow.clockwise.circle")
+                .font(.caption).foregroundStyle(ODTheme.warning)
+        }
         if rot.readBackActive {
             if let az = rot.displayActualAz {
                 MetricRow("Actual", rot.config.azimuthOnly ? String(format: "az %.0f°", az)
@@ -552,6 +557,7 @@ struct RotctldServerSection: View {
             if server.enabled {
                 HamlibServerStatusRows(port: server.port, listening: server.listening, errorText: server.errorText,
                                        clientCount: server.clientCount, lastCommand: server.lastCommand)
+                HamlibClientApprovalRows(kind: .rotctld)
                 if server.externalControl {
                     Text("A client is pointing the rotator — OrbitDeck's tracking is paused until it disconnects.")
                         .font(.caption).foregroundStyle(ODTheme.warning)
@@ -563,4 +569,92 @@ struct RotctldServerSection: View {
             HamlibServerLimitsNote()
         }
     }
+}
+
+// MARK: - Hamlib server client approval (shared by the rigctld and rotctld sections)
+
+/// "Require approval" toggle, the requests waiting for this server (Allow once / Always
+/// allow / Deny) and its allowlist (swipe to remove). For use inside a Form section.
+struct HamlibClientApprovalRows: View {
+    let kind: HamlibServerKind
+    @ObservedObject private var approvals = NetworkServerApprovals.shared
+
+    var body: some View {
+        Toggle("Require approval for new clients",
+               isOn: Binding(get: { approvals.requireApproval }, set: { approvals.setRequireApproval($0) }))
+        Text(approvals.requireApproval
+             ? "A client on another device waits until you allow it here (or in the prompt that appears); unanswered requests are denied after \(Int(NetworkServerApprovals.timeoutSec)) seconds or when OrbitDeck goes to the background. Clients on this device are always allowed. Applies to both the rigctld and rotctld servers."
+             : "Any device on your local network can connect without asking. Applies to both the rigctld and rotctld servers.")
+            .font(.caption).foregroundStyle(approvals.requireApproval ? ODTheme.muted : ODTheme.warning)
+        ForEach(approvals.pending.filter { $0.kind == kind }) { request in
+            HamlibPendingClientRow(request: request)
+        }
+        let allowed = approvals.allowlist.filter { $0.kind == kind }
+        if !allowed.isEmpty {
+            ForEach(allowed) { entry in
+                LabeledContent("Always allowed") {
+                    Text(verbatim: entry.address).monospacedDigit().textSelection(.enabled)
+                }
+                .swipeActions {
+                    Button("Remove", role: .destructive) { approvals.removeFromAllowlist(entry) }
+                }
+                .contextMenu {
+                    Button("Remove from allowlist", systemImage: "trash", role: .destructive) {
+                        approvals.removeFromAllowlist(entry)
+                    }
+                }
+            }
+            Text("Swipe an address to remove it; it will then need approval again the next time it connects.")
+                .font(.caption2).foregroundStyle(ODTheme.muted)
+        }
+    }
+}
+
+/// One waiting client with its three answers.
+struct HamlibPendingClientRow: View {
+    let request: PendingNetworkClient
+    @ObservedObject private var approvals = NetworkServerApprovals.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text(verbatim: request.address).font(.subheadline.weight(.semibold).monospacedDigit())
+            } icon: {
+                Image(systemName: "network.badge.shield.half.filled").foregroundStyle(ODTheme.warning)
+            }
+            Text("Wants to \(request.kind.capability) through the \(request.kind.label) server.")
+                .font(.caption).foregroundStyle(ODTheme.muted)
+            HStack {
+                Button("Allow once") { approvals.allowOnce(request) }.buttonStyle(.borderedProminent)
+                Button("Always allow") { approvals.alwaysAllow(request) }.buttonStyle(.bordered)
+                Button("Deny", role: .destructive) { approvals.deny(request) }.buttonStyle(.bordered)
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// App-wide prompt for the oldest waiting client, so a request is seen from any screen.
+/// Attach once near the root (e.g. RootView): `.hamlibClientApprovalAlert()`.
+struct HamlibClientApprovalAlert: ViewModifier {
+    @ObservedObject private var approvals = NetworkServerApprovals.shared
+
+    func body(content: Content) -> some View {
+        let request = approvals.pending.first
+        content.alert("Allow network client?",
+                      isPresented: Binding(get: { request != nil }, set: { _ in }),
+                      presenting: request) { r in
+            Button("Allow once") { approvals.allowOnce(r) }
+            Button("Always allow") { approvals.alwaysAllow(r) }
+            Button("Deny", role: .cancel) { approvals.deny(r) }
+        } message: { r in
+            Text("\(r.address) on your local network wants to \(r.kind.capability) through OrbitDeck's \(r.kind.label) server. If you don't answer within \(Int(NetworkServerApprovals.timeoutSec)) seconds it is denied.")
+        }
+    }
+}
+
+extension View {
+    /// Present `NetworkServerApprovals` requests as an alert (see `HamlibClientApprovalAlert`).
+    func hamlibClientApprovalAlert() -> some View { modifier(HamlibClientApprovalAlert()) }
 }

@@ -148,6 +148,8 @@ import UIKit
 /// magnetic correction); tracking resumes when the last controlling client disconnects,
 /// sends `q`, or the operator taps Resume. `p` reports the last commanded position.
 /// Transport and line framing are the shared `HamlibLineServer` (CATTransport.swift).
+/// A LAN client not on the allowlist waits for the operator's approval
+/// (`NetworkServerApprovals`) before any of its commands is handled.
 @MainActor
 final class RotctldServer: ObservableObject {
     static let shared = RotctldServer()
@@ -166,6 +168,8 @@ final class RotctldServer: ObservableObject {
     private weak var rotator: RotatorController?
     private var core: HamlibLineServer!
     private var clientAddress: [Int: String] = [:]
+    /// Clients the operator (or the allowlist / loopback rule) admitted.
+    private var approved = Set<Int>()
     private var controllers = Set<Int>()
     private var lastCommandAt = Date.distantPast
     private var observers: [NSObjectProtocol] = []
@@ -225,12 +229,27 @@ final class RotctldServer: ObservableObject {
         switch event {
         case .state(let l, let e, let n):
             listening = l; errorText = e; clientCount = n
-        case .clientAdded(let id, let address):
+        case .clientAdded(let id, let address, let loopback):
             clientAddress[id] = address
+            let admission = NetworkServerApprovals.shared.admit(.rotctld, client: id, address: address, loopback: loopback) { [weak self] ok in
+                self?.decided(id, ok)
+            }
+            switch admission {
+            case .allowed: decided(id, true)
+            case .denied: decided(id, false)
+            case .pending: break
+            }
         case .clientGone(let id):
+            NetworkServerApprovals.shared.cancel(.rotctld, client: id)
             endClient(id)
+            approved.remove(id)
             clientAddress.removeValue(forKey: id)
         }
+    }
+
+    private func decided(_ id: Int, _ ok: Bool) {
+        guard clientAddress[id] != nil else { return }      // already gone
+        if ok { approved.insert(id); core.approve(id) } else { core.reject(id) }
     }
 
     private func beginControl(_ id: Int) {
@@ -254,6 +273,8 @@ final class RotctldServer: ObservableObject {
 
     private func handle(_ id: Int, _ line: String) async -> HamlibLineServer.Reply {
         guard let cmd = HamlibProtocol.parse(line, shortNames: Self.shortNames) else { return .init(text: "", close: false) }
+        // The line server only hands over an approved client's lines; this is a backstop.
+        guard approved.contains(id) else { return HamlibProtocol.reply(cmd, .error(HamlibProtocol.eRejected)) }
         let now = Date()
         if cmd.name != "get_pos" || now.timeIntervalSince(lastCommandAt) > 1 {
             lastCommandAt = now

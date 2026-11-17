@@ -254,3 +254,58 @@ extension RotatorConfig {
         try c.encode(belowHorizon, forKey: .belowHorizon)
     }
 }
+
+/// When the pointing loop sends a target. A point is resent once the target moves past
+/// the deadband, or (PstRotator's one-way UDP) on the keepalive cadence. Only a point
+/// that went out successfully moves the deadband reference: after a failed send the same
+/// target is retried, backing off from `retryMinSec` up to `retryMaxSec` while failures
+/// continue, so a fixed or geostationary target can't be left unpointed by one lost SET.
+struct RotatorSendGate: Equatable {
+    static let retryMinSec = 2.0
+    static let retryMaxSec = 10.0
+
+    /// The last target sent successfully (the deadband reference).
+    private(set) var lastAz: Double?
+    private(set) var lastEl: Double?
+    /// When the last successful send went out (the keepalive reference).
+    private(set) var lastSendAt: Date?
+    /// Consecutive failed sends since the last success.
+    private(set) var failures = 0
+    /// While failing: no send (retry or new target) before this time.
+    private(set) var retryAt: Date?
+
+    /// Forget the reference so the next target goes out at once (new target, connect,
+    /// resume); also drops any retry backoff.
+    mutating func reset() {
+        lastAz = nil; lastEl = nil; lastSendAt = nil
+        failures = 0; retryAt = nil
+    }
+
+    /// `keepaliveSec`: resend an unchanged target this often (nil = only on movement).
+    func shouldSend(az: Double, el: Double, deadband: Double, azimuthOnly: Bool,
+                    keepaliveSec: Double?, now: Date) -> Bool {
+        if let retryAt, now < retryAt { return false }
+        if failures > 0 { return true }                     // the backoff has run out: retry
+        // An azimuth-only controller ignores elevation, so elevation changes alone
+        // never warrant a resend.
+        let elMoved = !azimuthOnly && abs(el - (lastEl ?? 0)) >= deadband
+        let moved = lastAz == nil || abs(az - (lastAz ?? 0)) >= deadband || elMoved
+        let keepalive = keepaliveSec.map { k in lastSendAt.map { now.timeIntervalSince($0) >= k } ?? true } ?? false
+        return moved || keepalive
+    }
+
+    mutating func recordSuccess(az: Double, el: Double, now: Date) {
+        lastAz = az; lastEl = el; lastSendAt = now
+        failures = 0; retryAt = nil
+    }
+
+    mutating func recordFailure(now: Date) {
+        failures += 1
+        retryAt = now.addingTimeInterval(Self.backoff(failures: failures))
+    }
+
+    /// 2, 4, 8, 10, 10, … seconds.
+    static func backoff(failures: Int) -> Double {
+        min(retryMaxSec, retryMinSec * pow(2, Double(max(0, failures - 1))))
+    }
+}

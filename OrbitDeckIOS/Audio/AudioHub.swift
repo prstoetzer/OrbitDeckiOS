@@ -689,9 +689,39 @@ final class RemoteVoiceController: ObservableObject {
     private let bridge = PhoneAudioBridge()
     private var meter: DispatchSourceTimer?
 
+    /// Longest single transmission: past it OrbitDeck unkeys and says why. (The PTT
+    /// authority's backstop for `.voice` sits a little above this.)
+    static let maxTransmitSeconds: TimeInterval = 180
+    /// The CAT PTT key of the current transmission (nil = not keyed over CAT, e.g. VOX).
+    private var lease: PTTLease?
+    /// Bumped on every press and release, so a key or timer that lands late can tell.
+    private var txGeneration = 0
+    /// The talk control is held down. A transmission ended by the time limit (or the
+    /// authority) stays ended until the control is released and pressed again.
+    private var pressed = false
+    private var observers: [NSObjectProtocol] = []
+
     func attach(rig: RigController, hub: AudioHub) {
         self.rig = rig; self.hub = hub
         bridge.onError = { [weak self] m in Task { @MainActor in self?.errorText = m; self?.stopListen() } }
+        // The PTT authority took the key away (CAT disconnect, link drop, background,
+        // Stop all, its max key time): stop sending mic audio too.
+        rig.onPTTForcedRelease(.voice) { [weak self] lease, reason in
+            guard let self, self.lease == lease else { return }
+            self.lease = nil
+            self.stopTX()
+            self.errorText = "Transmit stopped: \(reason)."
+        }
+        // Leaving the foreground (Control Center, a call, the lock button, the app switcher)
+        // takes the finger off the talk control without the gesture ending: unkey.
+        if observers.isEmpty {
+            let nc = NotificationCenter.default
+            for name in [UIApplication.willResignActiveNotification, UIApplication.didEnterBackgroundNotification] {
+                observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.talkReleased() }
+                })
+            }
+        }
     }
 
     /// Remote voice is a network-radio feature (phone mic → radio, radio audio → phone).
@@ -739,23 +769,89 @@ final class RemoteVoiceController: ObservableObject {
         isListening = false
     }
 
-    /// Push-to-talk down: mic → radio, key PTT.
+    /// The talk control went down (called on every drag update; only the first counts).
+    func talkPressed() {
+        guard !pressed else { return }
+        pressed = true
+        startTX()
+    }
+
+    /// The talk control came up, its gesture was canceled, it left the screen, or the app
+    /// left the foreground.
+    func talkReleased() {
+        pressed = false
+        stopTX()
+    }
+
+    /// Push-to-talk down: mic → radio, then key PTT once the mic audio is flowing.
     func startTX() {
         guard isListening, !isTransmitting, let s = sub else { return }
         // Receive-only transponder: no uplink to talk on (and no mic audio for VOX).
         if let why = rig?.pttBlockedReason { errorText = why; return }
         isTransmitting = true
-        bridge.startMic()
-        do { try s.startPlayback(pull: { [weak self] n in self?.bridge.drainTX(n) ?? [] }) }
-        catch { errorText = error.localizedDescription }
-        Task { await rig?.setPTT(true) }
+        txGeneration += 1
+        let generation = txGeneration
+        let failure = Self.beginTransmit(
+            startMic: { bridge.startMic() },
+            stopMic: { bridge.stopMic() },
+            startPlayback: { try s.startPlayback(pull: { [weak self] n in self?.bridge.drainTX(n) ?? [] }) },
+            key: { keyPTT(generation) })
+        if let failure {
+            // No audio path: never key a dead carrier.
+            errorText = failure
+            isTransmitting = false
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.maxTransmitSeconds) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.isTransmitting, self.txGeneration == generation else { return }
+                self.stopTX()
+                self.errorText = "Transmit stopped after \(Int(Self.maxTransmitSeconds / 60)) minutes (safety limit). Release and press again to keep talking."
+                ODLog.shared.log("remote voice: TX time limit reached — unkeyed", category: "cat")
+            }
+        }
     }
 
-    /// Push-to-talk up: unkey, stop sending mic.
+    /// The push-to-talk press, in the order that never keys a dead carrier: start the mic,
+    /// start playback to the radio, and only then key. If playback can't start, the mic is
+    /// stopped and nothing is keyed; returns the error text (nil = transmitting).
+    static func beginTransmit(startMic: () -> Void, stopMic: () -> Void,
+                              startPlayback: () throws -> Void, key: () -> Void) -> String? {
+        startMic()
+        do { try startPlayback() } catch {
+            stopMic()
+            return error.localizedDescription
+        }
+        key()
+        return nil
+    }
+
+    /// Key CAT PTT for the press `generation`. A key that lands after the release is given
+    /// back; a refused key ends the transmission (the mic audio would only reach a VOX radio).
+    private func keyPTT(_ generation: Int) {
+        guard let rig, rig.pttCapable else { return }      // VOX / hand PTT: mic audio only
+        Task {
+            let lease = rig.confirmedPTT(await rig.acquirePTT(.voice, maxKeySeconds: Self.maxTransmitSeconds + 10))
+            guard self.isTransmitting, self.txGeneration == generation else {
+                rig.releasePTT(lease)
+                return
+            }
+            guard let lease else {
+                self.stopTX()
+                self.errorText = rig.pttRefusalReason(for: .voice) ?? "CAT PTT failed — not transmitting."
+                return
+            }
+            self.lease = lease
+        }
+    }
+
+    /// Push-to-talk up: unkey (or cancel a key still in flight), stop sending mic.
     func stopTX() {
         guard isTransmitting else { return }
         isTransmitting = false
-        Task { await rig?.setPTT(false) }
+        txGeneration += 1
+        rig?.releasePTT(lease); lease = nil
+        rig?.releasePTT(owners: [.voice])
         sub?.stopPlayback()
         bridge.stopMic()
     }

@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreMotion
+import UIKit
 
 // ===========================================================================
 //  RigController.swift — CAT orchestration
@@ -330,10 +331,22 @@ final class RigController: ObservableObject {
     /// The self-test link's `--vfo` probe result (kept apart from `rigctldInline`).
     private var selfTestInline = false
 
-    /// True while OrbitDeck has the uplink keyed (FT4/PTT). Split rigs that must
-    /// swap VFOs to reach VFO B skip uplink writes then, so a swap never lands
+    /// True while OrbitDeck has the uplink keyed: set just before the key frame and cleared
+    /// with the unkey frame, both sent only by the PTT authority (`ptt`). Split rigs that
+    /// must swap VFOs to reach VFO B skip uplink writes then, so a swap never lands
     /// mid-transmission. (A manual PTT press can't be seen.)
     private var pttKeyed = false
+    /// The one way to key and unkey the radio (see `PTTAuthority`): leases per owner,
+    /// serialized frames, a maximum key time, released on disconnect/link drop/background.
+    private(set) lazy var ptt: PTTAuthority = makePTTAuthority()
+    /// What each owner does when the authority takes its key away (`onPTTForcedRelease`).
+    private var forcedReleaseHandlers: [PTTOwner: (PTTLease, String) -> Void] = [:]
+    /// The rigctld server's lease (`serverSetPTT`).
+    private var networkLease: PTTLease?
+    /// Set when an unkey on disconnect/link drop couldn't be confirmed; shown on the CAT
+    /// card until dismissed (a reconnect clears `errorText`, not this).
+    @Published var pttWarning: String?
+    private var lifecycleObservers: [NSObjectProtocol] = []
     /// The latest Doppler-corrected uplink dial (rig units), pushed just before
     /// keying a split rig so the transmission starts on frequency.
     private var lastTargetTx: Int64 = 0
@@ -342,6 +355,21 @@ final class RigController: ObservableObject {
 
     func attach(_ store: OrbitStore) {
         self.store = store
+        // Background: nobody is at the controls, so drop a key that can't continue there
+        // (remote voice, Tune, a network client); FT4 and packet sessions keep theirs (see
+        // `PTTOwner.continuesInBackground`), with their own limits and the authority's.
+        if lifecycleObservers.isEmpty {
+            let nc = NotificationCenter.default
+            lifecycleObservers.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.finishInBackground(self.ptt.releaseForBackground())
+                }
+            })
+            lifecycleObservers.append(nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.unkeyBeforeTermination(reason: "OrbitDeck is quitting") }
+            })
+        }
         // Persist CAT config in its own UserDefaults key, NOT in store.preferences:
         // writing the store's @Published preferences rebuilds the whole detail
         // column and freezes navigation when leaving the settings screen.
@@ -442,6 +470,17 @@ final class RigController: ObservableObject {
 
             if statuses.allSatisfy({ $0.connected }) {
                 await engageOnce()
+                // An unkey that couldn't be sent when the link dropped (the radio may still
+                // be latched in transmit): send it now, before anything else drives the radio.
+                // After engageOnce, which learns a rigctld server's VFO syntax for `T 0`.
+                if ptt.unkeyUnconfirmed {
+                    if await ptt.confirmUnkeyAfterReconnect(timeoutMs: 1500) {
+                        pttWarning = nil
+                        ODLog.shared.log("PTT: unconfirmed unkey sent on reconnect", category: "cat")
+                    } else {
+                        pttWarning = "PTT release still could not be confirmed after reconnecting. Check that the radio isn't transmitting."
+                    }
+                }
                 connected = true; connecting = false
                 lastConnectAt = Date()
                 statusText = "Connected."
@@ -487,6 +526,10 @@ final class RigController: ObservableObject {
     func disconnect() {
         guard !disconnecting else { return }
         timer?.cancel(); timer = nil
+        // Unkey first, while the links are still up: an unconditional PTT-off (whoever
+        // keyed, a key in flight included) queued ahead of the exit sequence and teardown.
+        let unkeyed = beginShutdownUnkey(reason: "CAT disconnected")
+        networkLease = nil
         SSTVDopplerFeed.set(0)      // stop feeding a stale Doppler residual to the SSTV decoder
         // Clear `connected` BEFORE tearing the transports down: closing a socket can fire
         // its onError/state handler, and handleLinkDropped() guards on `connected`, so this
@@ -504,6 +547,7 @@ final class RigController: ObservableObject {
         disconnecting = true
         Task {
             defer { disconnecting = false }
+            await unkeyed()     // the PTT-off goes out (bounded wait) before anything closes
             // Let an in-flight tick finish so its frames don't interleave with the exit.
             var waited = 0
             while isTicking, waited < 2000 { await pace(20); waited += 20 }
@@ -646,6 +690,7 @@ final class RigController: ObservableObject {
 
     private func teardown() async {
         SSTVDopplerFeed.set(0)      // no more live Doppler residual for the SSTV decoder
+        ptt.noteTeardown()     // a key frame still unanswered is unkeyed on the next connect
         for link in links { await link.transport.disconnect() }
         links.removeAll()
         // A reconnect re-engages and re-records what it turns on.
@@ -662,10 +707,14 @@ final class RigController: ObservableObject {
     private func handleLinkDropped() {
         guard connected, !reconnecting else { return }
         reconnecting = true
+        // Unkey before teardown, on whatever links still carry it (see `disconnect`).
+        let unkeyed = beginShutdownUnkey(reason: "CAT link dropped")
+        networkLease = nil
         connected = false
         timer?.cancel(); timer = nil
         if Date().timeIntervalSince(lastConnectAt) > 30 { reconnectAttempts = 0 }
         Task {
+            await unkeyed()
             await teardown()
             reconnecting = false
             guard reconnectAttempts < 3 else {
@@ -1098,7 +1147,7 @@ final class RigController: ObservableObject {
             switch link.leg {
             case .both where link.txHold:
                 // FT-847 same-band hold: the main VFO tracks the downlink; the uplink is
-                // written only around a transmission (setPTT). Leave it alone while keyed.
+                // written only around a transmission (keyUplink/unkeyUplink). Leave it alone while keyed.
                 if driveDown, !pttKeyed, !settleDown, abs(rxRig - lastSentRx) >= deadband {
                     await sendFreq(link, leg: .downlink, hz: rxRig, mode: dlMode); lastSentRx = rxRig
                 }
@@ -1697,9 +1746,16 @@ final class RigController: ObservableObject {
     }
 
     private func sendRaw(_ link: LiveLink, _ bytes: [UInt8]) async {
+        _ = await sendRawChecked(link, bytes)
+    }
+
+    /// `sendRaw` that reports whether the transport accepted the frame (PTT needs to know).
+    private func sendRawChecked(_ link: LiveLink, _ bytes: [UInt8]) async -> Bool {
         if CATMonitor.shared.enabled { CATMonitor.shared.record(monitorLabel(link), tx: true, bytes, family: link.spec.family) }
-        try? await link.transport.send(bytes)
+        var sent = true
+        do { try await link.transport.send(bytes) } catch { sent = false }
         await pace(config.tuning.commandDelayMs)
+        return sent
     }
 
     /// Read whatever the radio has sent (see `CATTransport.readAvailable`), recording it
@@ -1760,17 +1816,29 @@ final class RigController: ObservableObject {
     /// same-band transmit hold. Full-duplex-only features (satellite FT4) check this.
     var isSplitVFO: Bool { connected && links.contains { $0.split || $0.txHold } }
 
-    // MARK: PTT (for full-duplex FT4)
+    // MARK: PTT (FT4, Tune, packet, remote voice, the rigctld server)
+
+    /// The radio OrbitDeck keys: the uplink (or only) radio, never a receive-only one.
+    private var keyableLink: LiveLink? {
+        links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly })
+    }
+
+    /// The PTT frame for `link`, or nil when it has no CAT PTT command.
+    private func pttFrame(_ link: LiveLink, on: Bool) -> [UInt8]? {
+        switch link.spec.family {
+        case .civ where link.spec.civHasPTT: return CATCodec.civPTT(addr: civAddr(link), on: on)   // IC-706 family, IC-821H, … have no 1C
+        case .yaesuBinary, .yaesuFT736: return CATCodec.yaesuPTT(on: on)
+        case .kenwoodBase: return CATCodec.kwPTT(on: on)
+        case .rigctld: return CATCodec.rigctldLine("T", vfo: rigctldInline.contains(link.index) ? "currVFO" : nil, on ? "1" : "0")
+        default: return nil
+        }
+    }
 
     /// Whether the uplink radio has a CAT PTT command at all (regardless of the current
     /// transponder). Unkey paths use this, so a radio is always released.
     var pttCapable: Bool {
-        guard connected, let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else { return false }
-        switch link.spec.family {
-        case .civ: return link.spec.civHasPTT      // IC-706 family, IC-821H, … have no 1C
-        case .yaesuBinary, .yaesuFT736, .kenwoodBase, .rigctld: return true
-        default: return false
-        }
+        guard connected, let link = keyableLink else { return false }
+        return pttFrame(link, on: false) != nil
     }
 
     /// Whether the uplink radio can be keyed over CAT right now: it has CAT PTT and the
@@ -1792,62 +1860,184 @@ final class RigController: ObservableObject {
         return nil
     }
 
-    /// Key/unkey the uplink radio over CAT, if supported. No-op otherwise (the
-    /// operator uses VOX or manual PTT). Keying is refused (false, with the reason logged)
-    /// while `pttBlockedReason` applies; unkeying is always sent.
-    @discardableResult
-    func setPTT(_ on: Bool) async -> Bool {
-        guard connected, let link = links.first(where: { ($0.leg == .uplink || $0.leg == .both) && !$0.spec.rxOnly }) else {
-            ODLog.shared.log("setPTT(\(on)) ignored — not connected or no keyable uplink link", category: "cat")
-            return false
+    /// Why `owner` can't key right now, for its error line: the transponder block, or
+    /// another owner holding the transmitter. nil = no specific reason.
+    func pttRefusalReason(for owner: PTTOwner) -> String? {
+        if let why = pttBlockedReason { return why }
+        if let other = ptt.holder, other != owner { return "Transmitter in use by \(other.label) — not keyed." }
+        return nil
+    }
+
+    /// Key the uplink radio over CAT for `owner`. Returns the lease once the key frame is
+    /// out, or nil when the radio has no CAT PTT (the operator uses VOX or a hand PTT),
+    /// transmitting is blocked (`pttBlockedReason`), another owner holds the transmitter,
+    /// or the key was released before it went out. Hand the lease back with `releasePTT`.
+    func acquirePTT(_ owner: PTTOwner, maxKeySeconds: TimeInterval? = nil) async -> PTTLease? {
+        guard pttCapable, let link = keyableLink else {
+            ODLog.shared.log("PTT for \(owner.label) ignored — not connected or no CAT PTT on the uplink radio", category: "cat")
+            return nil
         }
-        if on, let why = pttBlockedReason {
-            ODLog.shared.log("setPTT(true) refused → \(link.spec.name): \(why)", category: "cat")
-            return false
+        if let why = pttBlockedReason {
+            ODLog.shared.log("PTT for \(owner.label) refused → \(link.spec.name): \(why)", category: "cat")
+            return nil
         }
-        ODLog.shared.log("setPTT(\(on)) → \(link.spec.name) [\(link.spec.family)]", category: "cat")
-        // Split: put VFO B on the current Doppler target before keying, since uplink
-        // writes that need a VFO swap are held for the length of the transmission.
+        return await ptt.acquire(owner, maxKeySeconds: maxKeySeconds)
+    }
+
+    /// Unkey `lease` (or cancel its key if that hasn't gone out). A stale or nil lease is
+    /// ignored, so this is safe to call on every exit path.
+    func releasePTT(_ lease: PTTLease?) {
+        ptt.release(lease)
+    }
+
+    /// Release whatever `owners` hold, including a key still in flight — for a stop that
+    /// can't know whether its key landed. With `unkeyIfIdle`, an unkey also goes out when
+    /// nobody holds the transmitter (stuck-PTT recovery); another owner's key is left alone.
+    func releasePTT(owners: Set<PTTOwner>, unkeyIfIdle: Bool = false) {
+        // An unanswered key frame (a failed unkey) always earns another unkey.
+        ptt.release(owners: owners, unkeyIfIdle: (unkeyIfIdle || ptt.keyFrameOut) && pttCapable)
+    }
+
+    /// `lease` if it's still the current grant, else nil (see `PTTAuthority.confirmed`).
+    /// Owners check every lease after their await, before storing it or starting audio.
+    func confirmedPTT(_ lease: PTTLease?) -> PTTLease? { ptt.confirmed(lease) }
+
+    /// Unkey whoever has the transmitter (Stop all). The owner is told through its
+    /// forced-release handler.
+    func releaseAllPTT(reason: String) {
+        ptt.releaseAll(reason: reason, forceUnkey: pttCapable)
+    }
+
+    /// Register what an owner does when the authority takes its key away (max key time,
+    /// disconnect, link drop, background, Stop all): stop its audio, clear its state.
+    func onPTTForcedRelease(_ owner: PTTOwner, _ handler: @escaping (PTTLease, String) -> Void) {
+        forcedReleaseHandlers[owner] = handler
+    }
+
+    /// Send the key frame for the authority (`PTTAuthority.Port.key`). Split: VFO B goes to
+    /// the current Doppler target first, since uplink writes that need a VFO swap are held
+    /// for the length of the transmission. FT-847 same-band hold: the main VFO moves to the
+    /// uplink just for the transmission. `stillWanted` turns false when the grant is
+    /// released, and is checked through the pre-key wait and right before the key frame.
+    private func keyUplink(stillWanted: @escaping @MainActor () -> Bool) async -> PTTAuthority.KeyOutcome {
+        guard connected, stillWanted(), let link = keyableLink, let frame = pttFrame(link, on: true) else { return .notSent }
+        // Re-checked at the moment of keying: the transponder may have changed while queued.
+        if let why = pttBlockedReason {
+            ODLog.shared.log("PTT on refused → \(link.spec.name): \(why)", category: "cat")
+            return .notSent
+        }
+        ODLog.shared.log("PTT on → \(link.spec.name) [\(link.spec.family)]", category: "cat")
         var heldTickLock = false
-        if on, link.split {
+        defer { if heldTickLock { isTicking = false } }
+        if link.split || link.txHold {
             // On a VFO-swapping rig a tick may have VFO B selected right now, and with
             // SPLIT on that would transmit on VFO A. Let any in-flight tick finish, then
             // hold the tick lock until the radio is keyed so none can start in between.
             var waited = 0
-            while isTicking, waited < 2000 { await pace(20); waited += 20 }
+            while isTicking, waited < 2000, stillWanted() { await pace(20); waited += 20 }
+            guard connected, stillWanted() else { return .notSent }
             if !isTicking { isTicking = true; heldTickLock = true }
             // Not while a rigctld client owns the dial: it set VFO B itself.
-            if !externalHold, lastTargetTx > 0, lastTargetTx != lastSentTx {
+            if link.split, !externalHold, lastTargetTx > 0, lastTargetTx != lastSentTx {
                 await sendSplitFreq(link, leg: .uplink, hz: lastTargetTx)
                 lastSentTx = lastTargetTx
             }
-        }
-        defer { if heldTickLock { isTicking = false } }
-        // FT-847 same-band hold: move the main VFO to the uplink just for the transmission.
-        if on, link.txHold {
-            var waited = 0
-            while isTicking, waited < 2000 { await pace(20); waited += 20 }
-            if !isTicking { isTicking = true; heldTickLock = true }
-            if lastTargetTx > 0 {
+            if link.txHold, lastTargetTx > 0 {
                 await sendRaw(link, CATCodec.yaesuSetFreq(link.spec, hz: UInt64(lastTargetTx), vfo: .plain))
                 await pace(60)
             }
+            // Released while the uplink was being set: don't key. (The release's unkey
+            // puts an FT-847 back on the downlink.)
+            guard connected, stillWanted() else { return .notSent }
         }
-        pttKeyed = on
-        switch link.spec.family {
-        case .civ where link.spec.civHasPTT: await sendRaw(link, CATCodec.civPTT(addr: civAddr(link), on: on))
-        case .yaesuBinary, .yaesuFT736: await sendRaw(link, CATCodec.yaesuPTT(on: on))
-        case .kenwoodBase: await sendRaw(link, CATCodec.kwPTT(on: on))
-        case .rigctld:
-            await sendRaw(link, CATCodec.rigctldLine("T", vfo: rigctldInline.contains(link.index) ? "currVFO" : nil, on ? "1" : "0"))
-        default: break
-        }
-        if !on, link.txHold, lastTargetRx > 0 {
+        pttKeyed = true
+        return await sendRawChecked(link, frame) ? .keyed : .failed
+    }
+
+    /// Send the unkey frame for the authority (`PTTAuthority.Port.unkey`). Deliberately not
+    /// gated on `connected`: disconnect() and a link drop clear that first, and the unkey
+    /// must still go out on the links before they close. True when the frame was sent (or
+    /// the radio has no CAT PTT, so there's nothing to release).
+    private func unkeyUplink() async -> Bool {
+        guard let link = keyableLink else { pttKeyed = false; return false }
+        guard let frame = pttFrame(link, on: false) else { pttKeyed = false; return true }
+        ODLog.shared.log("PTT off → \(link.spec.name) [\(link.spec.family)]", category: "cat")
+        pttKeyed = false
+        let sent = await sendRawChecked(link, frame)
+        if link.txHold, lastTargetRx > 0 {
             await pace(60)
             await sendRaw(link, CATCodec.yaesuSetFreq(link.spec, hz: UInt64(lastTargetRx), vfo: .plain))
             lastSentRx = lastTargetRx
         }
-        return true
+        return sent
+    }
+
+    /// The authority over CAT PTT (see `PTTAuthority`), wired to this controller's links.
+    private func makePTTAuthority() -> PTTAuthority {
+        let authority = PTTAuthority(port: PTTAuthority.Port(
+            key: { [weak self] stillWanted in await self?.keyUplink(stillWanted: stillWanted) ?? .notSent },
+            unkey: { [weak self] in await self?.unkeyUplink() ?? false },
+            sleep: { ms in
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(ms)) { c.resume() }
+                }
+            },
+            schedule: { seconds, action in
+                DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { MainActor.assumeIsolated { action() } }
+            },
+            log: { ODLog.shared.log($0, category: "cat") }))
+        authority.onForcedRelease = { [weak self] lease, reason in
+            self?.forcedReleaseHandlers[lease.owner]?(lease, reason)
+        }
+        return authority
+    }
+
+    /// Unkey on a disconnect or link drop, before the transports close: drop every grant
+    /// (a key still in flight included) and send an unconditional PTT-off on the uplink
+    /// radio, waiting briefly for it to go out. If it couldn't be sent while we may have had
+    /// the radio keyed, warn the operator to check the radio.
+    /// The authority remembers an unconfirmed unkey (`unkeyUnconfirmed`), and the next
+    /// connection sends a PTT-off before the Doppler loop starts (`connect`).
+    private func beginShutdownUnkey(reason: String) -> () async -> Void {
+        let started = ptt.beginShutdownUnkey(reason: reason)
+        return { [weak self] in
+            guard let self else { return }
+            if await !self.ptt.finishShutdownUnkey(started, timeoutMs: 1500) {
+                let warning = "PTT release could not be confirmed (\(reason)). Check that the radio isn't still transmitting."
+                self.pttWarning = warning
+                self.errorText = warning
+                ODLog.shared.log("PTT: \(warning)", category: "cat")
+            }
+        }
+    }
+
+    /// App termination: the authority's queue won't get another main-actor turn before the
+    /// process exits, so write the PTT-off straight to the uplink transport (synchronously
+    /// enqueued) and give its queue a moment to flush. Only when the radio may be keyed by
+    /// us, so a hand-mic transmission isn't cut.
+    func unkeyBeforeTermination(reason: String) {
+        let mayBeKeyed = ptt.mayBeKeyed || pttKeyed
+        ptt.releaseAll(reason: reason)
+        guard mayBeKeyed, let link = keyableLink, let frame = pttFrame(link, on: false) else { return }
+        pttKeyed = false
+        let sent = link.transport.sendNow(frame)
+        Thread.sleep(forTimeInterval: 0.2)
+        ODLog.shared.log("PTT off → \(link.spec.name) before quitting (\(sent ? "sent" : "not sent"))", category: "cat")
+    }
+
+    /// Keep the app running in the background until the PTT authority has sent `op` (the
+    /// background release), so the unkey isn't left in its queue while suspended.
+    private func finishInBackground(_ op: Int?) {
+        guard let op else { return }
+        final class TaskID { var id = UIBackgroundTaskIdentifier.invalid }
+        let task = TaskID()
+        task.id = UIApplication.shared.beginBackgroundTask(withName: "PTT release") {
+            UIApplication.shared.endBackgroundTask(task.id); task.id = .invalid
+        }
+        Task {
+            _ = await ptt.waitFor(op, timeoutMs: 3000)
+            if task.id != .invalid { UIApplication.shared.endBackgroundTask(task.id); task.id = .invalid }
+        }
     }
 
     /// Best-effort read of the uplink radio's RF power setting (watts), for FT4's courtesy
@@ -2290,11 +2480,25 @@ extension RigController {
     /// Whether OrbitDeck has keyed the uplink radio.
     var serverPTT: Bool { pttKeyed }
 
-    /// Key/unkey through the normal PTT path. False when the uplink radio can't be keyed
-    /// (no CAT PTT, or `pttBlockedReason` applies). Unkeying needs only the capability.
+    /// Whether the server's own key (`.network` lease) is held and on the air.
+    var serverHoldsPTT: Bool { ptt.holds(networkLease) && ptt.isKeyed }
+
+    /// Key/unkey for a network client, as the `.network` owner of the PTT authority. False
+    /// when the uplink radio can't be keyed (no CAT PTT, `pttBlockedReason` applies, or
+    /// another owner — FT4, packet, voice — has the transmitter). Unkeying needs only the
+    /// capability, and releases only the server's own key (or a pending one): a client's
+    /// `T 0` never drops FT4's or packet's transmission.
     func serverSetPTT(_ on: Bool) async -> Bool {
         guard pttCapable else { return false }
-        return await setPTT(on)
+        if on {
+            if ptt.holds(networkLease), ptt.isKeyed { return true }
+            let lease = confirmedPTT(await acquirePTT(.network))
+            networkLease = lease
+            return lease != nil
+        }
+        networkLease = nil
+        releasePTT(owners: [.network], unkeyIfIdle: true)
+        return true
     }
 
     /// Hold the Doppler loop for an external client (`externalHold`, independent of FT4's

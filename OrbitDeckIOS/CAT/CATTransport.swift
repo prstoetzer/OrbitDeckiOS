@@ -48,6 +48,33 @@ protocol CATTransport: AnyObject, Sendable {
     /// first (so a reconnect doesn't collide with a zombie session), then calls this so
     /// the owner (RigController) can stop the loop and reconnect.
     var onDisconnect: (@Sendable () -> Void)? { get set }
+    /// Synchronous best-effort send for when no async turn is coming (app termination):
+    /// hands `bytes` to the transport's own queue and returns whether it was accepted.
+    func sendNow(_ bytes: [UInt8]) -> Bool
+}
+
+/// `sendNow`'s result, written by the detached send and read after the wait.
+private final class SendNowOutcome: @unchecked Sendable {
+    let lock = NSLock()
+    var sent = false
+}
+
+extension CATTransport {
+    /// Runs `send` off the caller's thread and waits up to 200 ms for it. Every transport's
+    /// `send` only hands the bytes to its own serial queue (or the network stack), so this
+    /// returns as soon as the frame is queued. Safe to call on the main thread: nothing in
+    /// `send` needs the main actor.
+    func sendNow(_ bytes: [UInt8]) -> Bool {
+        let outcome = SendNowOutcome()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached { [self] in
+            let ok = (try? await self.send(bytes)) != nil
+            outcome.lock.withLock { outcome.sent = ok }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + .milliseconds(200)) == .success else { return false }
+        return outcome.lock.withLock { outcome.sent }
+    }
 }
 
 /// BLE UART serial transport (CoreBluetooth). Thread-safety is hand-managed with
@@ -640,7 +667,11 @@ extension BLEScanner: CBCentralManagerDelegate {
 //  `HamlibLineServer` is the transport: an NWListener plus one NWConnection per client,
 //  all on one private serial queue (never the main thread). Lines are handed one at a
 //  time per client to a @MainActor handler; replies go back on the queue. Buffers are
-//  bounded (line length, queued lines, client count) and only LAN peers are accepted.
+//  bounded (line length, queued lines, client count) and only LAN peers are accepted
+//  (private/link-local/loopback addresses, arriving over Wi-Fi, Ethernet, the Personal
+//  Hotspot bridge or loopback — not a VPN tunnel or cellular). A new client is held
+//  until the operator approves it (`NetworkServerApprovals`), unless it's on this device
+//  or on the allowlist.
 // ===========================================================================
 
 import Network
@@ -667,7 +698,7 @@ enum HamlibResult: Sendable {
 
 enum HamlibProtocol {
     // Hamlib error codes (negated in "RPRT -n").
-    static let eInval = 1, eNotImplemented = 4, eIO = 6, eNotAvailable = 11
+    static let eInval = 1, eNotImplemented = 4, eIO = 6, eRejected = 9, eNotAvailable = 11
 
     /// Parse a line: optional extended-response prefix (`+`, `;`, `|`, `,`), then either a
     /// `\long_name args…` or a one-character short command followed by its arguments.
@@ -766,17 +797,274 @@ enum HamlibProtocol {
             || (b[0] == 192 && b[1] == 168)
             || (b[0] == 169 && b[1] == 254)
     }
+
+    /// Whether a peer is this device (127.0.0.0/8, ::1 or ::ffff:127.x).
+    static func isLoopbackPeer(_ endpoint: NWEndpoint) -> Bool {
+        guard case .hostPort(let host, _) = endpoint else { return false }
+        switch host {
+        case .ipv4(let a): return a.rawValue.first == 127
+        case .ipv6(let a):
+            if a.isLoopback { return true }
+            let b = [UInt8](a.rawValue)
+            return b.count == 16 && b[0..<10].allSatisfy({ $0 == 0 }) && b[10] == 0xFF && b[11] == 0xFF && b[12] == 127
+        default: return false
+        }
+    }
+
+    /// A peer's address as shown to the operator and stored in the allowlist: dotted IPv4
+    /// (also for an IPv4-mapped IPv6 peer), else the IPv6 text without its scope.
+    static func peerAddress(_ endpoint: NWEndpoint) -> String {
+        var address = "\(endpoint)"
+        if case .hostPort(let h, _) = endpoint {
+            address = "\(h)"
+            if case .ipv6(let a) = h {
+                let b = [UInt8](a.rawValue)
+                if b.count == 16, b[0..<10].allSatisfy({ $0 == 0 }), b[10] == 0xFF, b[11] == 0xFF {
+                    address = b[12..<16].map(String.init).joined(separator: ".")
+                }
+            }
+        }
+        if let pct = address.firstIndex(of: "%") { address = String(address[..<pct]) }   // drop IPv6 scope
+        return address
+    }
+
+    /// Whether an accepted connection arrived over the LAN: Wi-Fi, wired Ethernet, the
+    /// Personal Hotspot bridge or loopback, never a VPN tunnel (utun/ipsec/ppp, which
+    /// Network reports as `.other`) or cellular. A VPN can hand out RFC 1918 addresses,
+    /// so the peer-address filter alone doesn't exclude it.
+    static func arrivedOnLAN(_ path: NWPath) -> Bool {
+        let interfaces = path.availableInterfaces
+        guard let first = interfaces.first else { return true }   // unknown: approval still applies
+        return isLANInterface(name: first.name, type: first.type)
+    }
+
+    static func isLANInterface(name: String, type: NWInterface.InterfaceType) -> Bool {
+        switch type {
+        case .wifi, .wiredEthernet, .loopback: return true
+        case .cellular: return false
+        default:
+            // `.other`: allow only the Personal Hotspot bridge (and plain en*/lo*);
+            // utun*, ipsec*, ppp*, tun*, tap* etc. are tunnels.
+            return name.hasPrefix("bridge") || name.hasPrefix("en") || name.hasPrefix("lo")
+        }
+    }
+}
+
+// MARK: - Client approval
+
+/// Which built-in server a client connected to.
+enum HamlibServerKind: String, Codable, Sendable, CaseIterable {
+    case rigctld, rotctld
+    var label: String { rawValue }
+    /// What a client of this server can do, for the approval prompt.
+    var capability: String {
+        switch self {
+        case .rigctld: "read and tune the radio"
+        case .rotctld: "point the rotator"
+        }
+    }
+}
+
+/// A client waiting for the operator: one entry per server and address (several
+/// connections from the same address share it).
+struct PendingNetworkClient: Identifiable, Equatable, Sendable {
+    var id: String { "\(kind.rawValue)|\(address)" }
+    let kind: HamlibServerKind
+    let address: String
+    let since: Date
+}
+
+/// An "Always allow" entry (persisted).
+struct AllowedNetworkClient: Identifiable, Codable, Hashable, Sendable {
+    var id: String { "\(kind.rawValue)|\(address)" }
+    let kind: HamlibServerKind
+    let address: String
+    let added: Date
+}
+
+/// Operator approval for clients of the rigctld and rotctld servers. A client that
+/// isn't on this device (loopback) or on the allowlist is held — nothing it sends is
+/// handled — and listed in `pending` until the operator taps Allow once, Always allow
+/// or Deny. Unanswered requests are denied after `timeoutSec`, and all pending requests
+/// are denied when OrbitDeck goes to the background (nobody is there to answer them).
+/// "Require approval for new clients" (on by default) turns the check off entirely.
+@MainActor
+final class NetworkServerApprovals: ObservableObject {
+    static let shared = NetworkServerApprovals()
+    nonisolated static let timeoutSec: Double = 30
+    private static let requireKey = "orbitdeck.hamlibServers.requireApproval"
+    private static let allowlistKey = "orbitdeck.hamlibServers.allowlist"
+
+    enum Admission: Equatable { case allowed, denied, pending }
+
+    /// Requests awaiting the operator, oldest first.
+    @Published private(set) var pending: [PendingNetworkClient] = []
+    /// Addresses allowed without asking, per server.
+    @Published private(set) var allowlist: [AllowedNetworkClient] = []
+    /// "Require approval for new clients" (persisted; on unless the operator turns it off).
+    @Published private(set) var requireApproval: Bool
+
+    private struct Waiter {
+        let client: Int
+        let decided: @MainActor (Bool) -> Void
+    }
+    private var waiters: [String: [Waiter]] = [:]
+    private let defaults: UserDefaults
+    private let timeout: Double
+    private let isInBackground: @MainActor () -> Bool
+    private var observers: [NSObjectProtocol] = []
+
+    /// `defaults`, `timeout` and `isInBackground` are injectable for tests; the shared
+    /// instance also denies pending requests when the app enters the background.
+    init(defaults: UserDefaults = .standard, timeout: Double = NetworkServerApprovals.timeoutSec,
+         isInBackground: (@MainActor () -> Bool)? = nil, observeApp: Bool = false) {
+        self.defaults = defaults
+        self.timeout = timeout
+        self.isInBackground = isInBackground ?? { UIApplication.shared.applicationState == .background }
+        requireApproval = defaults.object(forKey: Self.requireKey) as? Bool ?? true
+        if let data = defaults.data(forKey: Self.allowlistKey),
+           let saved = try? JSONDecoder().decode([AllowedNetworkClient].self, from: data) {
+            allowlist = saved
+        }
+        if observeApp {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.denyAllPending(reason: "OrbitDeck went to the background") }
+            })
+        }
+    }
+
+    private convenience init() { self.init(defaults: .standard, observeApp: true) }
+
+    // MARK: Server side
+
+    /// A client of `kind` connected from `address` (its server-side id is `client`).
+    /// `.allowed`/`.denied` are final and `decided` is never called; `.pending` calls
+    /// `decided` exactly once later — unless `cancel` is called first (client gone).
+    func admit(_ kind: HamlibServerKind, client: Int, address: String, loopback: Bool,
+               decided: @escaping @MainActor (Bool) -> Void) -> Admission {
+        if loopback || !requireApproval || isAllowed(kind, address: address) { return .allowed }
+        if isInBackground() {
+            ODLog.shared.log("\(kind.label) server: denied \(address) — OrbitDeck is in the background", category: "net")
+            return .denied
+        }
+        let entry = PendingNetworkClient(kind: kind, address: address, since: Date())
+        if !pending.contains(where: { $0.id == entry.id }) {
+            pending.append(entry)
+            ODLog.shared.log("\(kind.label) server: \(address) is waiting for approval", category: "net")
+            // A GCD timer, like the rest of the server code (not a MainActor Task.sleep).
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout + 0.1) { [weak self] in
+                Task { @MainActor in self?.expireStale() }
+            }
+        }
+        waiters[entry.id, default: []].append(Waiter(client: client, decided: decided))
+        return .pending
+    }
+
+    /// A held client disconnected (or its server stopped) before a decision.
+    func cancel(_ kind: HamlibServerKind, client: Int) {
+        for (key, list) in waiters {
+            let rest = list.filter { !($0.client == client && key.hasPrefix(kind.rawValue + "|")) }
+            guard rest.count != list.count else { continue }
+            if rest.isEmpty {
+                waiters.removeValue(forKey: key)
+                pending.removeAll { $0.id == key }
+            } else {
+                waiters[key] = rest
+            }
+        }
+    }
+
+    func isAllowed(_ kind: HamlibServerKind, address: String) -> Bool {
+        allowlist.contains { $0.kind == kind && $0.address == address }
+    }
+
+    // MARK: Operator
+
+    /// Admit the client(s) waiting from this address, this time only.
+    func allowOnce(_ request: PendingNetworkClient) {
+        ODLog.shared.log("\(request.kind.label) server: \(request.address) allowed once", category: "net")
+        resolve(request.id, allow: true)
+    }
+
+    /// Admit them and add the address to the allowlist for this server.
+    func alwaysAllow(_ request: PendingNetworkClient) {
+        if !isAllowed(request.kind, address: request.address) {
+            allowlist.append(AllowedNetworkClient(kind: request.kind, address: request.address, added: Date()))
+            saveAllowlist()
+        }
+        ODLog.shared.log("\(request.kind.label) server: \(request.address) added to the allowlist", category: "net")
+        resolve(request.id, allow: true)
+    }
+
+    /// Disconnect the client(s) waiting from this address.
+    func deny(_ request: PendingNetworkClient) {
+        ODLog.shared.log("\(request.kind.label) server: \(request.address) denied", category: "net")
+        resolve(request.id, allow: false)
+    }
+
+    /// Remove an allowlist entry (clients already connected stay connected).
+    func removeFromAllowlist(_ entry: AllowedNetworkClient) {
+        allowlist.removeAll { $0.id == entry.id }
+        saveAllowlist()
+    }
+
+    func removeFromAllowlist(atOffsets offsets: IndexSet, kind: HamlibServerKind) {
+        let entries = allowlist.filter { $0.kind == kind }
+        for i in offsets where entries.indices.contains(i) { removeFromAllowlist(entries[i]) }
+    }
+
+    /// Turning the requirement off admits whatever is waiting.
+    func setRequireApproval(_ on: Bool) {
+        guard on != requireApproval else { return }
+        requireApproval = on
+        defaults.set(on, forKey: Self.requireKey)
+        if !on { for p in pending { resolve(p.id, allow: true) } }
+    }
+
+    /// Deny requests older than the timeout (`now` injectable for tests).
+    func expireStale(now: Date = Date()) {
+        for p in pending where now.timeIntervalSince(p.since) >= timeout {
+            ODLog.shared.log("\(p.kind.label) server: \(p.address) wasn't approved within \(Int(timeout)) s — disconnected", category: "net")
+            resolve(p.id, allow: false)
+        }
+    }
+
+    /// Deny everything waiting (the app went to the background).
+    func denyAllPending(reason: String) {
+        for p in pending {
+            ODLog.shared.log("\(p.kind.label) server: \(p.address) denied — \(reason)", category: "net")
+            resolve(p.id, allow: false)
+        }
+    }
+
+    private func resolve(_ key: String, allow: Bool) {
+        pending.removeAll { $0.id == key }
+        let list = waiters.removeValue(forKey: key) ?? []
+        for w in list { w.decided(allow) }
+    }
+
+    private func saveAllowlist() {
+        if let data = try? JSONEncoder().encode(allowlist) { defaults.set(data, forKey: Self.allowlistKey) }
+    }
 }
 
 /// TCP line server shared by the rigctld and rotctld servers. All state lives on `queue`.
+///
+/// A new client is held: nothing it sends is handled (and nothing is sent back) until the
+/// owner calls `approve(_:)` after `.clientAdded` — see `NetworkServerApprovals`. `reject`
+/// closes it; a client still unapproved after `approvalBackstopSec` is closed regardless.
 final class HamlibLineServer: @unchecked Sendable {
     struct Reply: Sendable {
         var text: String
         var close: Bool
     }
     enum Event: Sendable {
+        /// `clients` counts approved clients only.
         case state(listening: Bool, error: String?, clients: Int)
-        case clientAdded(id: Int, address: String)
+        /// A connection is up and awaiting `approve`/`reject`.
+        case clientAdded(id: Int, address: String, loopback: Bool)
+        /// Sent only for clients that had been announced with `clientAdded`.
         case clientGone(id: Int)
     }
     typealias Handler = @MainActor @Sendable (_ client: Int, _ line: String) async -> Reply
@@ -784,15 +1072,23 @@ final class HamlibLineServer: @unchecked Sendable {
     static let maxClients = 8
     static let maxLineBytes = 1024
     static let maxQueuedLines = 64
+    /// Safety net behind `NetworkServerApprovals.timeoutSec`.
+    static let approvalBackstopSec = NetworkServerApprovals.timeoutSec + 5
 
     private final class Client {
         let conn: NWConnection
+        let address: String
+        let loopback: Bool
         var buffer: [UInt8] = []
         var overflow = false
         var pending: [String] = []
         var busy = false
         var eof = false
-        init(conn: NWConnection) { self.conn = conn }
+        var announced = false
+        var approved = false
+        init(conn: NWConnection, address: String, loopback: Bool) {
+            self.conn = conn; self.address = address; self.loopback = loopback
+        }
     }
 
     private let name: String
@@ -829,6 +1125,21 @@ final class HamlibLineServer: @unchecked Sendable {
             self.wanted = false
             self.closeAll()
         }
+    }
+
+    /// Let a held client's commands through.
+    func approve(_ id: Int) {
+        queue.async {
+            guard let c = self.clients[id], !c.approved else { return }
+            c.approved = true
+            self.publish()
+            self.pump(id)
+        }
+    }
+
+    /// Close a client (denied, timed out or no longer wanted).
+    func reject(_ id: Int) {
+        queue.async { self.close(id, notify: true) }
     }
 
     /// After returning to the foreground: reopen the listener if iOS tore it down.
@@ -902,7 +1213,7 @@ final class HamlibLineServer: @unchecked Sendable {
     }
 
     private func publish() {
-        onEvent(.state(listening: listening, error: lastError, clients: clients.count))
+        onEvent(.state(listening: listening, error: lastError, clients: clients.values.filter(\.approved).count))
     }
 
     // MARK: Clients (queue only)
@@ -917,21 +1228,36 @@ final class HamlibLineServer: @unchecked Sendable {
             conn.cancel(); return
         }
         let id = nextID; nextID += 1
-        clients[id] = Client(conn: conn)
+        clients[id] = Client(conn: conn, address: HamlibProtocol.peerAddress(conn.endpoint),
+                             loopback: HamlibProtocol.isLoopbackPeer(conn.endpoint))
         conn.stateUpdateHandler = { [weak self] state in
             switch state {
+            case .ready: self?.connectionReady(id)
             case .failed, .cancelled: self?.close(id, notify: true)
             default: break
             }
         }
         conn.start(queue: queue)
         receive(id)
-        var address = "\(conn.endpoint)"
-        if case .hostPort(let h, _) = conn.endpoint { address = "\(h)" }
-        if let pct = address.firstIndex(of: "%") { address = String(address[..<pct]) }   // drop IPv6 scope
-        ODLog.shared.log("\(name) server: client \(address) connected", category: "net")
-        onEvent(.clientAdded(id: id, address: address))
-        publish()
+    }
+
+    /// The connection is up and its path known: refuse it if it came in over a VPN
+    /// tunnel or cellular, else announce it for approval (its lines wait until then).
+    private func connectionReady(_ id: Int) {
+        guard let c = clients[id], !c.announced else { return }
+        if let path = c.conn.currentPath, !HamlibProtocol.arrivedOnLAN(path) {
+            let via = path.availableInterfaces.first?.name ?? "?"
+            ODLog.shared.log("\(name) server: refused \(c.address) (arrived over \(via), not the local network)", category: "net")
+            close(id, notify: false); return
+        }
+        c.announced = true
+        ODLog.shared.log("\(name) server: client \(c.address) connected", category: "net")
+        onEvent(.clientAdded(id: id, address: c.address, loopback: c.loopback))
+        queue.asyncAfter(deadline: .now() + Self.approvalBackstopSec) { [weak self] in
+            guard let self, let c = self.clients[id], !c.approved else { return }
+            ODLog.shared.log("\(self.name) server: \(c.address) was not approved in time — disconnected", category: "net")
+            self.close(id, notify: true)
+        }
     }
 
     private func receive(_ id: Int) {
@@ -942,7 +1268,8 @@ final class HamlibLineServer: @unchecked Sendable {
             guard self.clients[id] != nil else { return }       // ingest may have closed it
             if isComplete || error != nil {
                 c.eof = true
-                if !c.busy, c.pending.isEmpty { self.close(id, notify: true) }
+                // An unapproved client that hung up has nothing left to be answered.
+                if !c.approved || (!c.busy && c.pending.isEmpty) { self.close(id, notify: true) }
             } else {
                 self.receive(id)
             }
@@ -973,7 +1300,7 @@ final class HamlibLineServer: @unchecked Sendable {
 
     /// Dispatch the next queued line to the handler (one in flight per client, in order).
     private func pump(_ id: Int) {
-        guard let c = clients[id], !c.busy else { return }
+        guard let c = clients[id], c.approved, !c.busy else { return }
         guard !c.pending.isEmpty else {
             if c.eof { close(id, notify: true) }
             return
@@ -1006,7 +1333,7 @@ final class HamlibLineServer: @unchecked Sendable {
         guard let c = clients.removeValue(forKey: id) else { return }
         c.conn.stateUpdateHandler = nil
         c.conn.cancel()
-        if notify { onEvent(.clientGone(id: id)) }
+        if notify, c.announced { onEvent(.clientGone(id: id)) }
         publish()
     }
 }
@@ -1024,7 +1351,11 @@ final class HamlibLineServer: @unchecked Sendable {
 /// PTT: refused (`RPRT -11`) unless the operator turned on "Allow PTT from network
 /// clients" (off by default). A client's key is released when that client disconnects or
 /// quits, the server is turned off or moved to another port, OrbitDeck goes to the
-/// background, or after `pttLimitSec` keyed (a safety limit).
+/// background, or after `pttLimitSec` keyed (a safety limit). `T 0` releases only the
+/// requesting client's own key (the operator's Unkey now / Stop all release any client's).
+///
+/// Clients: a LAN client not on the allowlist waits for the operator's approval
+/// (`NetworkServerApprovals`) before any of its commands — read or set — is handled.
 @MainActor
 final class RigctldServer: ObservableObject {
     static let shared = RigctldServer()
@@ -1056,6 +1387,8 @@ final class RigctldServer: ObservableObject {
     private var core: HamlibLineServer!
     private var clientVFO: [Int: RigRole] = [:]
     private var clientAddress: [Int: String] = [:]
+    /// Clients the operator (or the allowlist / loopback rule) admitted.
+    private var approved = Set<Int>()
     private var controllers = Set<Int>()
     private var ownsHold = false
     private var legMode: [RigRole: RigMode] = [:]
@@ -1086,13 +1419,31 @@ final class RigctldServer: ObservableObject {
     /// Called once at launch; starts the server if it was left enabled.
     func attach(_ rig: RigController) {
         self.rig = rig
+        // The PTT authority took the server's key away (its max key time, CAT disconnect or
+        // link drop, background, Stop all): forget the keying client, so neither a later
+        // `T 1` nor the "client keyed" UI trusts a key that's gone.
+        rig.onPTTForcedRelease(.network) { [weak self] _, reason in
+            guard let self, self.pttClient != nil else { return }
+            self.pttClient = nil
+            self.pttSeq += 1
+            ODLog.shared.log("rigctld server: PTT released — \(reason)", category: "cat")
+        }
         if observers.isEmpty {
             let nc = NotificationCenter.default
             observers.append(nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in if self?.enabled == true { self?.core.ensureRunning() } }
             })
+            // Synchronous: a Task wouldn't run before the process exits. The rig writes the
+            // PTT-off straight to the transport (`unkeyBeforeTermination`).
             observers.append(nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.releasePTT("OrbitDeck is quitting"); self?.core.stop() }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if self.pttClient != nil {
+                        self.pttClient = nil; self.pttSeq += 1
+                        self.rig?.unkeyBeforeTermination(reason: "OrbitDeck is quitting")
+                    }
+                    self.core.stop()
+                }
             })
             // Nobody can watch a network-keyed transmitter once the app leaves the screen.
             observers.append(nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
@@ -1142,12 +1493,27 @@ final class RigctldServer: ObservableObject {
         switch event {
         case .state(let l, let e, let n):
             listening = l; errorText = e; clientCount = n
-        case .clientAdded(let id, let address):
+        case .clientAdded(let id, let address, let loopback):
             clientAddress[id] = address
+            let admission = NetworkServerApprovals.shared.admit(.rigctld, client: id, address: address, loopback: loopback) { [weak self] ok in
+                self?.decided(id, ok)
+            }
+            switch admission {
+            case .allowed: decided(id, true)
+            case .denied: decided(id, false)
+            case .pending: break
+            }
         case .clientGone(let id):
+            NetworkServerApprovals.shared.cancel(.rigctld, client: id)
             endClient(id)
+            approved.remove(id)
             clientAddress.removeValue(forKey: id)
         }
+    }
+
+    private func decided(_ id: Int, _ ok: Bool) {
+        guard clientAddress[id] != nil else { return }      // already gone
+        if ok { approved.insert(id); core.approve(id) } else { core.reject(id) }
     }
 
     private func beginControl(_ id: Int) {
@@ -1189,16 +1555,25 @@ final class RigctldServer: ObservableObject {
     private func setPTT(_ id: Int, on: Bool) async -> HamlibResult {
         guard let rig, rig.connected else { return .error(HamlibProtocol.eIO) }
         guard on else {
+            // Only the client holding the key releases it. Anyone else's `T 0` (clients
+            // send it routinely at startup) is acknowledged without touching the radio,
+            // so it can't unkey another client, FT4 or the operator.
+            guard pttClient == id else { return .ok }
+            pttClient = nil; pttSeq += 1
             let ok = await rig.serverSetPTT(false)
-            if pttClient != nil { pttClient = nil; pttSeq += 1 }
             return ok ? .ok : .error(HamlibProtocol.eNotAvailable)
         }
         guard allowPTT else {
             ODLog.shared.log("rigctld server: PTT from \(clientAddress[id] ?? "client") refused — network PTT is off", category: "cat")
             return .error(HamlibProtocol.eNotAvailable)
         }
-        // Already keyed by a client: the safety limit keeps running from that key.
-        if pttClient != nil, rig.serverPTT { return .ok }
+        switch Self.keyRequest(from: id, keyingClient: pttClient, serverKeyed: rig.serverHoldsPTT) {
+        case .alreadyKeyed: return .ok      // the safety limit keeps running from that key
+        case .busy:
+            ODLog.shared.log("rigctld server: PTT from \(clientAddress[id] ?? "client") refused — another client has the radio keyed", category: "cat")
+            return .error(HamlibProtocol.eNotAvailable)
+        case .key: break
+        }
         pttSeq += 1
         let seq = pttSeq
         pttClient = id
@@ -1223,10 +1598,22 @@ final class RigctldServer: ObservableObject {
         return .ok
     }
 
+    enum KeyRequest: Equatable { case alreadyKeyed, busy, key }
+
+    /// How to answer `T 1` from `id`: `.ok` without a new key only when THIS client's key
+    /// (the server's lease) is still on the air; refused while another client holds it; a
+    /// new key otherwise (a stale key — taken away by the PTT authority — doesn't count).
+    nonisolated static func keyRequest(from id: Int, keyingClient: Int?, serverKeyed: Bool) -> KeyRequest {
+        guard let keyingClient, serverKeyed else { return .key }
+        return keyingClient == id ? .alreadyKeyed : .busy
+    }
+
     // MARK: Commands
 
     private func handle(_ id: Int, _ line: String) async -> HamlibLineServer.Reply {
         guard let cmd = HamlibProtocol.parse(line, shortNames: Self.shortNames) else { return .init(text: "", close: false) }
+        // The line server only hands over an approved client's lines; this is a backstop.
+        guard approved.contains(id) else { return HamlibProtocol.reply(cmd, .error(HamlibProtocol.eRejected)) }
         // Throttled so a client polling get_freq many times a second doesn't churn the UI.
         let now = Date()
         if cmd.name.hasPrefix("set_") || now.timeIntervalSince(lastCommandAt) > 1 {
