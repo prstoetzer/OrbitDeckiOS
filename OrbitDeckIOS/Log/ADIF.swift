@@ -139,7 +139,11 @@ enum ADIF {
             let parts = tag.split(separator: ":")
             guard parts.count >= 2, let len = Int(parts[1]), len >= 0 else { i = close + 1; continue }
             let valStart = close + 1
-            let valEnd = min(n, valStart + len)
+            // Overflow-safe: compare against the bytes left instead of adding (a hostile
+            // `<CALL:9223372036854775807>` would overflow `valStart + len`). A length past
+            // the end is clamped to the rest of the file rather than skipping the field, so
+            // a file truncated mid-value still keeps what it has (and parsing ends there).
+            let valEnd = len > n - valStart ? n : valStart + len
             fields[String(parts[0])] = String(decoding: bytes[valStart..<valEnd], as: UTF8.self)
             i = valEnd
         }
@@ -170,8 +174,8 @@ enum ADIF {
         let sub = (f["submode"] ?? "").uppercased()
         q.mode = (m == "MFSK" && !sub.isEmpty) ? sub : m
         q.sat = f["sat_name"] ?? ""
-        if let fr = f["freq"], let m = Double(fr) { q.ulHz = Int64((m * 1e6).rounded()) }
-        if let fr = f["freq_rx"], let m = Double(fr) { q.dlHz = Int64((m * 1e6).rounded()) }
+        if let hz = f["freq"].flatMap(hertz) { q.ulHz = hz }
+        if let hz = f["freq_rx"].flatMap(hertz) { q.dlHz = hz }
         q.rstSent = f["rst_sent"] ?? ""
         q.rstRcvd = f["rst_rcvd"] ?? ""
         q.grid = f["vucc_grids"] ?? f["gridsquare"] ?? ""
@@ -187,6 +191,15 @@ enum ADIF {
         q.uplinkMode = f[appUplinkMode.lowercased()].flatMap { $0.isEmpty ? nil : $0.uppercased() }
         q.downlinkMode = f[appDownlinkMode.lowercased()].flatMap { $0.isEmpty ? nil : $0.uppercased() }
         return q
+    }
+
+    /// An ADIF FREQ (MHz) in Hz, or nil when it isn't a usable frequency. `Double`
+    /// accepts "inf", "nan" and huge exponents, and converting those to Int64 traps, so
+    /// only finite, non-negative values up to 1 THz (far above any amateur band) pass.
+    static func hertz(_ text: String) -> Int64? {
+        guard let mhz = Double(text.trimmingCharacters(in: .whitespaces)), mhz.isFinite,
+              mhz >= 0, mhz <= 1_000_000 else { return nil }
+        return Int64((mhz * 1e6).rounded())
     }
 
     private static func parseDateTime(date: String?, time: String?) -> Date {

@@ -181,6 +181,18 @@ struct LogScreen: View {
 
     var body: some View {
         List(selection: $selection) {
+            if qso.lastSaveError != nil || !qso.preservedFiles.isEmpty {
+                Section {
+                    if let err = qso.lastSaveError {
+                        storageBanner(err, systemImage: "exclamationmark.triangle.fill") { qso.dismissSaveError() }
+                    }
+                    ForEach(qso.preservedFiles) { f in
+                        storageBanner(f.message, systemImage: "externaldrive.badge.exclamationmark", share: f.preservedAt) {
+                            qso.dismissPreservedFile(f.id)
+                        }
+                    }
+                }
+            }
             if memo.isRecording || !memo.errorText.isEmpty {
                 Section("Voice memo") { VoiceMemoControl() }
             }
@@ -278,6 +290,27 @@ struct LogScreen: View {
         .alert("Log", isPresented: Binding(get: { status != nil }, set: { if !$0 { status = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(status ?? "") }
+    }
+
+    /// A dismissible warning row for a storage problem (a failed save, or a log file
+    /// that couldn't be read and was set aside), with a Share button for the set-aside file.
+    private func storageBanner(_ text: String, systemImage: String, share: URL? = nil,
+                               dismiss: @escaping () -> Void) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: systemImage).foregroundStyle(ODTheme.warning)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(text).font(.callout)
+                if let share {
+                    Button { exportURL = share } label: { Label("Share the preserved file", systemImage: "square.and.arrow.up") }
+                        .font(.callout).buttonStyle(.borderless)
+                }
+            }
+            Spacer(minLength: 0)
+            Button(action: dismiss) { Image(systemName: "xmark.circle.fill").foregroundStyle(ODTheme.muted) }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Dismiss")
+        }
+        .padding(.vertical, 2)
     }
 
     private var mainMenu: some View {
@@ -711,6 +744,16 @@ struct LogSettingsView: View {
             }
             Section("Cloudlog / Wavelog") {
                 field("Instance URL", cloudBinding(\.url))
+                switch Cloudlog.checkURL(qso.config.cloudlog.url) {
+                case .cleartextLocal:
+                    Label(Cloudlog.cleartextWarning, systemImage: "lock.open.fill")
+                        .font(.caption).foregroundStyle(ODTheme.warning)
+                case .blocked(let reason):
+                    Label(reason, systemImage: "xmark.octagon.fill")
+                        .font(.caption).foregroundStyle(ODTheme.warning)
+                case .secure, nil:
+                    EmptyView()
+                }
                 field("Station profile ID", cloudBinding(\.stationProfileId))
                 SecureField("API key", text: $cloudlogKey)
                     .onAppear { cloudlogKey = OrbitSecretStore.get(.cloudlogKey) }

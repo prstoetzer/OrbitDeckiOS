@@ -27,6 +27,22 @@ final class QSOStore: ObservableObject {
     /// One-shot hand-off to the Home quick-log card (a callsign tapped in a decoder's
     /// transcript). The card takes it and clears it. Not persisted.
     @Published var quickLogPrefill: QuickLogPrefill?
+    /// The last failed write of a persisted file, shown as a banner on the Log screen
+    /// until dismissed or until that file saves successfully again.
+    @Published var lastSaveError: String?
+    /// Files found unreadable at launch and set aside (or, if that failed, left alone
+    /// and never overwritten), shown as banners on the Log screen.
+    @Published var preservedFiles: [PreservedFile] = []
+
+    struct PreservedFile: Identifiable, Equatable {
+        let id = UUID()
+        let name: String             // e.g. "QSOLog.json"
+        let preservedAt: URL?        // nil: it couldn't be moved, so writes to it are blocked
+        let message: String
+    }
+    private var lastSaveErrorFile: String?
+    /// Files whose unreadable contents couldn't be set aside: never written this session.
+    private var unwritable: Set<String> = []
 
     /// Cap on the persisted FT4 activity log (oldest lines drop off).
     private static let ft4TrafficCap = 4000
@@ -50,10 +66,10 @@ final class QSOStore: ObservableObject {
             config.station.dxcc = "291"
             persistConfig()
         }
-        qsos = load([QSORecord].self, "QSOLog.json") ?? []
-        recordings = load([RecordingEntry].self, "Recordings.json") ?? []
-        sstvImages = load([SSTVImageEntry].self, "SSTVImages.json") ?? []
-        ft4Traffic = load([FT4TrafficEntry].self, "FT4Traffic.json") ?? []
+        qsos = loadPersisted([QSORecord].self, "QSOLog.json") ?? []
+        recordings = loadPersisted([RecordingEntry].self, "Recordings.json") ?? []
+        sstvImages = loadPersisted([SSTVImageEntry].self, "SSTVImages.json") ?? []
+        ft4Traffic = loadPersisted([FT4TrafficEntry].self, "FT4Traffic.json") ?? []
         backfillDXCCOnce()
     }
 
@@ -87,8 +103,15 @@ final class QSOStore: ObservableObject {
         var q = q
         Self.fillDXCC(&q)
         guard let i = qsos.firstIndex(where: { $0.id == q.id }) else { return }
+        replace(at: i, with: q, keepUploadFlags: keepUploadFlags)
+        requestName(for: q)
+    }
+    /// The one place a stored QSO is replaced (editor and QRZ fill alike), so a changed
+    /// upload field always clears the matching uploaded flag.
+    private func replace(at i: Int, with q: QSORecord, keepUploadFlags: Bool) {
+        var q = q
         if !keepUploadFlags { q.uploaded.subtract(q.uploadFlagsInvalidated(from: qsos[i])) }
-        qsos[i] = q; saveQSOs(); requestName(for: q)
+        qsos[i] = q; saveQSOs()
     }
     func delete(_ q: QSORecord) { qsos.removeAll { $0.id == q.id }; saveQSOs() }
     func delete(at offsets: IndexSet) { qsos.remove(atOffsets: offsets); saveQSOs() }
@@ -155,16 +178,26 @@ final class QSOStore: ObservableObject {
         guard ft4TrafficSavePending else { return }
         ft4TrafficSavePending = false
         guard !FactoryResetService.didReset else { return }
-        Self.writeInBackground(ft4Traffic, to: Self.appSupport.appendingPathComponent("FT4Traffic.json"))
+        let name = "FT4Traffic.json"
+        guard !unwritable.contains(name) else { return }     // its banner already says so
+        Self.writeInBackground(ft4Traffic, to: Self.appSupport.appendingPathComponent(name)) { [weak self] error in
+            Task { @MainActor in
+                if let error { self?.saveFailed(name, error) } else { self?.saveSucceeded(name) }
+            }
+        }
     }
 
-    private nonisolated static func writeInBackground<T: Encodable & Sendable>(_ value: T, to url: URL) {
+    /// Encode and write atomically on the I/O queue; `done` gets nil on success or the
+    /// error text (not called when a factory reset made the write moot).
+    private nonisolated static func writeInBackground<T: Encodable & Sendable>(
+        _ value: T, to url: URL, done: @escaping @Sendable (String?) -> Void) {
         ioQueue.async {
-            guard let data = try? JSONEncoder().encode(value) else { return }
+            let data: Data
+            do { data = try JSONEncoder().encode(value) } catch { done(error.localizedDescription); return }
             // A factory reset may have run while this was encoding: don't write erased data back.
             let reset = DispatchQueue.main.sync { MainActor.assumeIsolated { FactoryResetService.didReset } }
             guard !reset else { return }
-            try? data.write(to: url, options: .atomic)
+            do { try data.write(to: url, options: .atomic); done(nil) } catch { done(error.localizedDescription) }
         }
     }
 
@@ -380,12 +413,14 @@ final class QSOStore: ObservableObject {
     /// US state code (QRZ also returns provinces and free text for other countries).
     private func applyLookup(_ fill: QRZFill, to id: UUID, call: String) {
         guard let i = qsos.firstIndex(where: { $0.id == id }), DXCCLookup.baseCall(qsos[i].call) == call else { return }
-        var changed = false
-        if !fill.name.isEmpty, qsos[i].name.isEmpty { qsos[i].name = fill.name; changed = true }
-        if qsos[i].state.isEmpty, Self.usEntities.contains(qsos[i].dxcc ?? -1), LogAwards.usStateCodes.contains(fill.state) {
-            qsos[i].state = fill.state; changed = true
+        var q = qsos[i]
+        if !fill.name.isEmpty, q.name.isEmpty { q.name = fill.name }
+        if q.state.isEmpty, Self.usEntities.contains(q.dxcc ?? -1), LogAwards.usStateCodes.contains(fill.state) {
+            q.state = fill.state
         }
-        if changed { saveQSOs() }
+        // Through replace() so a name/state filled after a Cloudlog upload clears that
+        // flag and the completed record is sent again.
+        if q != qsos[i] { replace(at: i, with: q, keepUploadFlags: false) }
     }
 
     /// Factory reset: stop the QRZ worker and, unless the log is kept, drop the log and
@@ -417,8 +452,7 @@ final class QSOStore: ObservableObject {
             }.value
             let result = try await LoTW.upload(tq8)
             if result.ok {
-                mark(pending, flag: .lotw)
-                return "Uploaded \(pending.count) QSO(s) to LoTW."
+                return "Uploaded \(pending.count) QSO(s) to LoTW." + mark(pending, flag: .lotw)
             }
             return "LoTW response: \(result.message)"
         } catch {
@@ -435,17 +469,36 @@ final class QSOStore: ObservableObject {
         let key = OrbitSecretStore.get(.cloudlogKey)
         do {
             let n = try await Cloudlog.upload(pending, config: config.cloudlog, apiKey: key)
-            mark(pending, flag: .cloudlog)
-            return "Uploaded \(n) QSO(s) to Cloudlog."
+            return "Uploaded \(n) QSO(s) to Cloudlog." + mark(pending, flag: .cloudlog)
         } catch {
             return error.localizedDescription
         }
     }
 
-    private func mark(_ subset: [QSORecord], flag: UploadFlags) {
-        let ids = Set(subset.map(\.id))
-        for i in qsos.indices where ids.contains(qsos[i].id) { qsos[i].uploaded.insert(flag) }
+    /// Flag the uploaded QSOs; returns a note for the status message when some were
+    /// edited while the upload was in flight and so stay unflagged.
+    private func mark(_ sent: [QSORecord], flag: UploadFlags) -> String {
+        let marked = Self.markUploaded(&qsos, sent: sent, flag: flag)
         saveQSOs()
+        let skipped = sent.count - marked
+        return skipped > 0 ? " \(skipped) QSO(s) changed during the upload and will be sent again next time." : ""
+    }
+
+    /// Set `flag` on each QSO in `qsos` that was in `sent`, but only where the stored QSO
+    /// still has the upload fields that were sent: one edited (or QRZ-filled) during the
+    /// upload stays unflagged, so the corrected version goes next time. A deleted QSO is
+    /// simply absent. Returns how many were flagged.
+    @discardableResult
+    nonisolated static func markUploaded(_ qsos: inout [QSORecord], sent: [QSORecord], flag: UploadFlags) -> Int {
+        let snapshot = Dictionary(sent.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var marked = 0
+        for i in qsos.indices {
+            guard let sentVersion = snapshot[qsos[i].id],
+                  !qsos[i].uploadFlagsInvalidated(from: sentVersion).contains(flag) else { continue }
+            qsos[i].uploaded.insert(flag)
+            marked += 1
+        }
+        return marked
     }
 
     // MARK: File storage
@@ -465,16 +518,111 @@ final class QSOStore: ObservableObject {
         return url
     }
 
-    private func load<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
-        let url = Self.appSupport.appendingPathComponent(name)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
+    enum LoadResult<T> {
+        case missing                              // no file yet (first launch)
+        case loaded(T)
+        case preserved(URL, reason: String)       // unreadable; moved aside to this URL
+        case unmovable(reason: String)            // unreadable and couldn't be moved
     }
+
+    /// Read and decode a persisted file. When it exists but can't be read or decoded it
+    /// is moved aside to `<name>.corrupt-<UTC timestamp>.<ext>` in the same directory, so
+    /// starting empty can never overwrite (and lose) it.
+    nonisolated static func loadOrPreserve<T: Decodable>(_ type: T.Type, at url: URL, now: Date = Date()) -> LoadResult<T> {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return .missing }
+        let reason: String
+        do {
+            let data = try Data(contentsOf: url)
+            return .loaded(try JSONDecoder().decode(T.self, from: data))
+        } catch let e as DecodingError {
+            reason = "its contents are damaged (\(Self.describe(e)))"
+        } catch {
+            reason = "it couldn't be opened (\(error.localizedDescription))"
+        }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        let dir = url.deletingLastPathComponent()
+        let stem = url.deletingPathExtension().lastPathComponent, ext = url.pathExtension
+        var dest = dir.appendingPathComponent("\(stem).corrupt-\(f.string(from: now)).\(ext)")
+        var n = 1
+        while fm.fileExists(atPath: dest.path) {
+            dest = dir.appendingPathComponent("\(stem).corrupt-\(f.string(from: now))-\(n).\(ext)"); n += 1
+        }
+        do {
+            try fm.moveItem(at: url, to: dest)
+            return .preserved(dest, reason: reason)
+        } catch {
+            return .unmovable(reason: reason)
+        }
+    }
+
+    private nonisolated static func describe(_ e: DecodingError) -> String {
+        switch e {
+        case .dataCorrupted(let c), .keyNotFound(_, let c), .typeMismatch(_, let c), .valueNotFound(_, let c):
+            return c.debugDescription
+        @unknown default:
+            return e.localizedDescription
+        }
+    }
+
+    private static func displayName(_ file: String) -> String {
+        switch file {
+        case "QSOLog.json": "QSO log"
+        case "Recordings.json": "recordings list"
+        case "SSTVImages.json": "SSTV image list"
+        case "FT4Traffic.json": "FT4 activity log"
+        default: file
+        }
+    }
+
+    private func loadPersisted<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
+        let what = Self.displayName(name)
+        switch Self.loadOrPreserve(type, at: Self.appSupport.appendingPathComponent(name)) {
+        case .missing:
+            return nil
+        case .loaded(let value):
+            return value
+        case .preserved(let dest, let reason):
+            ODLog.shared.log("\(name) unreadable (\(reason)); preserved as \(dest.lastPathComponent)", category: "log")
+            preservedFiles.append(PreservedFile(name: name, preservedAt: dest, message:
+                "Your \(what) couldn't be read because \(reason). It was set aside, not deleted, as \(dest.lastPathComponent) in OrbitDeck's Application Support folder, and a new, empty \(what) was started."))
+            return nil
+        case .unmovable(let reason):
+            ODLog.shared.log("\(name) unreadable (\(reason)) and couldn't be moved aside; writes blocked", category: "log")
+            unwritable.insert(name)
+            preservedFiles.append(PreservedFile(name: name, preservedAt: nil, message:
+                "Your \(what) couldn't be read because \(reason), and it couldn't be set aside. OrbitDeck won't save over it, so changes to the \(what) made now aren't saved. Restart the app to try again."))
+            return nil
+        }
+    }
+
     private func save<T: Encodable>(_ value: T, _ name: String) {
         guard !FactoryResetService.didReset else { return }
+        guard !unwritable.contains(name) else { return }     // its banner already says so
         let url = Self.appSupport.appendingPathComponent(name)
-        if let data = try? JSONEncoder().encode(value) { try? data.write(to: url, options: .atomic) }
+        do {
+            try JSONEncoder().encode(value).write(to: url, options: .atomic)   // atomic: never a half-written file
+            saveSucceeded(name)
+        } catch {
+            saveFailed(name, error.localizedDescription)
+        }
     }
+
+    private func saveFailed(_ name: String, _ reason: String) {
+        ODLog.shared.log("save \(name) failed: \(reason)", category: "log")
+        lastSaveErrorFile = name
+        lastSaveError = "Couldn't save the \(Self.displayName(name)): \(reason). The latest changes are kept in memory and saved with the next successful write."
+    }
+
+    private func saveSucceeded(_ name: String) {
+        guard lastSaveErrorFile == name else { return }
+        lastSaveError = nil; lastSaveErrorFile = nil
+    }
+
+    func dismissSaveError() { lastSaveError = nil; lastSaveErrorFile = nil }
+    func dismissPreservedFile(_ id: UUID) { preservedFiles.removeAll { $0.id == id } }
 }
 
 // MARK: - Awards
