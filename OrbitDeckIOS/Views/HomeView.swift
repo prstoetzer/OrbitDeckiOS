@@ -680,7 +680,11 @@ struct HomeView: View {
     @ViewBuilder
     private func nextEventBanner(now: Date, pass: PredictedPass?) -> some View {
         if let pass {
-            if now < pass.aos {
+            if OrbitPredictor.isContinuousWindow(pass), now >= pass.aos, now <= pass.los {
+                Label("Continuously visible · max \(ODFormat.angle(pass.maxElevation))", systemImage: "dot.radiowaves.up.forward")
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(ODTheme.good)
+            } else if now < pass.aos {
                 Label("AOS in \(ODFormat.duration(pass.aos.timeIntervalSince(now))) · max \(ODFormat.angle(pass.maxElevation))", systemImage: "arrow.up.right")
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(ODTheme.accent)
@@ -817,12 +821,18 @@ struct HomeView: View {
     /// pass). Runs synchronously inside the live TimelineView — SGP4 is fast and
     /// this only does real work occasionally — so the arc is always drawn without
     /// depending on a `.task` that navigation transitions can cancel.
+    /// Staying synchronous relies on the predictor's bounded cost: an always-up
+    /// GEO bird resolves via the 30-min continuity probe (~500 propagations, not
+    /// ~90k), slow orbits scan at a period-scaled step, and skyPath caps the arc
+    /// at a few hundred points (collapsing a near-stationary GEO arc further).
     private func resolveTrack(satellite: SatelliteRecord, observer: ObserverSite, now: Date) -> (arc: [SkyPoint], pass: PredictedPass?) {
         let key = "\(satellite.id)-\(observer.coarseKey)-\(store.preferences.minElevation)"
         let stale = arcCache.pass.map { now > $0.los } ?? false
         if arcCache.key != key || stale {
-            let pass = (try? OrbitPredictor.currentOrNextPass(satellite, observer: observer))
-                ?? (try? OrbitPredictor.predictPasses(satellite, observer: observer, minElevation: 0, maxCount: 1))?.first
+            // currentOrNextPass already falls back to predictPasses (minimum 0°) when
+            // the satellite is down, so a second predictPasses here only repeated the
+            // same scan when no pass exists.
+            let pass = try? OrbitPredictor.currentOrNextPass(satellite, observer: observer)
             arcCache.key = key
             arcCache.pass = pass
             arcCache.arc = pass.flatMap { try? OrbitPredictor.skyPath(satellite, observer: observer, pass: $0) } ?? []

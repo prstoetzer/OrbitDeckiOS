@@ -20,6 +20,19 @@
              app is closed (LiveActivityController, BGAppRefreshTask). -->
 		<string>fetch</string>
 	</array>
+	<!-- orbitdeck://satellite/<NORAD ID>: tapping the next-pass Live Activity opens
+         the app on that satellite (OrbitDeckPassAttributes.url, RootView.onOpenURL). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.prstoetzer.OrbitDeckIOS</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>orbitdeck</string>
+			</array>
+		</dict>
+	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.prstoetzer.OrbitDeckIOS.liveActivityRefresh</string>

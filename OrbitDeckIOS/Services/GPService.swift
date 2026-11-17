@@ -97,7 +97,7 @@ struct GPService {
         return url
     }
 
-    static func fetch(preferences: StorePreferences) async throws -> (records: [SatelliteRecord], rawData: Data) {
+    static func fetch(preferences: StorePreferences) async throws -> (records: [SatelliteRecord], rawData: Data, skipped: Int) {
         let url = try sourceURL(preferences: preferences)
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
@@ -106,8 +106,8 @@ struct GPService {
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw GPServiceError.badResponse(http.statusCode)
         }
-        let records = try parse(data: data)
-        return (records, data)
+        let parsed = try parseCounting(data: data)
+        return (parsed.records, data, parsed.skipped)
     }
 
 
@@ -195,6 +195,13 @@ struct GPService {
     }
 
     static func parse(data: Data) throws -> [SatelliteRecord] {
+        try parseCounting(data: data).records
+    }
+
+    /// Like `parse(data:)`, but also reports how many rows were skipped as
+    /// malformed (missing or non-finite elements, out-of-range IDs), so callers can
+    /// surface the count instead of silently dropping them.
+    static func parseCounting(data: Data) throws -> (records: [SatelliteRecord], skipped: Int) {
         let object = try JSONSerialization.jsonObject(with: data)
         let rows: [[String: Any]]
         if let array = object as? [[String: Any]] {
@@ -209,21 +216,40 @@ struct GPService {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         guard !records.isEmpty else { throw GPServiceError.emptyCatalog }
-        return records
+        return (records, rows.count - records.count)
     }
 
     static func parseTLEText(_ text: String) -> [SatelliteRecord] {
-        preProcessTLEs(text).compactMap { tuple in
+        parseTLETextCounting(text).records
+    }
+
+    static func parseTLETextCounting(_ text: String) -> (records: [SatelliteRecord], skipped: Int) {
+        let tuples = preProcessTLEs(text)
+        let records: [SatelliteRecord] = tuples.compactMap { tuple in
             // Reject lines that fail the TLE mod-10 checksum so corrupted rows
             // don't slip through as plausible-but-wrong elements.
             guard tleLineChecksumValid(tuple.1), tleLineChecksumValid(tuple.2) else { return nil }
             do {
-                let elements = try Elements(tuple.0, tuple.1, tuple.2)
-                return record(from: elements)
+                let parsed = try Elements(tuple.0, tuple.1, tuple.2)
+                // SatelliteKit's TLE parser builds BSTAR's exponent from the raw byte
+                // value ("4" → 52), so its drag term is effectively zero, and it keeps
+                // the Kozai mean motion internal. Read both from the text and rebuild
+                // the elements so SGP4 and the record both get the real values.
+                let meanMotion = tleMeanMotion(tuple.2) ?? parsed.n₀ * 1440.0 / (2.0 * .pi)
+                let bstar = tleBstar(tuple.1) ?? 0
+                let elements = Elements(
+                    commonName: parsed.commonName, noradIndex: parsed.noradIndex, launchName: parsed.launchName,
+                    t₀: Date(ds1950: parsed.t₀), e₀: parsed.e₀,
+                    i₀: parsed.i₀ * 180.0 / .pi, ω₀: parsed.ω₀ * 180.0 / .pi,
+                    Ω₀: parsed.Ω₀ * 180.0 / .pi, M₀: parsed.M₀ * 180.0 / .pi, n₀: meanMotion,
+                    ephemType: parsed.ephemType, tleClass: parsed.tleClass, tleNumber: parsed.tleNumber,
+                    revNumber: parsed.revNumber, dragCoeff: bstar)
+                return record(from: elements, meanMotion: meanMotion, bstar: bstar)
             } catch {
                 return nil
             }
         }
+        return (records, tuples.count - records.count)
     }
 
     /// Standard TLE checksum: digits in columns 1–68 sum (with '-' counting as 1)
@@ -245,22 +271,27 @@ struct GPService {
     /// (CCSDS), or CSV; classic two/three-line TLE text is still accepted for
     /// backward compatibility.
     static func parseElementText(_ text: String) -> [SatelliteRecord] {
+        parseElementTextCounting(text).records
+    }
+
+    /// `parseElementText`, also reporting how many malformed entries were skipped.
+    static func parseElementTextCounting(_ text: String) -> (records: [SatelliteRecord], skipped: Int) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
+        guard !trimmed.isEmpty else { return ([], 0) }
 
         // OMM JSON (array of objects, or a single object).
         if trimmed.hasPrefix("[") || trimmed.hasPrefix("{") {
-            if let data = trimmed.data(using: .utf8), let records = try? parse(data: data) {
-                return records
+            if let data = trimmed.data(using: .utf8), let parsed = try? parseCounting(data: data) {
+                return parsed
             }
-            return []
+            return ([], 0)
         }
 
         // OMM XML (CCSDS). CelesTrak's FORMAT=xml emits a run of <omm> segments.
         let lower = trimmed.lowercased()
         if lower.hasPrefix("<?xml") || lower.contains("<omm") || lower.contains("<segment") || lower.contains("<ndm") {
-            let records = parseOMMXML(text)
-            if !records.isEmpty { return records }
+            let parsed = parseOMMXMLCounting(text)
+            if !parsed.records.isEmpty { return parsed }
         }
 
         // OMM CSV: a header row naming the standard OMM fields.
@@ -268,16 +299,20 @@ struct GPService {
             let upper = firstLine.uppercased()
             if firstLine.contains(","),
                upper.contains("MEAN_MOTION") || upper.contains("NORAD_CAT_ID") || upper.contains("OBJECT_NAME") {
-                let records = parseOMMCSV(text)
-                if !records.isEmpty { return records }
+                let parsed = parseOMMCSVCounting(text)
+                if !parsed.records.isEmpty { return parsed }
             }
         }
 
         // Fall back to classic TLE.
-        return parseTLEText(text)
+        return parseTLETextCounting(text)
     }
 
     static func parseOMMXML(_ text: String) -> [SatelliteRecord] {
+        parseOMMXMLCounting(text).records
+    }
+
+    static func parseOMMXMLCounting(_ text: String) -> (records: [SatelliteRecord], skipped: Int) {
         var body = text
         // XML declarations can't sit inside our synthetic wrapper element, and a
         // CelesTrak XML dump has many <omm> roots, so strip declarations and wrap.
@@ -285,24 +320,30 @@ struct GPService {
             body = regex.stringByReplacingMatches(in: body, range: NSRange(body.startIndex..., in: body), withTemplate: "")
         }
         let wrapped = "<gpimport>\(body)</gpimport>"
-        guard let data = wrapped.data(using: .utf8) else { return [] }
+        guard let data = wrapped.data(using: .utf8) else { return ([], 0) }
         let delegate = OMMXMLCollector()
         let parser = XMLParser(data: data)
         parser.delegate = delegate
-        guard parser.parse() else { return [] }
-        return delegate.rows.compactMap(parseOMM)
+        guard parser.parse() else { return ([], 0) }
+        let records = delegate.rows.compactMap(parseOMM)
+        return (records, delegate.rows.count - records.count)
     }
 
     static func parseOMMCSV(_ text: String) -> [SatelliteRecord] {
+        parseOMMCSVCounting(text).records
+    }
+
+    static func parseOMMCSVCounting(_ text: String) -> (records: [SatelliteRecord], skipped: Int) {
         let lines = text.split(whereSeparator: \.isNewline)
             .map(String.init)
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        guard lines.count >= 2 else { return [] }
+        guard lines.count >= 2 else { return ([], 0) }
         let headers = splitCSVLine(lines[0]).map { $0.trimmingCharacters(in: .whitespaces) }
         var rows: [[String: Any]] = []
+        var badLines = 0
         for line in lines.dropFirst() {
             let fields = splitCSVLine(line)
-            guard fields.count == headers.count else { continue }
+            guard fields.count == headers.count else { badLines += 1; continue }
             var row: [String: Any] = [:]
             for (header, value) in zip(headers, fields) {
                 let trimmedValue = value.trimmingCharacters(in: .whitespaces)
@@ -310,7 +351,8 @@ struct GPService {
             }
             rows.append(row)
         }
-        return rows.compactMap(parseOMM)
+        let records = rows.compactMap(parseOMM)
+        return (records, badLines + rows.count - records.count)
     }
 
     private static func splitCSVLine(_ line: String) -> [String] {
@@ -340,9 +382,31 @@ struct GPService {
         return result
     }
 
-    private static func record(from elements: Elements) -> SatelliteRecord {
+    /// Line 2 columns 53–63: mean motion (rev/day, Kozai), when finite and positive.
+    static func tleMeanMotion(_ line2: String) -> Double? {
+        let c = Array(line2)
+        guard c.count >= 63, let v = Double(String(c[52..<63]).trimmingCharacters(in: .whitespaces)),
+              v.isFinite, v > 0 else { return nil }
+        return v
+    }
+
+    /// Line 1 columns 54–61: BSTAR in TLE notation (±mmmmm±e, i.e. ±0.mmmmm × 10^±e).
+    static func tleBstar(_ line1: String) -> Double? {
+        let c = Array(line1)
+        guard c.count >= 61 else { return nil }
+        let mantissa = String(c[54..<59]).trimmingCharacters(in: .whitespaces)
+        guard !mantissa.isEmpty, let digits = Double("0." + mantissa.replacingOccurrences(of: " ", with: "0")),
+              let exponent = Int(String(c[60])) else { return nil }
+        let sign: Double = c[53] == "-" ? -1 : 1
+        let expSign: Double = c[59] == "-" ? -1 : 1
+        let v = sign * digits * pow(10, expSign * Double(exponent))
+        return v.isFinite ? v : nil
+    }
+
+    private static func record(from elements: Elements, meanMotion: Double, bstar: Double) -> SatelliteRecord {
         let epoch = Date(ds1950: elements.t₀)
-        let mm = elements.n₀ * 1440.0 / (2.0 * .pi)
+        let mm = meanMotion
+        let drag = bstar
         return SatelliteRecord(
             id: elements.noradIndex,
             name: elements.commonName,
@@ -354,20 +418,38 @@ struct GPService {
             raanDeg: elements.Ω₀ * 180.0 / .pi,
             argumentOfPerigeeDeg: elements.ω₀ * 180.0 / .pi,
             meanAnomalyDeg: elements.M₀ * 180.0 / .pi,
-            bstar: 0,
+            bstar: drag,
             elements: elements
         )
     }
 
+    /// Valid NORAD catalog numbers (OMM allows up to nine digits).
+    static let noradRange: ClosedRange<Int> = 1...999_999_999
+
+    /// Parse one OMM row. Returns nil (the row is skipped and counted by the
+    /// callers) when a required element is missing, any numeric field is
+    /// non-finite ("nan", "inf") or out of range ("1e30"), so a malformed row
+    /// can never trap in an integer conversion or feed garbage to SGP4.
     static func parseOMM(_ row: [String: Any]) -> SatelliteRecord? {
-        guard let norad = uint(row, "NORAD_CAT_ID", "NORAD_CATID", "CATNR"),
-              let epoch = date(row, "EPOCH"),
-              let meanMotion = double(row, "MEAN_MOTION"),
-              let eccentricity = double(row, "ECCENTRICITY"),
-              let inclination = double(row, "INCLINATION"),
-              let raan = double(row, "RA_OF_ASC_NODE", "RAAN"),
-              let argp = double(row, "ARG_OF_PERICENTER", "ARG_OF_PERIGEE"),
-              let meanAnomaly = double(row, "MEAN_ANOMALY") else {
+        do {
+            return try parseOMMChecked(row)
+        } catch {
+            return nil
+        }
+    }
+
+    private struct MalformedField: Error {}
+
+    private static func parseOMMChecked(_ row: [String: Any]) throws -> SatelliteRecord? {
+        guard let noradInt = try int(row, "NORAD_CAT_ID", "NORAD_CATID", "CATNR", range: noradRange),
+              let norad = UInt(exactly: noradInt),
+              let epoch = date(row, "EPOCH"), epoch.timeIntervalSince1970.isFinite,
+              let meanMotion = try finite(row, "MEAN_MOTION"), meanMotion > 0,
+              let eccentricity = try finite(row, "ECCENTRICITY"), (0..<1).contains(eccentricity),
+              let inclination = try finite(row, "INCLINATION"),
+              let raan = try finite(row, "RA_OF_ASC_NODE", "RAAN"),
+              let argp = try finite(row, "ARG_OF_PERICENTER", "ARG_OF_PERIGEE"),
+              let meanAnomaly = try finite(row, "MEAN_ANOMALY") else {
             return nil
         }
 
@@ -375,11 +457,11 @@ struct GPService {
         // AMSAT daily bulletin; fall back to the generic catalog name otherwise.
         let name = string(row, "AMSAT_NAME", "OBJECT_NAME", "OBJECT") ?? "NORAD \(norad)"
         let intl = string(row, "OBJECT_ID", "INTLDES") ?? ""
-        let bstar = double(row, "BSTAR") ?? 0
-        let ephemeris = int(row, "EPHEMERIS_TYPE") ?? 0
+        let bstar = try finite(row, "BSTAR") ?? 0
+        let ephemeris = try int(row, "EPHEMERIS_TYPE", range: 0...99) ?? 0
         let classification = string(row, "CLASSIFICATION_TYPE", "CLASSIFICATION") ?? "U"
-        let elementSet = int(row, "ELEMENT_SET_NO", "ELSET_NO") ?? 0
-        let rev = int(row, "REV_AT_EPOCH") ?? 0
+        let elementSet = try int(row, "ELEMENT_SET_NO", "ELSET_NO", range: 0...999_999_999) ?? 0
+        let rev = try int(row, "REV_AT_EPOCH", range: 0...999_999_999) ?? 0
 
         let elements = Elements(
             commonName: name,
@@ -442,14 +524,26 @@ struct GPService {
         return nil
     }
 
-    private static func int(_ row: [String: Any], _ keys: String...) -> Int? {
-        guard let value = double(row, keys: keys) else { return nil }
-        return Int(value.rounded())
+    /// A numeric field that must be finite when present: nil when absent (or not
+    /// a number, as before), throws for "nan"/"inf" and overflowing values.
+    private static func finite(_ row: [String: Any], _ keys: String...) throws -> Double? {
+        try finite(row, keys: keys)
     }
 
-    private static func uint(_ row: [String: Any], _ keys: String...) -> UInt? {
-        guard let value = double(row, keys: keys), value >= 0 else { return nil }
-        return UInt(value.rounded())
+    /// An integer field: nil when absent; throws when non-finite, non-integral
+    /// after rounding to a representable value, or outside `range`.
+    private static func int(_ row: [String: Any], _ keys: String..., range: ClosedRange<Int>) throws -> Int? {
+        guard let value = try finite(row, keys: keys) else { return nil }
+        let rounded = value.rounded()
+        guard rounded >= Double(range.lowerBound), rounded <= Double(range.upperBound),
+              let result = Int(exactly: rounded), range.contains(result) else { throw MalformedField() }
+        return result
+    }
+
+    private static func finite(_ row: [String: Any], keys: [String]) throws -> Double? {
+        guard let value = double(row, keys: keys) else { return nil }
+        guard value.isFinite else { throw MalformedField() }
+        return value
     }
 
     private static func date(_ row: [String: Any], _ keys: String...) -> Date? {
@@ -478,6 +572,45 @@ struct GPService {
             if let date = formatter.date(from: normalized) { return date }
         }
         return nil
+    }
+}
+
+/// An element set the operator imported (OMM or TLE), persisted in an on-disk
+/// overlay next to the GP cache so it survives relaunches and refreshes. It wins
+/// over the downloaded feed only while its epoch is newer than the feed's for the
+/// same NORAD ID; once the feed catches up the entry is pruned.
+struct ImportedElementSet: Identifiable, Codable, Equatable, Sendable {
+    var definition: ManualSatelliteDefinition
+    var importedAt: Date
+
+    var id: UInt { definition.norad }
+    var norad: UInt { definition.norad }
+    var epoch: Date { definition.epoch }
+    var name: String { definition.name }
+
+    init(record: SatelliteRecord, importedAt: Date = .now) {
+        self.definition = ManualSatelliteDefinition(record: record)
+        self.importedAt = importedAt
+    }
+
+    /// A catalog record (not flagged manual) built from the stored elements.
+    var record: SatelliteRecord { GPService.makeExtraRecord(definition) }
+
+    /// Split the overlay against the epochs of the downloaded feed: an entry stays
+    /// active when the feed lacks that NORAD ID or carries an OLDER epoch; it is
+    /// superseded (and can be pruned) once the feed's epoch is the same or newer.
+    static func resolve(_ overlay: [ImportedElementSet], feedEpochs: [UInt: Date])
+        -> (active: [ImportedElementSet], superseded: [ImportedElementSet]) {
+        var active: [ImportedElementSet] = []
+        var superseded: [ImportedElementSet] = []
+        for entry in overlay {
+            if let feedEpoch = feedEpochs[entry.norad], feedEpoch >= entry.epoch {
+                superseded.append(entry)
+            } else {
+                active.append(entry)
+            }
+        }
+        return (active, superseded)
     }
 }
 

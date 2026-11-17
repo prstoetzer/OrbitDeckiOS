@@ -72,13 +72,18 @@ struct TrackView: View {
     @ViewBuilder
     private func nextEventRow(now: Date) -> some View {
         if let pass = currentPass {
-            if now < pass.aos {
+            if OrbitPredictor.isContinuousWindow(pass), now >= pass.aos, now <= pass.los {
+                // An always-up GEO/near-GEO bird: there is no LOS to count down to.
+                MetricRow("Visibility", "continuously visible · max \(ODFormat.angle(pass.maxElevation))", valueColor: ODTheme.good)
+            } else if now < pass.aos {
                 MetricRow("AOS in", "\(ODFormat.duration(pass.aos.timeIntervalSince(now))) · max \(ODFormat.angle(pass.maxElevation))", valueColor: ODTheme.accent)
             } else if now <= pass.los {
                 MetricRow("LOS in", "\(ODFormat.duration(pass.los.timeIntervalSince(now))) @ \(ODFormat.utcShort.string(from: pass.los))", valueColor: ODTheme.good)
             } else {
                 MetricRow("Next event", "updating…", valueColor: ODTheme.muted)
             }
+        } else if let satellite = store.selectedSatellite, OrbitPredictor.isNearStationary(satellite) {
+            MetricRow("Next event", "stays below the horizon here", valueColor: ODTheme.muted)
         } else {
             MetricRow("Next event", "no pass in 10 days", valueColor: ODTheme.muted)
         }

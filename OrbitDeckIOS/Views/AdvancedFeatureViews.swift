@@ -1303,6 +1303,12 @@ struct ManualSatelliteEditor: View {
                 Section("Identity") {
                     labeled("Name") { TextField("Name", text: $name).textFieldStyle(.odField) }
                     labeled("NORAD ID") { TextField("NORAD / synthetic ID", text: $norad).keyboardType(.numberPad).textFieldStyle(.odField) }
+                    if let n = UInt(norad), !TLEFormatter.isRepresentable(n) {
+                        // TLE catalog numbers stop at Alpha-5 "Z9999".
+                        Text("IDs above \(TLEFormatter.maxRepresentableNorad) can't be exported as TLE; this satellite will be left out of TLE and keps exports.")
+                            .font(.caption)
+                            .foregroundStyle(ODTheme.warning)
+                    }
                     labeled("Int'l designator") { TextField("Optional", text: $designator).textInputAutocapitalization(.characters).textFieldStyle(.odField) }
                     DatePicker("Epoch (UTC instant)", selection: $epoch)
                 }
@@ -1339,12 +1345,13 @@ struct ManualSatelliteEditor: View {
 
     private func save() {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let n = UInt(norad),
+              let n = UInt(norad), (1...999_999_999).contains(n),
               let inc = Double(inclination), let node = Double(raan),
               let ecc = Double(eccentricity), let ap = Double(argp),
               let ma = Double(meanAnomaly), let mm = Double(meanMotion), mm > 0,
-              let bs = Double(bstar), ecc >= 0, ecc < 1 else {
-            error = "Enter a name, numeric ID, valid mean elements, 0 ≤ eccentricity < 1, and mean motion > 0."
+              let bs = Double(bstar), ecc >= 0, ecc < 1,
+              [inc, node, ap, ma, mm, bs].allSatisfy(\.isFinite) else {
+            error = "Enter a name, numeric ID (1–999999999), finite mean elements, 0 ≤ eccentricity < 1, and mean motion > 0."
             return
         }
         if let existing = store.satellites.first(where: { $0.id == n }), existing.id != record?.id {

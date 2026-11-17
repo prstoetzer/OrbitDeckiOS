@@ -38,14 +38,47 @@ final class OrbitStore: ObservableObject {
     /// disk so every catalog satellite shows its transmitters offline.
     private var allTransponders: [String: [TransponderRecord]] = [:]
 
+    /// Element sets the operator imported, persisted in `importedElementsURL` and
+    /// merged over the downloaded feed while their epoch is newer (see
+    /// `ImportedElementSet.resolve`). Published for the "Imported Elements" list.
+    @Published private(set) var importedElements: [ImportedElementSet] = []
+    /// The last downloaded (or cached) GP feed plus refreshed extras, before the
+    /// local layers are merged, so imports can be re-applied or removed without
+    /// another download.
+    private var feedRecords: [SatelliteRecord] = []
+
     private let defaults = UserDefaults.standard
     private let prefsKey = OrbitStore.preferencesKey
     nonisolated static let preferencesKey = "OrbitDeckIOS.preferences.v1"
     /// CelesTrak asks clients not to re-request the same data more than once every
     /// two hours (their GP updates no faster than that); exceeding it risks an IP
     /// ban. Timestamps are per-dataset and persisted so the limit is honored
-    /// across app launches. Keys: "gp" (chosen group) and "newlaunch" (last-30-days).
+    /// across app launches. Keys: `celestrakCooldownKey(for:)` (the chosen group,
+    /// or the override URL), "extras" (per-NORAD lookups for new-launch extras),
+    /// "newlaunch" (last-30-days scan) and "debris-<id>". The policy is about
+    /// re-downloading the SAME data, so switching to a different group fetches it
+    /// right away while re-fetching the same group still waits. (The pre-0.9.8
+    /// single "gp" key is simply no longer read.)
     static let celestrakMinInterval: TimeInterval = 2 * 3600
+    static let celestrakExtrasKey = "extras"
+    /// Set on an HTTP 403/429: CelesTrak's limit is per client IP, so a rate limit
+    /// blocks every GP dataset for a full window, not just the one that tripped it.
+    static let celestrakRateLimitKey = "ratelimit"
+
+    /// The cooldown key for the GP source a refresh would hit: the group ID, or a
+    /// stable hash of the override URL (Swift's `hashValue` is per-launch seeded,
+    /// so use FNV-1a to stay stable across launches).
+    nonisolated static func celestrakCooldownKey(for preferences: StorePreferences) -> String {
+        if let override = preferences.celestrakURLOverride?.trimmingCharacters(in: .whitespaces), !override.isEmpty {
+            var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+            for byte in override.utf8 {
+                hash ^= UInt64(byte)
+                hash = hash &* 0x0000_0100_0000_01b3
+            }
+            return "url-" + String(hash, radix: 16)
+        }
+        return "group-" + preferences.celestrakGroup
+    }
 
     private func celestrakLastFetch(_ key: String) -> Date? {
         let t = defaults.double(forKey: "OrbitDeckIOS.celestrak.\(key)")
@@ -55,12 +88,12 @@ final class OrbitStore: ObservableObject {
         defaults.set(Date().timeIntervalSince1970, forKey: "OrbitDeckIOS.celestrak.\(key)")
     }
     /// True when enough time has elapsed to politely query the given CelesTrak dataset.
-    func celestrakAllowed(_ key: String = "gp") -> Bool {
+    func celestrakAllowed(_ key: String) -> Bool {
         guard let last = celestrakLastFetch(key) else { return true }
         return Date().timeIntervalSince(last) >= Self.celestrakMinInterval
     }
     /// Whole minutes until the next request for the given dataset is allowed.
-    func celestrakCooldownMinutes(_ key: String = "gp") -> Int {
+    func celestrakCooldownMinutes(_ key: String) -> Int {
         guard let last = celestrakLastFetch(key) else { return 0 }
         return max(0, Int(ceil((Self.celestrakMinInterval - Date().timeIntervalSince(last)) / 60)))
     }
@@ -113,15 +146,22 @@ final class OrbitStore: ObservableObject {
             spaceWeather = cachedWeather
         }
 
+        loadImportedElements()
+
         if let cached = try? Data(contentsOf: Self.gpCacheURL),
            let records = try? GPService.parse(data: cached),
            !records.isEmpty {
+            feedRecords = records
             satellites = mergeLocalCatalog(records)
             normalizeSelection()
             statusMessage = "Loaded cached GP catalog (\(records.count) objects)"
+        } else if !importedElements.isEmpty {
+            // No feed cached yet: still show imports (and custom satellites).
+            satellites = mergeLocalCatalog([])
+            normalizeSelection()
         }
 
-        if satellites.isEmpty || (catalogAgeDays ?? .infinity) > 1.0 {
+        if feedRecords.isEmpty || (catalogAgeDays ?? .infinity) > 1.0 {
             await refreshGP()
         }
         await refreshAllTranspondersIfNeeded()
@@ -132,7 +172,7 @@ final class OrbitStore: ObservableObject {
     /// elements are more than a day old (also covering the weekly floor), and the
     /// SatNOGS transmitter database once per week.
     func refreshCatalogsIfNeeded() async {
-        if satellites.isEmpty || (catalogAgeDays ?? .infinity) > 1.0 { await refreshGP() }
+        if feedRecords.isEmpty || (catalogAgeDays ?? .infinity) > 1.0 { await refreshGP() }
         await refreshAllTranspondersIfNeeded()
     }
 
@@ -192,23 +232,29 @@ final class OrbitStore: ObservableObject {
         let extraDefinitions = preferences.extraSatellites ?? []
         let extraIDs = extraDefinitions.filter { $0.placeholderNorad != true }.map(\.norad)
         let placeholderExtras = extraDefinitions.filter { $0.placeholderNorad == true && $0.satnogsID != nil }
-        // fetchExtraNorads always queries CelesTrak (individual CATNR lookups).
-        let allowedAtStart = celestrakAllowed("gp")
+        // fetchExtraNorads always queries CelesTrak (individual CATNR lookups), so
+        // it has its own cooldown key, independent of the GP source's.
+        let gpKey = Self.celestrakCooldownKey(for: preferences)
+        let extrasAllowed = celestrakAllowed(Self.celestrakExtrasKey)
 
-        // Honor CelesTrak's ≤1-request-per-2-hours policy when it is the source.
-        if usingCelestrak && !allowedAtStart && !satellites.isEmpty {
-            statusMessage = "Using cached elements — CelesTrak permits one update every 2 hours (try again in ~\(celestrakCooldownMinutes("gp")) min)."
+        // Honor CelesTrak's ≤1-request-per-2-hours policy for this same dataset.
+        if usingCelestrak && !celestrakAllowed(gpKey) && !satellites.isEmpty {
+            statusMessage = "Using cached elements — CelesTrak permits one update of this group every 2 hours (try again in ~\(celestrakCooldownMinutes(gpKey)) min)."
+            return
+        }
+        if usingCelestrak && !celestrakAllowed(Self.celestrakRateLimitKey) {
+            statusMessage = "Using cached elements — CelesTrak rate-limited this device; try again in ~\(celestrakCooldownMinutes(Self.celestrakRateLimitKey)) min."
             return
         }
 
         do {
             let result = try await GPService.fetch(preferences: preferences)
-            if usingCelestrak { recordCelestrakFetch("gp") }
+            if usingCelestrak { recordCelestrakFetch(gpKey) }
 
             var refreshedExtras: [SatelliteRecord] = []
-            if !extraIDs.isEmpty && allowedAtStart {
+            if !extraIDs.isEmpty && extrasAllowed {
                 refreshedExtras = await GPService.fetchExtraNorads(extraIDs)
-                recordCelestrakFetch("gp")
+                recordCelestrakFetch(Self.celestrakExtrasKey)
             }
             refreshedExtras += await GPService.fetchSatNOGSExtras(placeholderExtras)
             if !refreshedExtras.isEmpty {
@@ -231,17 +277,20 @@ final class OrbitStore: ObservableObject {
                 preferences.extraSatellites = byID.values.sorted { $0.norad < $1.norad }
             }
             let downloaded = result.records + refreshedExtras
+            feedRecords = downloaded
             satellites = mergeLocalCatalog(mergeTransponders(old: satellites, new: downloaded))
             try Self.ensureApplicationSupport()
             try result.rawData.write(to: Self.gpCacheURL, options: [.atomic])
             lastGPRefresh = .now
             normalizeSelection()
             statusMessage = "GP updated: \(satellites.count) objects"
+                + (result.skipped > 0 ? " (\(result.skipped) malformed record\(result.skipped == 1 ? "" : "s") skipped)" : "")
         } catch {
             // A CelesTrak 403/429 means we're being rate-limited; back off a full
             // window so we never escalate toward an IP ban.
             if usingCelestrak, case GPServiceError.badResponse(let code) = error, code == 403 || code == 429 {
-                recordCelestrakFetch("gp")
+                recordCelestrakFetch(gpKey)
+                recordCelestrakFetch(Self.celestrakRateLimitKey)
                 lastError = "CelesTrak rate limit reached (HTTP \(code)). OrbitDeck will wait 2 hours before querying again to avoid an IP ban; cached elements remain in use."
                 statusMessage = "GP update failed"
             } else if Self.isOffline(error) {
@@ -287,25 +336,81 @@ final class OrbitStore: ObservableObject {
         }
     }
 
+    /// Import OMM/TLE text. Imports persist in an on-disk overlay that wins over
+    /// the downloaded feed only while its epoch is newer. An import for a NORAD ID
+    /// that is a manual satellite updates that manual definition's elements
+    /// instead (keeping its name), since manual definitions always take precedence
+    /// and an overlay entry would otherwise be silently shadowed.
     func importTLEText(_ text: String) {
-        let imported = GPService.parseElementText(text)
+        let parsed = GPService.parseElementTextCounting(text)
+        let imported = parsed.records
+        let skippedNote = parsed.skipped > 0 ? " (\(parsed.skipped) malformed entr\(parsed.skipped == 1 ? "y" : "ies") skipped)" : ""
         guard !imported.isEmpty else {
-            lastError = "No usable elements were found. Supported formats: OMM (JSON, XML, or CSV) and classic TLE."
+            lastError = "No usable elements were found\(skippedNote). Supported formats: OMM (JSON, XML, or CSV) and classic TLE."
             return
         }
 
-        var map = Dictionary(uniqueKeysWithValues: satellites.map { ($0.id, $0) })
-        for var record in imported {
-            if let old = map[record.id] {
-                record.transponders = old.transponders
+        var manual = preferences.manualSatellites ?? []
+        var overlay = Dictionary(importedElements.map { ($0.norad, $0) }, uniquingKeysWith: { _, b in b })
+        var updatedManual = 0
+        for record in imported {
+            if let index = manual.firstIndex(where: { $0.norad == record.id }) {
+                var definition = ManualSatelliteDefinition(record: record)
+                definition.name = manual[index].name
+                manual[index] = definition
+                updatedManual += 1
+            } else {
+                overlay[record.id] = ImportedElementSet(record: record)
             }
-            map[record.id] = record
         }
-        satellites = mergeLocalCatalog(Array(map.values)).sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
+        if updatedManual > 0 { preferences.manualSatellites = manual }
+        importedElements = overlay.values.sorted { $0.norad < $1.norad }
+        rebuildCatalog()
+        // Entries no newer than the feed were pruned by the merge.
+        let kept = imported.filter { record in importedElements.contains { $0.norad == record.id } }.count
+        let older = imported.count - kept - updatedManual
+        saveImportedElements()
         normalizeSelection()
-        statusMessage = "Imported \(imported.count) element set\(imported.count == 1 ? "" : "s")"
+        var message = "Imported \(imported.count) element set\(imported.count == 1 ? "" : "s")"
+        if updatedManual > 0 { message += ", updated \(updatedManual) manual satellite\(updatedManual == 1 ? "" : "s")" }
+        if older > 0 { message += ", \(older) not newer than the downloaded elements (ignored)" }
+        statusMessage = message + skippedNote
+    }
+
+    /// Remove imported element sets; the downloaded elements (if any) take over.
+    func removeImportedElements(_ norads: Set<UInt>) {
+        importedElements.removeAll { norads.contains($0.norad) }
+        saveImportedElements()
+        rebuildCatalog(dropping: norads)
+        normalizeSelection()
+        statusMessage = "Removed \(norads.count) imported element set\(norads.count == 1 ? "" : "s")"
+    }
+
+    /// Re-merge the local layers over `feedRecords` without a download. Records
+    /// that no source owns (e.g. a CelesTrak search hit added this session) are
+    /// kept, except the IDs in `dropping` (an overlay entry just removed).
+    private func rebuildCatalog(dropping: Set<UInt> = []) {
+        var owned = Set(feedRecords.map(\.id))
+        owned.formUnion(importedElements.map(\.norad))
+        owned.formUnion((preferences.extraSatellites ?? []).map(\.norad))
+        owned.formUnion((preferences.manualSatellites ?? []).map(\.norad))
+        let sessionOnly = satellites.filter { !owned.contains($0.id) && !dropping.contains($0.id) }
+        satellites = mergeLocalCatalog(mergeTransponders(old: satellites, new: feedRecords) + sessionOnly)
+    }
+
+    private func loadImportedElements() {
+        guard let data = try? Data(contentsOf: Self.importedElementsURL),
+              let entries = try? JSONDecoder().decode([ImportedElementSet].self, from: data) else { return }
+        importedElements = entries
+    }
+
+    private func saveImportedElements() {
+        try? Self.ensureApplicationSupport()
+        if importedElements.isEmpty {
+            try? FileManager.default.removeItem(at: Self.importedElementsURL)
+        } else if let data = try? JSONEncoder().encode(importedElements) {
+            try? data.write(to: Self.importedElementsURL, options: [.atomic])
+        }
     }
 
     func loadTransponders(for norad: UInt) async {
@@ -679,6 +784,22 @@ final class OrbitStore: ObservableObject {
         for definition in preferences.extraSatellites ?? [] where map[definition.norad] == nil {
             map[definition.norad] = applyManualTransponders(to: GPService.makeExtraRecord(definition))
         }
+        // Imports go over the feed only while newer; superseded entries are pruned
+        // from the overlay (the feed has caught up), keeping its file small.
+        let resolved = ImportedElementSet.resolve(importedElements, feedEpochs: map.mapValues(\.epoch))
+        for entry in resolved.active {
+            var record = entry.record
+            if let feed = map[entry.norad] {
+                // Keep the feed's (often amateur) name and any loaded transmitters.
+                record.name = feed.name
+                record.transponders = feed.transponders
+            }
+            map[entry.norad] = applyManualTransponders(to: record)
+        }
+        if !resolved.superseded.isEmpty {
+            importedElements = resolved.active
+            saveImportedElements()
+        }
         for definition in preferences.manualSatellites ?? [] {
             map[definition.norad] = applyManualTransponders(to: GPService.makeManualRecord(definition))
         }
@@ -745,6 +866,11 @@ final class OrbitStore: ObservableObject {
         applicationSupportURL.appendingPathComponent("gp.json")
     }
 
+    /// The imported-elements overlay (see `ImportedElementSet`).
+    nonisolated static var importedElementsURL: URL {
+        applicationSupportURL.appendingPathComponent("imported-elements.json")
+    }
+
     /// The cached GP catalog plus custom and new-launch satellites (without
     /// transmitters), limited to `ids`: for work in a background launch, where
     /// bootstrap hasn't run. Mirrors mergeLocalCatalog's precedence.
@@ -756,6 +882,15 @@ final class OrbitStore: ObservableObject {
         }
         for definition in preferences.extraSatellites ?? [] where ids.contains(definition.norad) && map[definition.norad] == nil {
             map[definition.norad] = GPService.makeExtraRecord(definition)
+        }
+        if let data = try? Data(contentsOf: importedElementsURL),
+           let overlay = try? JSONDecoder().decode([ImportedElementSet].self, from: data) {
+            let relevant = overlay.filter { ids.contains($0.norad) }
+            for entry in ImportedElementSet.resolve(relevant, feedEpochs: map.mapValues(\.epoch)).active {
+                var record = entry.record
+                if let feed = map[entry.norad] { record.name = feed.name }
+                map[entry.norad] = record
+            }
         }
         for definition in preferences.manualSatellites ?? [] where ids.contains(definition.norad) {
             map[definition.norad] = GPService.makeManualRecord(definition)
@@ -1144,14 +1279,36 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
         /// Azimuths at AOS and LOS in degrees (nil before 1.1 (4)).
         var aosAzimuth: Double? = nil
         var losAzimuth: Double? = nil
+        /// NORAD catalog number, for the tap-to-open link (nil in older content).
+        var norad: UInt? = nil
 
         enum CodingKeys: String, CodingKey {
             case satellite = "n", aos = "a", los = "l", maxElevation = "e", switchAt = "s"
-            case aosAzimuth = "aa", losAzimuth = "la"
+            case aosAzimuth = "aa", losAzimuth = "la", norad = "i"
         }
 
         /// When this pass becomes the one to show: the switch time, else AOS.
         var start: Date { switchAt ?? aos }
+    }
+
+    /// Tapping the activity opens `orbitdeck://satellite/<NORAD ID>`, which selects
+    /// that satellite (the scheme is registered in the app's Info.plist).
+    static let urlScheme = "orbitdeck"
+
+    static func url(norad: UInt?) -> URL? {
+        guard let norad, norad > 0 else { return nil }
+        return URL(string: "\(urlScheme)://satellite/\(norad)")
+    }
+
+    /// The NORAD ID in a link made by `url(norad:)`; nil for anything else.
+    static func norad(from url: URL) -> UInt? {
+        guard url.scheme?.lowercased() == urlScheme, url.host()?.lowercased() == "satellite",
+              url.query() == nil, url.fragment() == nil else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count == 1, let digits = parts.first, digits.count <= 9,
+              digits.allSatisfy({ ("0"..."9").contains($0) }),
+              let norad = UInt(digits), norad > 0 else { return nil }
+        return norad
     }
 
     struct ContentState: Codable, Hashable {
@@ -1202,8 +1359,9 @@ struct OrbitDeckPassAttributes: ActivityAttributes {
 
         /// The first moment after `date` at which `pass(at:)` gives a different
         /// pass (or nil, once the last has ended); nil when it never changes again.
-        /// The widget's countdowns cover AOS by themselves, so this is the one
-        /// redraw that matters: the stale date.
+        /// iOS redraws a Live Activity it isn't updating once, at the stale date, and
+        /// every layout reads right through AOS without a redraw, so that one redraw
+        /// is spent here, where it moves the activity on to the next pass.
         func passChange(after date: Date) -> Date? {
             let shown = pass(at: date)
             guard shown != nil else { return nil }
@@ -1296,6 +1454,10 @@ final class LiveActivityController: ObservableObject {
         var current: OrbitDeckPassAttributes.ContentState?
         /// A later pass, for the opt-in scheduled activity.
         var scheduled: OrbitDeckPassAttributes.ContentState?
+        /// When the scheduled activity starts: `scheduledLead` before its pass, but
+        /// not before the running activity's last reachable pass has set, so it
+        /// doesn't take the Dynamic Island (higher relevance) during that pass.
+        var scheduledStart: Date? = nil
     }
 
     /// The attached controller, so a background refresh in a running app goes
@@ -1402,7 +1564,7 @@ final class LiveActivityController: ObservableObject {
         let inputs = Self.inputs(store: store, autoSwitch: autoSwitch)
         let next = inputs.usePriorities ? autoSwitch.nextSwitch : nil
         let ids = inputs.records.map(\.id)
-        let key = "\(inputs.usePriorities)|\(ids)|\(inputs.observer.stableKey)|\(inputs.minElevation)|\(inputs.preemption.rawValue)|\(inputs.preemptElevation)|\(inputs.selected ?? 0)|\(next?.norad ?? 0)|\(next?.date.timeIntervalSince1970 ?? 0)|\(store.satellites.count)|\(inputs.utc)"
+        let key = "\(inputs.usePriorities)|\(ids)|\(inputs.observer.stableKey)|\(inputs.minElevation)|\(inputs.preemption.rawValue)|\(inputs.preemptElevation)|\(inputs.selected ?? 0)|\(next?.norad ?? 0)|\(next?.date.timeIntervalSince1970 ?? 0)|\(store.satellites.count)|\(inputs.utc)|\(Self.elementsFingerprint(inputs.records.map(\.epoch)))"
         let expired = plan?.current?.nextTransition(after: computedAt).map { $0 <= now } ?? false
         if plan == nil || key != lastKey || expired || now.timeIntervalSince(computedAt) > 600 {
             lastKey = key; computedAt = now
@@ -1459,6 +1621,14 @@ final class LiveActivityController: ObservableObject {
         return selected.map { [$0] } ?? []
     }
 
+    /// Changes whenever a candidate's element set does (a catalog refresh or TLE
+    /// import with a newer epoch), so the plan is recomputed right away instead of
+    /// at the 10-minute recompute.
+    nonisolated static func elementsFingerprint(_ epochs: [Date]) -> String {
+        let seconds = epochs.map(\.timeIntervalSince1970)
+        return "\(seconds.count):\(seconds.max() ?? 0):\(seconds.reduce(0, +))"
+    }
+
     /// The same inputs read from the saved preferences, auto-switch settings and
     /// cached catalog, for a cold background launch (no UI, no bootstrap).
     nonisolated static func loadSavedInputs() -> Inputs? {
@@ -1506,8 +1676,9 @@ final class LiveActivityController: ObservableObject {
                 $0.satellite == item.satellite && close($0.aos, item.aos, 30) && close($0.los, item.los, 30)
                     && close($0.switchAt, item.switchAt, 60) && abs($0.maxElevation - item.maxElevation) < 1
             }) else { return item }
-            // Content from an older build lacks the azimuths: take the new pass.
-            return old.aosAzimuth == nil && item.aosAzimuth != nil ? item : old
+            // Content from an older build lacks the azimuths or the NORAD ID: take the new pass.
+            let upgraded = (old.aosAzimuth == nil && item.aosAzimuth != nil) || (old.norad == nil && item.norad != nil)
+            return upgraded ? item : old
         }
     }
 
@@ -1520,7 +1691,7 @@ final class LiveActivityController: ObservableObject {
         func entry(_ record: SatelliteRecord, _ pass: PredictedPass, switchAt: Date?) -> Pass {
             Pass(satellite: String(record.name.prefix(40)), aos: pass.aos, los: pass.los,
                  maxElevation: (pass.maxElevation * 10).rounded() / 10, switchAt: switchAt,
-                 aosAzimuth: pass.aosAzimuth.rounded(), losAzimuth: pass.losAzimuth.rounded())
+                 aosAzimuth: pass.aosAzimuth.rounded(), losAzimuth: pass.losAzimuth.rounded(), norad: record.id)
         }
         func samePass(_ a: Pass, _ b: Pass) -> Bool {
             a.satellite == b.satellite && abs(a.aos.timeIntervalSince(b.aos)) < 60
@@ -1600,19 +1771,39 @@ final class LiveActivityController: ObservableObject {
         // Without the app the running activity reaches the pass shown now and, after
         // its one redraw at the stale date, the next. Schedule the pass after that.
         var scheduled: OrbitDeckPassAttributes.ContentState?
+        var scheduledStart: Date?
         if let current, let shown = current.pass(at: now) {
             let reach = current.passChange(after: now).flatMap { current.pass(at: $0) } ?? shown
             if let index = list.firstIndex(of: reach), index + 1 < list.count {
                 let following = Array(list[(index + 1)...].prefix(embeddedPassCount))
-                if let first = following.first { scheduled = state(following, at: first.start) }
+                if let first = following.first {
+                    // Not before the reachable pass sets: the scheduled activity has
+                    // the higher relevance and would take the island mid-pass. If that
+                    // pass outlasts this one, the running activity covers it anyway.
+                    let start = max(first.start.addingTimeInterval(-scheduledLead), reach.los)
+                    if start < first.los.addingTimeInterval(-60) {
+                        scheduled = state(following, at: first.start)
+                        scheduledStart = start
+                    }
+                }
             }
         }
-        return Plan(current: current, scheduled: scheduled)
+        return Plan(current: current, scheduled: scheduled, scheduledStart: scheduled == nil ? nil : scheduledStart)
+    }
+
+    /// When the background refresh should run for `state`: the shown pass's AOS if
+    /// that comes first, else the stale date. An update at AOS (inPass flips) redraws
+    /// the activity with the LOS countdown without spending the stale-date redraw.
+    nonisolated static func backgroundWake(for state: OrbitDeckPassAttributes.ContentState, staleDate: Date,
+                                           now: Date) -> Date {
+        guard let aos = state.pass(at: now)?.aos, aos > now else { return staleDate }
+        return min(aos, staleDate)
     }
 
     /// Start, update or end the running activity to match `plan`, and (from the
     /// foreground) reconcile the scheduled one. Returns when a background refresh
-    /// should next run: the stale date, or nil with nothing to keep current.
+    /// should next run: the shown pass's AOS or the stale date, whichever is first
+    /// (or nil with nothing to keep current).
     /// Nonisolated so the (non-Sendable) Activity objects never cross actors.
     nonisolated private static func apply(_ plan: Plan?, canStart: Bool, manageScheduled: Bool) async -> Date? {
         let now = Date()
@@ -1628,8 +1819,10 @@ final class LiveActivityController: ObservableObject {
             .sorted { $0.content.relevanceScore > $1.content.relevanceScore }
         var wake: Date?
         if let state = plan?.current {
-            // The widget's timers carry it through AOS by themselves; the stale date
-            // is when it must show a different pass, so iOS redraws it then.
+            // Every layout reads right through AOS by itself, so the one redraw iOS
+            // gives an activity it isn't updating (at the stale date) is spent where
+            // it must show a different pass. A stale date at AOS would spend it there
+            // and leave the activity stuck on that pass (see passChange(after:)).
             let staleDate = state.passChange(after: now) ?? state.los
             let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: currentRelevance)
             let inPass = state.pass(at: now).map { $0.aos <= now } ?? false
@@ -1660,7 +1853,7 @@ final class LiveActivityController: ObservableObject {
                     if let activity = running.first { await activity.update(content) }
                 }
             }
-            wake = staleDate
+            wake = backgroundWake(for: state, staleDate: staleDate, now: now)
         } else {
             for activity in running {
                 ODLog.shared.log("Ending \(activity.id): no planned pass", category: logCategory)
@@ -1671,12 +1864,15 @@ final class LiveActivityController: ObservableObject {
             var pending = all.filter { $0.activityState == .pending }
             if manageScheduled {
                 let wanted = isEnabled && scheduleNextEnabled ? plan?.scheduled : nil
-                pending = await reconcileScheduled(wanted, pending: pending, now: now)
+                pending = await reconcileScheduled(wanted, start: plan?.scheduledStart, pending: pending, now: now)
             }
             // Wake shortly after a scheduled activity starts, to fold it together
             // with the running one.
             for activity in pending {
-                let start = activity.content.state.timeline.first?.start.addingTimeInterval(-scheduledLead + 60)
+                // startedAt is the scheduled start (older ones: the lead before the pass).
+                let start = (activity.attributes.startedAt
+                             ?? activity.content.state.timeline.first?.start.addingTimeInterval(-scheduledLead))?
+                    .addingTimeInterval(60)
                 if let start, start > now { wake = min(wake ?? start, start) }
             }
         }
@@ -1687,17 +1883,19 @@ final class LiveActivityController: ObservableObject {
     /// the plan changes. Returns the pending activities left.
     @available(iOS 26.0, *)
     nonisolated private static func reconcileScheduled(_ wanted: OrbitDeckPassAttributes.ContentState?,
+                                                       start plannedStart: Date?,
                                                        pending: [Activity<OrbitDeckPassAttributes>],
                                                        now: Date) async -> [Activity<OrbitDeckPassAttributes>] {
         guard let wanted, let pass = wanted.timeline.first,
-              pass.start.addingTimeInterval(-scheduledLead) > now.addingTimeInterval(60) else {
+              case let start = plannedStart ?? pass.start.addingTimeInterval(-scheduledLead),
+              start > now.addingTimeInterval(60) else {
             // Nothing to schedule, or it's due so soon the running activity covers it.
             for activity in pending { await activity.end(nil, dismissalPolicy: .immediate) }
             return []
         }
-        let start = pass.start.addingTimeInterval(-scheduledLead)
         if let match = pending.first(where: { activity in
-            activity.content.state.timeline.first.map {
+            let sameStart = activity.attributes.startedAt.map { abs($0.timeIntervalSince(start)) < 60 } ?? true
+            return sameStart && activity.content.state.timeline.first.map {
                 $0.satellite == pass.satellite && abs($0.aos.timeIntervalSince(pass.aos)) < 60
                     && abs($0.start.timeIntervalSince(pass.start)) < 60
             } ?? false
@@ -1708,9 +1906,10 @@ final class LiveActivityController: ObservableObject {
         for activity in pending { await activity.end(nil, dismissalPolicy: .immediate) }
         let minutes = Int((pass.aos.timeIntervalSince(start) / 60).rounded())
         let name = shortName(pass.satellite)
+        let title = minutes > 0 ? "\(name) pass in \(minutes) min" : "\(name) pass now"
         var body = "AOS \(clock(pass.aos, utc: wanted.utc)), max \(Int(pass.maxElevation.rounded()))°"
         if let switchAt = pass.switchAt { body += ", auto switch at \(clock(switchAt, utc: wanted.utc))" }
-        let alert = AlertConfiguration(title: LocalizedStringResource(String.LocalizationValue("\(name) pass in \(minutes) min")),
+        let alert = AlertConfiguration(title: LocalizedStringResource(String.LocalizationValue(title)),
                                        body: LocalizedStringResource(String.LocalizationValue(body)),
                                        sound: .default)
         let content = ActivityContent(state: wanted, staleDate: wanted.passChange(after: start) ?? pass.los,

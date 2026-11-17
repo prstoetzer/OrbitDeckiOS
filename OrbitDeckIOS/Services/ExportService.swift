@@ -2372,14 +2372,22 @@ enum OrbitBackupService {
 /// Writes NORAD two-line element sets from loaded GP records (classic 69-column
 /// format with checksums; Alpha-5 catalog numbers above 99999). OMM feeds don't
 /// carry the n-dot/n-ddot terms SGP4 ignores, so those fields are written as zero.
+/// Catalog numbers above 339999 don't fit even Alpha-5; those objects are left
+/// out (never written under a wrong number) and the caller reports the count.
 enum TLEFormatter {
-    static func lines(for sat: SatelliteRecord) -> [String] {
+    /// Highest catalog number a TLE can carry (Alpha-5 "Z9999").
+    static let maxRepresentableNorad: UInt = 339_999
+
+    static func isRepresentable(_ id: UInt) -> Bool { id <= maxRepresentableNorad }
+
+    /// TLE lines for `sat`, or nil when its NORAD ID can't be written in a TLE.
+    static func lines(for sat: SatelliteRecord) -> [String]? {
+        guard let catalog = catalogField(sat.id) else { return nil }
         let cal = Calendar(identifier: .gregorian)
         var utc = cal; utc.timeZone = TimeZone(secondsFromGMT: 0)!
         let year = utc.component(.year, from: sat.epoch)
         let startOfYear = utc.date(from: DateComponents(year: year, month: 1, day: 1)) ?? sat.epoch
         let dayOfYear = sat.epoch.timeIntervalSince(startOfYear) / 86400 + 1
-        let catalog = catalogField(sat.id)
         let set = sat.elements.tleNumber % 10000
         var l1 = "1 \(catalog)U \(intlField(sat.internationalDesignator)) "
         l1 += String(format: "%02d%012.8f", year % 100, dayOfYear)
@@ -2392,8 +2400,22 @@ enum TLEFormatter {
         return [name, l1 + String(checksum(l1)), l2 + String(checksum(l2))]
     }
 
+    /// TLE text for the representable satellites (unrepresentable ones are
+    /// skipped; see `skippedNote`).
     static func text(for sats: [SatelliteRecord]) -> String {
-        sats.map { lines(for: $0).joined(separator: "\n") }.joined(separator: "\n") + "\n"
+        sats.compactMap { lines(for: $0)?.joined(separator: "\n") }.joined(separator: "\n") + "\n"
+    }
+
+    /// How many of `sats` can't be exported as TLE.
+    static func unrepresentableCount(_ sats: [SatelliteRecord]) -> Int {
+        sats.filter { !isRepresentable($0.id) }.count
+    }
+
+    /// User-facing note for skipped objects (TLE text has no comment syntax, so
+    /// this goes in the UI / share status, or a PDF section). Nil when none.
+    static func skippedNote(_ count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return "\(count) satellite\(count == 1 ? "" : "s") with a NORAD ID above \(maxRepresentableNorad) can't be written as a TLE and \(count == 1 ? "was" : "were") left out. Use the OMM (JSON/XML/CSV) elements from the source for \(count == 1 ? "it" : "them")."
     }
 
     /// Modulo-10 sum of the digits, with each minus sign counting as 1.
@@ -2404,9 +2426,12 @@ enum TLEFormatter {
         } % 10
     }
 
-    /// 5-character catalog number; Alpha-5 (A=10 … Z=33, skipping I and O) above 99999.
-    static func catalogField(_ id: UInt) -> String {
-        guard id > 99_999, id < 340_000 else { return String(format: "%05d", Int(id % 100_000)) }
+    /// 5-character catalog number; Alpha-5 (A=10 … Z=33, skipping I and O) above
+    /// 99999. Nil above 339999: truncating (the old `id % 100000`) wrote a
+    /// DIFFERENT real satellite's number with a valid checksum.
+    static func catalogField(_ id: UInt) -> String? {
+        guard id > 99_999 else { return String(format: "%05d", Int(id)) }
+        guard id <= maxRepresentableNorad else { return nil }
         let letters = Array("ABCDEFGHJKLMNPQRSTUVWXYZ")
         return String(letters[Int(id / 10_000) - 10]) + String(format: "%04d", Int(id % 10_000))
     }
@@ -2518,12 +2543,18 @@ enum StationReportService {
 
     /// Favorites' element sets: the TLE text plus a one-line summary for each.
     static func kepsPDF(_ sats: [SatelliteRecord], now: Date = .now) -> Data {
-        let sections = sats.map { sat -> ReportSection in
+        var sections = sats.compactMap { sat -> ReportSection? in
+            guard let tle = TLEFormatter.lines(for: sat) else { return nil }
             let age = now.timeIntervalSince(sat.epoch) / 86400
             let summary = String(format: "Epoch %@ (%.1f days old) · set %d · i %.2f° · e %.4f · %.1f min · %.0f × %.0f km",
                                  ODFormat.utc.string(from: sat.epoch), age, sat.elements.tleNumber,
                                  sat.inclinationDeg, sat.eccentricity, sat.periodMinutes, sat.perigeeKm, sat.apogeeKm)
-            return ReportSection(heading: "\(sat.name) · NORAD \(sat.id)", lines: TLEFormatter.lines(for: sat) + [summary], monospaced: true)
+            return ReportSection(heading: "\(sat.name) · NORAD \(sat.id)", lines: tle + [summary], monospaced: true)
+        }
+        let skipped = sats.filter { !TLEFormatter.isRepresentable($0.id) }
+        if let note = TLEFormatter.skippedNote(skipped.count) {
+            sections.append(ReportSection(heading: "Not included",
+                                          lines: [note] + skipped.map { "•  \($0.name) · NORAD \($0.id)" }))
         }
         return textPDF(title: "Favorite satellites — element sets",
                        subtitle: "\(sats.count) satellite\(sats.count == 1 ? "" : "s") · generated \(ODFormat.utc.string(from: now)). Two-line elements rebuilt from the loaded GP data; n-dot terms are written as zero (SGP4 doesn't use them). Refresh elements before precision work.",

@@ -90,7 +90,7 @@ struct LiveActivityTimelineTests {
         let long = String(repeating: "X", count: 40)
         let passes = (0..<LiveActivityController.embeddedPassCount).map {
             Pass(satellite: long, aos: at(Double($0) * 90), los: at(Double($0) * 90 + 15), maxElevation: 88.8,
-                 switchAt: at(Double($0) * 90 - 1), aosAzimuth: 359, losAzimuth: 181)
+                 switchAt: at(Double($0) * 90 - 1), aosAzimuth: 359, losAzimuth: 181, norad: 99999)
         }
         let data = try JSONEncoder().encode(state(.priority, passes))
         #expect(data.count < 1500)
@@ -116,6 +116,70 @@ struct LiveActivityTimelineTests {
         #expect(plan.current?.satellite == "A")
         // A now, B after the redraw at A's LOS; so C is scheduled.
         #expect(plan.scheduled?.timeline.first?.satellite == "C")
+    }
+
+    @Test func backgroundWakeIsTheNextAOSBeforeThePass() {
+        // The stale date stays at the pass change (the one redraw moves the activity
+        // on); the background refresh aims at AOS first, then at the stale date.
+        let s = state(.favorite, [pass("A", aos: 10, los: 20), pass("B", aos: 60, los: 70)])
+        let stale = s.passChange(after: at(0)) ?? s.los
+        #expect(stale == at(20))
+        #expect(LiveActivityController.backgroundWake(for: s, staleDate: stale, now: at(0)) == at(10))
+        // During the pass: LOS.
+        let inPassStale = s.passChange(after: at(12)) ?? s.los
+        #expect(LiveActivityController.backgroundWake(for: s, staleDate: inPassStale, now: at(12)) == at(20))
+        // A switch before AOS (the pass change) comes first.
+        let p = state(.priority, [pass("A", aos: 10, los: 25), pass("B", aos: 19, los: 30, switchAt: 18)])
+        let pStale = p.passChange(after: at(12)) ?? p.los
+        #expect(LiveActivityController.backgroundWake(for: p, staleDate: pStale, now: at(12)) == at(18))
+    }
+
+    @Test func noradDecodesFromOldPayloadsAndRoundTrips() throws {
+        let old = #"{"n":"AO-91","a":0,"l":600,"e":42.5,"aa":10,"la":170}"#
+        let p = try JSONDecoder().decode(Pass.self, from: Data(old.utf8))
+        #expect(p.norad == nil)
+        var withID = pass("ISS", aos: 10, los: 20)
+        withID.norad = 25544
+        let json = String(decoding: try JSONEncoder().encode(withID), as: UTF8.self)
+        #expect(json.contains(#""i":25544"#))
+        #expect(try JSONDecoder().decode(Pass.self, from: Data(json.utf8)).norad == 25544)
+        // An older plan's pass without the ID is replaced by the new one that has it.
+        #expect(LiveActivityController.stabilized([withID], previous: [pass("ISS", aos: 10, los: 20)]) == [withID])
+    }
+
+    @Test func satelliteLinksParse() throws {
+        let url = try #require(OrbitDeckPassAttributes.url(norad: 25544))
+        #expect(url.absoluteString == "orbitdeck://satellite/25544")
+        #expect(OrbitDeckPassAttributes.norad(from: url) == 25544)
+        #expect(OrbitDeckPassAttributes.norad(from: URL(string: "ORBITDECK://Satellite/7530")!) == 7530)
+        #expect(OrbitDeckPassAttributes.url(norad: nil) == nil)
+        #expect(OrbitDeckPassAttributes.url(norad: 0) == nil)
+        for junk in ["orbitdeck://satellite/", "orbitdeck://satellite/abc", "orbitdeck://satellite/-5",
+                     "orbitdeck://satellite/+5", "orbitdeck://satellite/0", "orbitdeck://satellite/25544/x",
+                     "orbitdeck://satellite/25544?x=1", "orbitdeck://pass/25544", "https://satellite/25544",
+                     "orbitdeck://satellite/99999999999999999999", "orbitdeck:satellite/25544"] {
+            #expect(OrbitDeckPassAttributes.norad(from: URL(string: junk)!) == nil, "\(junk)")
+        }
+    }
+
+    @Test func scheduledActivityStartsAfterTheReachablePassSets() {
+        // A now, B after the redraw at A's LOS; C is scheduled. Its 15-minute lead
+        // (C at 80 → 65) would start it during B (60-70): wait for B's LOS.
+        let list = [pass("A", aos: 10, los: 20), pass("B", aos: 60, los: 70),
+                    pass("C", aos: 80, los: 90), pass("D", aos: 240, los: 250)]
+        let plan = LiveActivityController.makePlan(from: list, source: .favorite, utc: true, now: at(0))
+        #expect(plan.scheduled?.timeline.first?.satellite == "C")
+        #expect(plan.scheduledStart == at(70))
+        // Far enough apart, the usual lead applies.
+        let apart = [pass("A", aos: 10, los: 20), pass("B", aos: 60, los: 70), pass("C", aos: 150, los: 160)]
+        #expect(LiveActivityController.makePlan(from: apart, source: .favorite, utc: true, now: at(0))
+            .scheduledStart == at(135))
+    }
+
+    @Test func elementsFingerprintChangesWithAnEpoch() {
+        let a = [t0, at(60)], b = [t0, at(120)]
+        #expect(LiveActivityController.elementsFingerprint(a) == LiveActivityController.elementsFingerprint(a))
+        #expect(LiveActivityController.elementsFingerprint(a) != LiveActivityController.elementsFingerprint(b))
     }
 
     @Test func candidatesFallBackToTheSelection() {

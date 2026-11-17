@@ -1880,6 +1880,10 @@ struct StationReportsCard: View {
 
     private func prepareTLE() {
         guard !favorites.isEmpty else { status = "No favorite satellites to export."; return }
+        // TLE text has no comment syntax, so objects it can't carry are reported here.
+        let skipped = TLEFormatter.unrepresentableCount(favorites)
+        guard skipped < favorites.count else { status = TLEFormatter.skippedNote(skipped) ?? ""; return }
+        status = TLEFormatter.skippedNote(skipped) ?? ""
         do { shareURL = try OrbitExportService.temporaryTextFile(name: "OrbitDeck-favorites.tle", text: TLEFormatter.text(for: favorites)) }
         catch { status = error.localizedDescription }
     }

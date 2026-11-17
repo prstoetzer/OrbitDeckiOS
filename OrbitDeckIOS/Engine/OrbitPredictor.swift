@@ -116,6 +116,18 @@ enum OrbitPredictor {
         var output: [PredictedPass] = []
         var t = start
         var previousElevation = try elevation(satellite, observer, t)
+        // LEO keeps the caller's step; slow, near-circular orbits (GEO/MEO) scan
+        // coarser, since their passes last hours (a 10-day GEO scan at 30 s was
+        // ~29k deep-space propagations).
+        let coarseStep = scanStep(record, base: coarseStep)
+        let passStep = scanStep(record, base: 20)
+
+        // A near-geosynchronous bird that stays below the horizon for the whole
+        // window never rises: settle that with the cheap probe, not a full scan.
+        if previousElevation < 0, isNearStationary(record),
+           try probeContinuous(satellite, observer, from: start, to: end, above: false) {
+            return []
+        }
 
         // In-progress pass: the satellite is already above the horizon at `start`.
         // The plain rise-scan below only fires on a below→above transition, so it
@@ -123,29 +135,15 @@ enum OrbitPredictor {
         // bird that is up the whole window).
         if previousElevation >= 0 {
             // Cheap continuity probe (30-min steps): is it up for the entire window?
-            var continuous = true
-            var probe = start
-            while probe < end {
-                probe = min(end, probe.addingTimeInterval(1800))
-                if try elevation(satellite, observer, probe) < 0 { continuous = false; break }
-                if probe == end { break }
-            }
-            if continuous {
+            if try probeContinuous(satellite, observer, from: start, to: end, above: true) {
                 // Continuously visible (e.g. a geostationary bird above the horizon):
                 // report one horizon-long visibility window.
-                let tcaEnd = min(end, start.addingTimeInterval(3600))
-                let tca = try refineTCA(satellite, observer, start, tcaEnd)
-                let maxEl = try elevation(satellite, observer, tca)
-                if maxEl >= minElevation {
-                    output.append(PredictedPass(
-                        id: start, aos: start, los: end, tca: tca, maxElevation: maxEl,
-                        aosAzimuth: try azimuth(satellite, observer, start),
-                        losAzimuth: try azimuth(satellite, observer, end)))
-                }
+                let window = try continuousWindow(satellite, observer, from: start, to: end)
+                if window.maxElevation >= minElevation { output.append(window) }
                 return output
             }
             // Sets within the window: emit the in-progress pass, then continue.
-            if let pass = try buildPass(satellite, observer, start, end) {
+            if let pass = try buildPass(satellite, observer, start, end, step: passStep) {
                 if pass.maxElevation >= minElevation { output.append(pass) }
                 t = pass.los.addingTimeInterval(coarseStep)
                 previousElevation = try elevation(satellite, observer, t)
@@ -157,7 +155,7 @@ enum OrbitPredictor {
             let el2 = try elevation(satellite, observer, t2)
             if previousElevation < 0, el2 >= 0 {
                 let aos = try bisectRise(satellite, observer, t, t2)
-                if let pass = try buildPass(satellite, observer, aos, end),
+                if let pass = try buildPass(satellite, observer, aos, end, step: passStep),
                    pass.maxElevation >= minElevation {
                     output.append(pass)
                     t = pass.los.addingTimeInterval(coarseStep)
@@ -171,6 +169,11 @@ enum OrbitPredictor {
         return output
     }
 
+    /// Most points a sky path is sampled at. A LEO pass (≤ ~20 min at 20 s) stays
+    /// well under this and keeps full resolution; a horizon-long GEO window (10
+    /// days at 20 s was ~43k points redrawn every second) is coarsened to fit.
+    static let maxSkyPathPoints = 360
+
     static func skyPath(
         _ record: SatelliteRecord,
         observer: ObserverSite,
@@ -178,6 +181,8 @@ enum OrbitPredictor {
         step: TimeInterval = 20
     ) throws -> [SkyPoint] {
         let satellite = Satellite(elements: record.elements)
+        let duration = pass.los.timeIntervalSince(pass.aos)
+        let step = max(step, duration / Double(maxSkyPathPoints))
         var points: [SkyPoint] = []
         var t = pass.aos
         while t <= pass.los {
@@ -189,7 +194,27 @@ enum OrbitPredictor {
             let top = try satellite.topPosition(julianDays: pass.los.julianDate, observer: observer.satelliteKitLocation)
             points.append(SkyPoint(id: pass.los, date: pass.los, azimuth: normalizedDegrees(top.azim), elevation: top.elev))
         }
-        return points
+        return collapsedIfStationary(points)
+    }
+
+    /// A near-stationary arc (a GEO bird wandering a fraction of a degree) adds
+    /// nothing drawn at hundreds of points: keep about two dozen, endpoints included.
+    static func collapsedIfStationary(_ points: [SkyPoint], toleranceDeg: Double = 1, keep: Int = 24) -> [SkyPoint] {
+        guard points.count > keep, let first = points.first else { return points }
+        let stationary = points.allSatisfy { point in
+            var dAz = abs(point.azimuth - first.azimuth).truncatingRemainder(dividingBy: 360)
+            if dAz > 180 { dAz = 360 - dAz }
+            return dAz <= toleranceDeg && abs(point.elevation - first.elevation) <= toleranceDeg
+        }
+        guard stationary else { return points }
+        let stride = Double(points.count - 1) / Double(keep - 1)
+        return (0..<keep).map { points[Int((Double($0) * stride).rounded())] }
+    }
+
+    /// True when a "pass" is really a horizon-long visibility window (an
+    /// always-up GEO/near-GEO bird); no real pass lasts a full day.
+    static func isContinuousWindow(_ pass: PredictedPass) -> Bool {
+        pass.los.timeIntervalSince(pass.aos) >= 86400
     }
 
 
@@ -233,8 +258,12 @@ enum OrbitPredictor {
             var t = from
             var previous = elevationNow
             let end = from.addingTimeInterval(horizonDays * 86400)
+            // Always up for the whole window: no LOS to report, and no need to
+            // walk ~43k 20-s steps to find that out.
+            if try probeContinuous(satellite, observer, from: from, to: end, above: true) { return nil }
+            let step = scanStep(record, base: 20)
             while t < end {
-                let t2 = t.addingTimeInterval(20)
+                let t2 = t.addingTimeInterval(step)
                 let el2 = try elevation(satellite, observer, t2)
                 if previous >= 0, el2 < 0 {
                     return NextEvent(isVisible: true, date: try bisectSet(satellite, observer, t, t2), maxElevation: nil)
@@ -262,21 +291,28 @@ enum OrbitPredictor {
         let horizonEnd = from.addingTimeInterval(horizonDays * 86400)
         let elevationNow = try elevation(satellite, observer, from)
         if elevationNow >= 0 {
+            // Always up (e.g. QO-100 from its footprint): report one horizon-long
+            // window, as predictPasses does, instead of walking 12 h back and 10
+            // days forward at 20 s only to return nil.
+            if try probeContinuous(satellite, observer, from: from, to: horizonEnd, above: true) {
+                return try continuousWindow(satellite, observer, from: from, to: horizonEnd)
+            }
             // Walk backward to find this pass's AOS, then build the full pass.
+            let step = scanStep(record, base: 20)
             var t = from
             var previous = elevationNow
             let backLimit = from.addingTimeInterval(-12 * 3600)
             while t > backLimit {
-                let t2 = t.addingTimeInterval(-20)
+                let t2 = t.addingTimeInterval(-step)
                 let el2 = try elevation(satellite, observer, t2)
                 if el2 < 0, previous >= 0 {
                     let aos = try bisectRise(satellite, observer, t2, t)
-                    return try buildPass(satellite, observer, aos, horizonEnd)
+                    return try buildPass(satellite, observer, aos, horizonEnd, step: step)
                 }
                 previous = el2
                 t = t2
             }
-            return try buildPass(satellite, observer, from, horizonEnd)
+            return try buildPass(satellite, observer, from, horizonEnd, step: step)
         }
         return try predictPasses(record, observer: observer, from: from, minElevation: 0, maxCount: 1, horizonDays: horizonDays).first
     }
@@ -388,6 +424,48 @@ enum OrbitPredictor {
         return asin(dot) * 180 / .pi
     }
 
+    /// Near-circular orbits slower than 6 rev/day (MEO/GEO) scan at a step scaled
+    /// to the period (~0.7 % of it: ~5 min for GPS, ~10 min for GEO); faster or
+    /// eccentric orbits (LEO, HEO perigee passes) keep `base` unchanged.
+    static func scanStep(_ record: SatelliteRecord, base: TimeInterval) -> TimeInterval {
+        let n = record.meanMotionRevPerDay
+        guard n > 0, n < 6, record.eccentricity < 0.1 else { return base }
+        return min(1800, max(base, 86400 / n * 0.007))
+    }
+
+    /// Near-geosynchronous and near-circular: it barely moves in the sky, so a
+    /// 30-minute probe can't miss a rise.
+    static func isNearStationary(_ record: SatelliteRecord) -> Bool {
+        record.meanMotionRevPerDay > 0.9 && record.meanMotionRevPerDay < 1.1 && record.eccentricity < 0.1
+    }
+
+    /// Cheap continuity probe (30-min steps): true when the elevation stays on
+    /// the given side of the horizon at every sample through `end`.
+    private static func probeContinuous(
+        _ satellite: Satellite, _ observer: ObserverSite, from start: Date, to end: Date, above: Bool
+    ) throws -> Bool {
+        var probe = start
+        while probe < end {
+            probe = min(end, probe.addingTimeInterval(1800))
+            let up = try elevation(satellite, observer, probe) >= 0
+            if up != above { return false }
+        }
+        return true
+    }
+
+    /// One horizon-long visibility window for a continuously visible satellite.
+    private static func continuousWindow(
+        _ satellite: Satellite, _ observer: ObserverSite, from start: Date, to end: Date
+    ) throws -> PredictedPass {
+        let tcaEnd = min(end, start.addingTimeInterval(3600))
+        let tca = try refineTCA(satellite, observer, start, tcaEnd)
+        return PredictedPass(
+            id: start, aos: start, los: end, tca: tca,
+            maxElevation: try elevation(satellite, observer, tca),
+            aosAzimuth: try azimuth(satellite, observer, start),
+            losAzimuth: try azimuth(satellite, observer, end))
+    }
+
     private static func elevation(_ satellite: Satellite, _ observer: ObserverSite, _ date: Date) throws -> Double {
         try satellite.topPosition(julianDays: date.julianDate, observer: observer.satelliteKitLocation).elev
     }
@@ -440,9 +518,9 @@ enum OrbitPredictor {
         _ satellite: Satellite,
         _ observer: ObserverSite,
         _ aos: Date,
-        _ horizonEnd: Date
+        _ horizonEnd: Date,
+        step: TimeInterval = 20
     ) throws -> PredictedPass? {
-        let step: TimeInterval = 20
         var t = aos
         var previousElevation = try elevation(satellite, observer, t)
         var coarseMax = previousElevation

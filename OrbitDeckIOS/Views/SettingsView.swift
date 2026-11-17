@@ -374,13 +374,16 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(ODTheme.muted)
                 Toggle("Next pass on Lock Screen and Dynamic Island", isOn: $liveActivityEnabled)
                     .onChange(of: liveActivityEnabled) { _, _ in Task { await liveActivity.refresh() } }
-                Text("One Live Activity counts down to the next AOS, then shows the time left and a progress bar through the pass. It follows the satellite auto switching selects and each one it will switch to (with the time), or with auto switching off the next pass of any favorite (the selected satellite if you have no favorites). While OrbitDeck is closed it carries the next few passes: it runs through the current pass by itself and moves on to the next one at LOS. Past that it needs OrbitDeck to run again, either opened or refreshed in the background by iOS (when, and how often, is up to iOS, and needs Background App Refresh on). iOS ends Live Activities after 8 hours and only an open app can start one, so opening OrbitDeck renews it.")
+                Text("One Live Activity counts down to the next AOS, then shows the time left and a progress bar through the pass. It follows the satellite auto switching selects and each one it will switch to (with the time), or with auto switching off the next pass of any favorite (the selected satellite if you have no favorites). While OrbitDeck is closed it carries the next few passes: it runs through the current pass by itself and moves on to the next one at LOS. Past that it needs OrbitDeck to run again, either opened or refreshed in the background by iOS (when, and how often, is up to iOS, and needs Background App Refresh on); until then it's dimmed with \"Open OrbitDeck to update\". Tap it to open OrbitDeck on that satellite. iOS ends Live Activities after 8 hours and only an open app can start one, so opening OrbitDeck renews it.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
+                if liveActivityEnabled {
+                    LiveActivityBackgroundRefreshHint()
+                }
                 if LiveActivityController.supportsScheduledStart {
                     Toggle("Start next pass automatically while OrbitDeck is closed", isOn: $liveActivityScheduleNext)
                         .disabled(!liveActivityEnabled)
                         .onChange(of: liveActivityScheduleNext) { _, _ in liveActivity.scheduleSettingChanged() }
-                    Text("Also schedules a Live Activity for the pass after the ones the current activity can reach on its own. iOS starts it by itself 15 minutes before AOS (or the auto switch) with an alert, so it doubles as a pass reminder even if OrbitDeck isn't running. Until OrbitDeck next runs, the earlier activity may still show beside it. One pass is scheduled at a time; opening the app plans the next.")
+                    Text("Keeps the Live Activity advancing from pass to pass without opening OrbitDeck: it also schedules a Live Activity for the pass after the ones the current activity can reach on its own, which iOS starts by itself 15 minutes before AOS (or the auto switch, but not before the earlier pass ends) with an alert, so it doubles as a pass reminder even if OrbitDeck isn't running. Until OrbitDeck next runs, the earlier activity may still show beside it. One pass is scheduled at a time; opening the app plans the next.")
                         .font(.caption).foregroundStyle(ODTheme.muted)
                 }
                 Toggle("Keep screen awake on Home", isOn: $keepScreenAwakeHome)
@@ -1241,5 +1244,42 @@ private struct AutoSwitchAddSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
         }
+    }
+}
+
+/// Settings → Display: warns when Background App Refresh is off for OrbitDeck,
+/// since the next-pass Live Activity then only advances while the app runs.
+private struct LiveActivityBackgroundRefreshHint: View {
+    @State private var status = UIApplication.shared.backgroundRefreshStatus
+
+    var body: some View {
+        Group {
+            if status == .denied || status == .restricted {
+                Label {
+                    Text(message)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                }
+                .font(.caption)
+                .foregroundStyle(ODTheme.muted)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.backgroundRefreshStatusDidChangeNotification)) { _ in
+            status = UIApplication.shared.backgroundRefreshStatus
+        }
+    }
+
+    private var message: String {
+        var text = status == .restricted
+            ? "Background App Refresh isn't available on this iPhone"
+            : "Background App Refresh is off for OrbitDeck (iOS Settings → General → Background App Refresh)"
+        text += ", so the Live Activity only plans new passes while OrbitDeck is open or running."
+        if LiveActivityController.supportsScheduledStart {
+            text += " Turning on \"Start next pass automatically\" below lets iOS start the next one by itself."
+        }
+        return text
     }
 }

@@ -397,6 +397,10 @@ struct RootView: View {
         .onChange(of: notifications.openDestination) { _, destination in
             if let destination { selection = destination; notifications.openDestination = nil }
         }
+        // A tapped Live Activity (orbitdeck://satellite/<NORAD ID>); other URLs are ignored.
+        .onOpenURL { url in openSatelliteLink(url) }
+        // A new rigctld/rotctld client asks for approval from any screen.
+        .hamlibClientApprovalAlert()
         // Station readiness checklist, once on first run (not during screenshot automation).
         // Upgrading users (existing preferences) skip it; it stays in Settings and Help.
         .onAppear {
@@ -451,6 +455,17 @@ struct RootView: View {
     private func applyIdleTimer(active: Bool) {
         UIApplication.shared.isIdleTimerDisabled =
             active && (sessionRunning || (keepScreenAwakeHome && (selection ?? .home) == .home))
+    }
+
+    /// Select the satellite a Live Activity link names and show it on Home, which
+    /// tracks the selected satellite. Malformed links, and IDs not in the loaded
+    /// catalog, are ignored; before the catalog has loaded the ID is taken as is
+    /// (loading falls back to another satellite if it isn't cataloged).
+    private func openSatelliteLink(_ url: URL) {
+        guard let norad = OrbitDeckPassAttributes.norad(from: url) else { return }
+        guard store.satellites.isEmpty || store.satellites.contains(where: { $0.id == norad }) else { return }
+        if store.preferences.selectedNorad != norad { store.select(norad) }
+        selection = .home
     }
 
     /// On iPhone, a screen is pushed over the menu (the menu isn't on-screen).

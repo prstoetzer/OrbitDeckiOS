@@ -52,11 +52,15 @@ final class LocationProvider: NSObject, ObservableObject, @preconcurrency CLLoca
     func startFollowing() {
         switch manager.authorizationStatus {
         case .notDetermined:
+            // Record the follow intent before asking, so the authorization callback
+            // starts continuous updates instead of a one-shot fix.
+            following = true
             manager.requestWhenInUseAuthorization()
         case .authorizedAlways, .authorizedWhenInUse:
             following = true
             manager.startUpdatingLocation()
         case .denied, .restricted:
+            following = false
             errorMessage = "Location access is disabled. Enter a station location manually or enable access in Settings."
         @unknown default:
             break

@@ -20,6 +20,7 @@ struct SatellitesView: View {
     @State private var searchText = ""
     @State private var favoritesOnly = false
     @State private var showingImporter = false
+    @State private var showingImportedElements = false
     @State private var showingManualEditor = false
     @State private var manualEditorRecord: SatelliteRecord?
     @State private var showingTransponderManager = false
@@ -62,6 +63,12 @@ struct SatellitesView: View {
                     } label: {
                         Label("Import Elements (OMM / TLE)", systemImage: "square.and.arrow.down")
                     }
+                    Button {
+                        showingImportedElements = true
+                    } label: {
+                        Label("Imported Elements (\(store.importedElements.count))", systemImage: "tray.full")
+                    }
+                    .disabled(store.importedElements.isEmpty)
                     Divider()
                     Button {
                         Task { await store.refreshAllTransponders() }
@@ -125,6 +132,10 @@ struct SatellitesView: View {
                 // state) changes, so scan explicitly when switching to "What's up".
                 .onChange(of: mode) { _, _ in if mode == .visible { Task { await scanVisible() } } }
                 .task(id: store.satellites.count) { await loadHeardMarks() }
+        }
+        .sheet(isPresented: $showingImportedElements) {
+            ImportedElementsSheet()
+                .environmentObject(store)
         }
         .sheet(isPresented: $showingOnlineSearch) {
             CelesTrakSearchSheet()
@@ -507,5 +518,46 @@ struct CelesTrakSearchSheet: View {
         store.addExtraSatellite(record, transponders: record.transponders)
         addedIDs.insert(record.id)
         Task { await store.loadTransponders(for: record.id) }
+    }
+}
+
+/// Lists the persisted imported element sets (provenance "Imported" with their
+/// epoch). Swipe to remove one; the downloaded elements then take over.
+private struct ImportedElementsSheet: View {
+    @EnvironmentObject private var store: OrbitStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("Imported elements are kept across launches and GP updates. Each one is used only while its epoch is newer than the downloaded elements for that satellite; once the feed catches up it is removed automatically. Imports for a manual satellite update that satellite instead.")
+                        .font(.caption)
+                        .foregroundStyle(ODTheme.muted)
+                }
+                Section {
+                    ForEach(store.importedElements) { entry in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.name)
+                            Text(verbatim: "Imported · NORAD \(entry.norad) · epoch \(ODFormat.utcStamp(entry.epoch))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(ODTheme.muted)
+                        }
+                    }
+                    .onDelete { offsets in
+                        let ids = Set(offsets.map { store.importedElements[$0].norad })
+                        store.removeImportedElements(ids)
+                    }
+                    if store.importedElements.isEmpty {
+                        Text("No imported elements.").foregroundStyle(ODTheme.muted)
+                    }
+                }
+            }
+            .navigationTitle("Imported Elements")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
     }
 }
