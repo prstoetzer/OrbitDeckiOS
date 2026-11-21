@@ -205,6 +205,7 @@ struct HomeView: View {
 
     var body: some View {
         ScrollView {
+            ScrollViewReader { proxy in
             VStack(spacing: 14) {
                 SelectedSatelliteHeader()
                 AutoSwitchBanner()
@@ -224,10 +225,10 @@ struct HomeView: View {
                         HomeQuickLogCard(satellite: satellite)
                         HomeRemoteAudioCard(satellite: satellite)
                         HomeRecordingCard(satellite: satellite)
-                        HomeSSTVCard(satellite: satellite)
-                        HomeFT4Card(satellite: satellite)
-                        HomeCWCard(satellite: satellite)
-                        HomePacketCard(satellite: satellite)
+                        HomeSSTVCard(satellite: satellite).id("odHome.sstv")
+                        HomeFT4Card(satellite: satellite).id("odHome.ft4")
+                        HomeCWCard(satellite: satellite).id("odHome.cw")
+                        HomePacketCard(satellite: satellite).id("odHome.packet")
                         HomeAmsatQuickReport(satellite: satellite)
                     }
                     .padding(.horizontal)
@@ -318,6 +319,16 @@ struct HomeView: View {
                 }
             }
             .padding(.bottom, 24)
+            #if DEBUG
+            // Website screenshot automation: `-odHomeScroll <sstv|ft4|cw|packet>` scrolls
+            // Home to that card once it has loaded. No-op in normal use.
+            .task {
+                guard let card = UserDefaults.standard.string(forKey: "odHomeScroll") else { return }
+                try? await Task.sleep(for: .seconds(4))
+                proxy.scrollTo("odHome.\(card)", anchor: .top)
+            }
+            #endif
+            }
         }
         .task { await store.refreshSpaceWeatherIfNeeded() }
         .task(id: passTaskKey) {
