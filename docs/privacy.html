@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Privacy Policy — OrbitDeck for iOS</title>
-    <meta name="description" content="Privacy policy for OrbitDeck for iOS. OrbitDeck does not collect personal information. Location is used only on your device for satellite calculations.">
+    <meta name="description" content="Privacy policy for OrbitDeck for iOS. OrbitDeck does not collect personal information, and has no accounts, ads or analytics. It explains each network service and permission the app uses and what is sent.">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -27,55 +27,103 @@
         <div class="prose">
             <p class="eyebrow">Privacy Policy</p>
             <h1>Privacy Policy for OrbitDeck for iOS</h1>
-            <p><strong>Effective date:</strong> August 29, 2026</p>
+            <p><strong>Last updated:</strong> November 21, 2026</p>
 
-            <p>This Privacy Policy explains how OrbitDeck for iOS ("OrbitDeck," "the app," "we," "us") handles information. OrbitDeck is developed by Paul Stoetzer, N8HM ("the developer"). We are committed to protecting your privacy. In short: <strong>OrbitDeck does not collect, store, or transmit your personal information to the developer, and contains no advertising or third-party analytics or tracking.</strong></p>
+            <p>This Privacy Policy explains how OrbitDeck for iOS ("OrbitDeck," "the app," "we," "us") handles information. OrbitDeck is developed by Paul Stoetzer, N8HM ("the developer"). We are committed to protecting your privacy. In short: <strong>OrbitDeck does not collect, store, or transmit your personal information to the developer, and contains no advertising or third-party analytics or tracking.</strong> The developer runs no servers for the app. When OrbitDeck talks to an outside service, it connects directly from your device to that service, and this policy lists each one and what it sends.</p>
 
             <h2>Information we collect</h2>
-            <p>The developer does <strong>not</strong> collect any personal information through OrbitDeck. OrbitDeck has no user accounts, no advertising, and no analytics or tracking SDKs. All of your settings, favorites, saved sites, and cached data are stored locally on your device.</p>
+            <p>The developer does <strong>not</strong> collect any personal information through OrbitDeck. OrbitDeck has no user accounts, no advertising, and no analytics or tracking SDKs. Your settings, favorites, saved sites, QSO log, recordings and cached data are stored locally on your device.</p>
 
             <h2>Location</h2>
-            <p>OrbitDeck can use your device's location to set your observer station, which is required to compute satellite pass predictions, look angles, and related information. Location is used <strong>only on your device</strong>. It is not transmitted to the developer and is not shared with any third party. Providing location is optional — you may instead enter your station manually as latitude/longitude or as a Maidenhead grid square. You can enable or revoke Location access at any time in the iOS Settings app.</p>
-
-            <h2>Credentials you choose to provide</h2>
-            <p>OrbitDeck can optionally connect to third-party amateur-radio services if you choose to enter credentials for them:</p>
+            <p>OrbitDeck can use your device's location (only while the app is in use) to set your observer station, which is required to compute satellite pass predictions, look angles, and related information. Providing location is optional: you may instead enter your station manually as latitude/longitude or as a Maidenhead grid square. You can enable or revoke Location access at any time in the iOS Settings app.</p>
+            <p>Your station position is used on your device and is never sent to the developer. It leaves your device only in these cases:</p>
             <ul>
-                <li><strong>QRZ</strong> — for callsign lookups.</li>
-                <li><strong>Space-Track</strong> — for archival orbital elements used by the Orbital History feature.</li>
-                <li><strong>hams.at API key</strong> — a personal API token from your hams.at account, used only to post activation alerts you explicitly confirm.</li>
+                <li><strong>Weather (Open-Meteo).</strong> When a screen shows weather or cloud cover for visible passes, OrbitDeck sends your station position <strong>rounded to two decimal places (about 1&nbsp;km)</strong> to Open-Meteo to get the forecast.</li>
+                <li><strong>Nearby APRS-IS stations.</strong> When you connect the APRS-IS view on the Nearby &amp; DX screen, OrbitDeck sends your station position (to three decimal places, about 100&nbsp;m) and your chosen range to the APRS-IS server as a filter, so the server returns only stations near you.</li>
+                <li><strong>DXCC and subdivision lookup.</strong> To show which DXCC entity and state/county or other subdivision your station is in, OrbitDeck uses Apple's reverse-geocoding service through iOS Core Location, which receives your station coordinates. Apple's handling of that request is covered by Apple's privacy policy. Maps are drawn with Apple MapKit.</li>
+                <li><strong>Features you use to share it</strong>: hams.at activation alerts (your observer position), AMSAT status reports and PSKReporter reports (your grid square), each described below.</li>
             </ul>
-            <p>Any passwords or API keys you enter are stored in the device's secure <strong>iOS Keychain</strong>, not in the app's preferences, and are never sent to the developer. They are transmitted only to the corresponding service, over an encrypted connection, when you use that feature. Your use of those services is governed by their own privacy policies.</p>
-            <p>When you post an activation alert to hams.at, the details you enter — including your callsign, grid squares and observer position — are sent to hams.at and published as a public alert attributed to your callsign. OrbitDeck submits an alert only when you confirm it.</p>
+            <p>Position beacons you choose to transmit over the radio with the Packet / APRS feature are broadcast publicly over the air, like any amateur-radio transmission; the packet setup's <strong>Position precision</strong> setting lets you send a less exact position.</p>
+
+            <h2>Passwords, keys and certificates</h2>
+            <p>OrbitDeck can optionally connect to third-party amateur-radio services if you choose to enter credentials for them. Secrets are stored in the device's secure <strong>iOS Keychain</strong>, as items available only on this device (they are not synced to iCloud Keychain), and are never sent to the developer:</p>
+            <ul>
+                <li>your <strong>QRZ</strong> XML password, for callsign lookups;</li>
+                <li>your <strong>Space-Track</strong> password, for archival orbital elements used by the Orbital History feature;</li>
+                <li>your <strong>hams.at API key</strong>, used only to post activation alerts you explicitly confirm;</li>
+                <li><strong>Icom network radio</strong> passwords, for rig control over your local network;</li>
+                <li>the passphrase of your <strong>LoTW certificate</strong>;</li>
+                <li>your <strong>Cloudlog/Wavelog API key</strong>;</li>
+                <li>your <strong>APRS-IS passcode</strong>, for the optional packet satgate.</li>
+            </ul>
+            <p>Your <strong>LoTW callsign certificate</strong> (the .p12 file you import) is kept in OrbitDeck's private app storage on your device, protected by iOS data protection, not in the Keychain. Non-secret settings, such as your callsign, grid, QRZ and Space-Track user names, the Cloudlog address and station profile ID, and your LoTW station location, are stored in the app's preferences on your device.</p>
+            <p>Each secret is transmitted only to the corresponding service, and only when you use that feature. Your use of those services is governed by their own privacy policies. Settings has a <strong>Clear credentials</strong> button that removes every stored OrbitDeck password and key from the Keychain (Keychain items can survive deleting the app), and factory reset can remove them along with the LoTW certificate.</p>
 
             <h2>Third-party data services</h2>
-            <p>To function, OrbitDeck downloads publicly available data from the following services. These requests are made directly from your device to each service and necessarily include your device's IP address, which those services may process according to their own policies. OrbitDeck does not send them your personal information.</p>
+            <p>To function, OrbitDeck downloads publicly available data from the following services. These requests are made directly from your device to each service and necessarily include your device's IP address, which those services may process according to their own policies. Except where noted, OrbitDeck does not send them your personal information.</p>
             <ul>
-                <li><strong>CelesTrak</strong> — orbital elements</li>
-                <li><strong>AMSAT</strong> — orbital elements and satellite status</li>
-                <li><strong>NOAA Space Weather Prediction Center</strong> — space-weather indices</li>
-                <li><strong>hamqsl.com (N0NBH)</strong> — observed sunspot number</li>
-                <li><strong>SatNOGS</strong> — transponder database</li>
-                <li><strong>hams.at</strong> — upcoming satellite activations, and posting your own activation alerts (with your API key)</li>
-                <li><strong>PSKReporter</strong> — FT4 reception reports, only if you opt in (see below)</li>
+                <li><strong>CelesTrak</strong>: orbital elements, new launches and debris groups</li>
+                <li><strong>AMSAT</strong>: the daily orbital-element bulletin, and satellite status from status.amsat.org</li>
+                <li><strong>NOAA Space Weather Prediction Center</strong>: space-weather indices</li>
+                <li><strong>hamqsl.com (N0NBH)</strong>: observed sunspot number</li>
+                <li><strong>SatNOGS</strong>: transponder database and new-launch discovery</li>
+                <li><strong>hams.at</strong>: upcoming satellite activations, and posting your own activation alerts (with your API key)</li>
+                <li><strong>Open-Meteo</strong>: weather and cloud cover, with your position rounded to about 1&nbsp;km (see Location)</li>
+                <li><strong>Space-Track</strong>: archival orbital elements, only if you enter your Space-Track login</li>
+                <li><strong>QRZ</strong>: callsign lookups, only if you enter your QRZ login (see below)</li>
+                <li><strong>PSKReporter</strong>: FT4 reception reports, only if you opt in (see below)</li>
             </ul>
             <p>OrbitDeck identifies itself and rate-limits its requests in accordance with these services' usage policies.</p>
 
-            <h2>Bluetooth and local network (rig and rotator control)</h2>
-            <p>If you use OrbitDeck's CAT (rig control) feature to Doppler-tune your transceiver, OrbitDeck communicates directly with your radio: over <strong>Bluetooth Low Energy</strong> to a BLE serial adapter, or over your <strong>local Wi-Fi network</strong> to an Icom network-capable radio. These connections are made only when you configure and connect a radio. They stay on your device and local network and are never sent to the developer. iOS requests Bluetooth and local-network permission the first time you connect. Any radio network password you enter is stored in the iOS Keychain.</p>
-            <p>The <strong>rotator control</strong> feature works the same way: it communicates directly with your antenna rotator over Bluetooth Low Energy to a BLE serial adapter, or over your local Wi-Fi network to a rotator daemon (such as rotctld or PstRotator). These connections are made only when you configure and connect a rotator, stay on your device and local network, and are never sent to the developer.</p>
+            <h2>Services that publish what you send</h2>
+            <ul>
+                <li><strong>hams.at activation alerts.</strong> When you post an activation alert, the details you enter, including your callsign, grid squares and observer position, are sent to hams.at and published as a public alert attributed to your callsign. OrbitDeck submits an alert only when you confirm it.</li>
+                <li><strong>AMSAT status reports.</strong> When you report a satellite's status (for example, from the Home report card), OrbitDeck sends the satellite, the status you chose, the time, your callsign and, if set, your grid square to status.amsat.org, which lists reports publicly.</li>
+            </ul>
 
-            <h2>Audio, logging and photos</h2>
-            <p>OrbitDeck's pass-recording, SSTV and FT4 features capture audio from a connected USB audio interface (which iOS treats as a microphone, so iOS requests microphone permission) or from a network-audio radio. Audio is captured only while you record or decode, is processed on your device, and is not sent to the developer. Recordings and decoded SSTV images are stored on your device; SSTV images are added to your photo library only when you explicitly export them (iOS requests add-only photo permission at that time.)</p>
-            <p>The <strong>QSO log</strong> is stored on your device. Uploading a QSO sends it only to the service you choose — <strong>LoTW</strong> (ARRL) or your own <strong>Cloudlog/Wavelog</strong> instance — and only when you tap upload. Your LoTW certificate is imported and kept on your device; its passphrase and any Cloudlog API key are stored in the iOS Keychain and are never sent to the developer.</p>
+            <h2>QRZ lookups</h2>
+            <p>If you enter your QRZ XML login, OrbitDeck looks up callsigns you ask about and, with "Fill in names and states from QRZ" on (Log settings), the callsigns of stations you log, to fill in an empty name and a US station's state. Each lookup sends your QRZ user name and password and the callsign looked up to QRZ (xmldata.qrz.com) over an encrypted connection.</p>
+
+            <h2>APRS-IS, DX cluster, ADS-B and telnet (Nearby &amp; DX)</h2>
+            <p>These connections are made only while you use the Nearby &amp; DX screen (or, for the satgate, while the packet decoder runs with the satgate on):</p>
+            <ul>
+                <li><strong>APRS-IS (receive-only).</strong> Connects to the APRS-IS network (rotate.aprs2.net) and logs in with your callsign and a receive-only passcode, plus the position filter described under Location. No packets are sent to APRS-IS or to the radio from this view.</li>
+                <li><strong>Packet satgate (optional, off by default).</strong> If you turn on "Satgate: forward heard packets to APRS-IS," OrbitDeck logs in to the APRS-IS server you choose (rotate.aprs2.net by default) with <strong>your callsign and your APRS-IS passcode</strong>, and forwards <strong>the packets it hears over the satellite</strong> to that server, tagged with your callsign. Those packets are other stations' public radio transmissions and may include their positions and messages; APRS-IS redistributes them publicly. The satgate never forwards your own packets, never forwards packets marked NOGATE, RFONLY or TCPIP, and never sends anything from the internet to the radio.</li>
+                <li><strong>DX cluster.</strong> Connects to the cluster you choose (dxc.ve7cc.net by default) and logs in with your callsign, as DX clusters require.</li>
+                <li><strong>ADS-B.</strong> Reads aircraft from <strong>your own</strong> dump1090/readsb/tar1090 receiver at the address you enter, normally on your local network. No outside service is used.</li>
+                <li><strong>Telnet.</strong> A plain terminal that connects only to the host you type.</li>
+            </ul>
+            <p>APRS-IS, DX clusters and telnet are unencrypted protocols by design, so what OrbitDeck sends on them (including the satgate passcode) is not encrypted in transit.</p>
+
+            <h2>Bluetooth and local network</h2>
+            <p>If you use OrbitDeck's <strong>CAT (rig control)</strong> feature to Doppler-tune your transceiver, OrbitDeck communicates directly with your radio: over <strong>Bluetooth Low Energy</strong> (to a BLE serial adapter, or the built-in Bluetooth of an IC-705 or IC-905), or over your <strong>local network</strong> to an Icom network-capable radio or a Hamlib rigctld server. The <strong>rotator control</strong> feature works the same way, over Bluetooth Low Energy or to a rotator controller on your network (such as rotctld or PstRotator). The <strong>Packet / APRS</strong> feature can use a Bluetooth LE KISS TNC or a KISS TNC on your network (such as Direwolf). These connections are made only when you configure and connect a device, stay on your device and local network, and are never sent to the developer. iOS asks for Bluetooth and local-network permission the first time they are needed.</p>
+            <p>OrbitDeck can also run <strong>rigctld and rotctld servers</strong> so programs on your local network can share its radio and rotator connections. They are <strong>off by default</strong>, run only while OrbitDeck is in the foreground or a background audio session is active, and accept connections only on your local network (not over VPN or cellular). A new client must be <strong>approved by you</strong> (allow once, always allow, or deny; an unanswered request is denied after 30&nbsp;seconds, and requests are denied while the app is in the background). Connections from the device itself are allowed, and you can turn the approval requirement off in the server settings. Keying your transmitter from the network is a separate opt-in. These server connections are not encrypted, so use them only on a network you trust.</p>
+
+            <h2>Microphone and audio</h2>
+            <p>iOS treats a USB audio interface as a microphone, so OrbitDeck asks for microphone permission to use one. OrbitDeck captures audio:</p>
+            <ul>
+                <li>from a connected <strong>USB audio interface</strong> or an Icom network-audio radio, to record passes and to decode SSTV, FT4, CW and packet;</li>
+                <li>from the device's <strong>built-in microphone</strong> only when you set one of those features to <strong>Always</strong> in Settings &rarr; Audio features and no interface is connected, or when you record a <strong>voice memo</strong> (built-in microphone or headset);</li>
+                <li>from the phone's microphone while you hold push-to-talk in <strong>remote voice</strong>, which sends your voice to your own Icom network radio on your local network.</li>
+            </ul>
+            <p>Audio is captured only while you record, decode, make a memo or talk. All decoding, including the <strong>DeepCW</strong> neural-network CW decoder (whose model is bundled in the app and runs on your device), FT4, SSTV and packet, happens <strong>on your device</strong>. Audio is never sent to the developer or to any online service. Pass recordings and voice memos are stored on your device until you share or delete them.</p>
+
+            <h2>Logging, photos and calendar</h2>
+            <p>The <strong>QSO log</strong> is stored on your device. Uploading sends QSOs only to the service you choose, <strong>LoTW</strong> (ARRL) or your own <strong>Cloudlog/Wavelog</strong> server, and only when you tap upload. LoTW uploads are signed on your device with your certificate and sent over HTTPS. Cloudlog/Wavelog uploads include your API key; OrbitDeck requires an https:// address unless the server is on your local network, where it allows http:// and warns you that the key is sent unencrypted on that network.</p>
+            <p>Decoded SSTV images are stored on your device and added to your photo library only when you export them (iOS asks for add-only photo permission then). Pass times are added to your calendar only when you choose to (iOS asks for write-only calendar access then).</p>
 
             <h2>PSKReporter reception reports (optional)</h2>
             <p>OrbitDeck can optionally upload the FT4 stations it decodes through satellites to <strong>PSKReporter</strong> (pskreporter.info), a public reception-reporting network, so that they appear on its public map. This feature is <strong>off by default</strong> and is only active if you enable "Upload FT4 reception reports" in Settings. When enabled, each report is sent directly from your device to PSKReporter and includes your callsign and grid square, the decoded station's callsign and (if heard) grid square, the downlink frequency, signal report (SNR), mode, and time. This information is inherent to amateur-radio reception reporting and is published publicly by PSKReporter under its own policies. Nothing is sent to the developer. You can turn this off at any time in Settings.</p>
 
-            <h2>Diagnostic logs</h2>
-            <p>OrbitDeck keeps an on-device diagnostic log (rig, audio, and network activity) to help troubleshoot problems. The log stays on your device and is never sent automatically. You may choose to share a log file with the developer — for example by email — when reporting an issue; only then does any log content leave your device, and only to the recipient you pick. You can disable logging or clear the logs at any time on the Diagnostics screen.</p>
-
             <h2>Notifications</h2>
-            <p>If you schedule a pass alarm, OrbitDeck uses local notifications delivered on your device. Notification permission is requested only when you first schedule an alarm. No notification data leaves your device.</p>
+            <p>OrbitDeck uses <strong>local notifications</strong>, created and delivered on your device, for pass alarms you schedule, reminders for activations you choose, and (if you use Packet / APRS in the background) alerts for messages to you, your watch list and your own packets being digipeated. iOS asks for notification permission when you first use one of these, or from the station readiness checklist. OrbitDeck does not use push notifications, and no notification data leaves your device.</p>
+
+            <h2>Live Activities</h2>
+            <p>The next-pass Live Activity on the Lock Screen, in the Dynamic Island and in the Apple Watch Smart Stack is computed and updated <strong>entirely on your device</strong>. It does not use a push server. With Background App Refresh on, iOS occasionally wakes OrbitDeck to update it from data already on the device. You can turn Live Activities off in OrbitDeck's Settings or in iOS Settings.</p>
+
+            <h2>Files, backups and diagnostic logs</h2>
+            <p>Notes are plain text files in OrbitDeck's folder in the Files app. A <strong>backup</strong> you export contains your settings, station details, log setup and activations, and goes only where you save or send it; passwords, API keys and your LoTW certificate are not included.</p>
+            <p>OrbitDeck keeps an on-device diagnostic log (rig, audio, and network activity) to help troubleshoot problems. The log stays on your device and is never sent automatically. You may choose to share a log file with the developer, for example by email, when reporting an issue; only then does any log content leave your device, and only to the recipient you pick. You can disable logging or clear the logs at any time on the Diagnostics screen. The same applies to a log file that OrbitDeck set aside because it couldn't be read: it stays on your device unless you share it.</p>
 
             <h2>Analytics, advertising, and tracking</h2>
             <p>OrbitDeck contains no third-party analytics, no advertising, and no tracking. We do not track you across apps or websites, and OrbitDeck does not use the Advertising Identifier (IDFA) or request App Tracking Transparency permission.</p>
@@ -84,13 +132,13 @@
             <p>OrbitDeck is a utility for amateur-radio operators and is not directed to children. We do not knowingly collect personal information from anyone, including children under 13.</p>
 
             <h2>Data retention and deletion</h2>
-            <p>Because OrbitDeck stores its data only on your device and the developer maintains no servers or accounts, there is no personal data held by the developer to retain or delete. You can remove all of OrbitDeck's local data by deleting the app from your device.</p>
+            <p>Because OrbitDeck stores its data only on your device and the developer maintains no servers or accounts, there is no personal data held by the developer to retain or delete. You can remove OrbitDeck's local data with factory reset or by deleting the app from your device; use Settings &rarr; Clear credentials (or factory reset) to remove passwords and keys from the Keychain. Data you have sent to a third-party service (for example, uploaded QSOs, hams.at alerts, AMSAT reports, PSKReporter spots or gated APRS packets) is held by that service under its own policies.</p>
 
             <h2>Security</h2>
-            <p>Network connections made by OrbitDeck use standard encrypted transport (HTTPS/TLS). Credentials are stored in the iOS Keychain. No method of transmission or storage is completely secure, but OrbitDeck minimizes risk by keeping your data on your device.</p>
+            <p>OrbitDeck's connections to web services use encrypted transport (HTTPS/TLS). Some amateur-radio protocols have no encryption: PSKReporter reports, APRS-IS, DX clusters, telnet, the rigctld/rotctld servers and clients, and the local radio, rotator and TNC links, as well as a Cloudlog/Wavelog server you reach over http:// on your local network. Credentials are stored in the iOS Keychain. No method of transmission or storage is completely secure, but OrbitDeck minimizes risk by keeping your data on your device.</p>
 
             <h2>Changes to this policy</h2>
-            <p>We may update this Privacy Policy from time to time. Material changes will be reflected here with a new effective date.</p>
+            <p>We may update this Privacy Policy from time to time. Material changes will be reflected here with a new date.</p>
 
             <h2>Contact</h2>
             <p>If you have questions about this Privacy Policy or OrbitDeck's privacy practices, contact the developer at <a href="mailto:n8hm@arrl.net">n8hm@arrl.net</a>.</p>

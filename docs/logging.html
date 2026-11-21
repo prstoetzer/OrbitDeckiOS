@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Logging &amp; Uploads — OrbitDeck for iOS</title>
-    <meta name="description" content="OrbitDeck for iOS logs satellite QSOs and uploads them to LoTW (signed on-device) and Cloudlog/Wavelog, with ADIF import/export and pass recordings.">
+    <meta name="description" content="OrbitDeck for iOS logs satellite QSOs on device, tracks VUCC, WAS and DXCC awards, uploads to LoTW (signed on device) and Cloudlog/Wavelog, imports LoTW confirmations, and exports ADIF and PDF reports.">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -25,56 +25,169 @@
 
     <section class="container">
         <h1>Logging &amp; Uploads</h1>
-        <p class="section-intro">OrbitDeck keeps a satellite QSO log on device and uploads it — signed for LoTW right on your iPhone or iPad, and to a self-hosted Cloudlog/Wavelog — with ADIF import/export. Pass audio recordings live alongside the log.</p>
+        <p class="section-intro">OrbitDeck keeps a satellite QSO log on your iPhone or iPad, tracks your VUCC, WAS and DXCC progress, and uploads the log to LoTW (signed right on the device) or your own Cloudlog/Wavelog server. ADIF import and export, PDF reports and voice memos round it out.</p>
 
         <div class="doc">
             <aside class="toc">
                 <h4>Contents</h4>
-                <a href="#overview">Overview</a>
+                <a href="#overview">Overview &amp; setup</a>
                 <a href="#quicklog">Quick-log on Home</a>
                 <a href="#logscreen">The Log screen</a>
+                <a href="#editor">New QSO &amp; the editor</a>
                 <a href="#fields">What's logged</a>
+                <a href="#fill">DXCC, QRZ name &amp; state</a>
+                <a href="#memos">Voice memos</a>
+                <a href="#awards">Awards</a>
                 <a href="#lotw">LoTW upload</a>
+                <a href="#confirm">LoTW confirmations</a>
                 <a href="#cloudlog">Cloudlog / Wavelog</a>
+                <a href="#resend">Re-sending</a>
                 <a href="#adif">ADIF import/export</a>
-                <a href="#recordings">Pass recordings</a>
+                <a href="#pdf">PDF log report</a>
+                <a href="#safety">Log file safety</a>
+                <a href="#recordings">Recordings &amp; FT4 activity</a>
+                <a href="#reports">Station reports</a>
                 <a href="#privacy">Permissions &amp; privacy</a>
             </aside>
 
             <div class="doc-body">
-                <h2 id="overview">Overview</h2>
-                <p>Turn on <strong>Settings &rarr; (Log screen) &rarr; Log settings &rarr; Enable logging</strong> to show a <strong>Log QSO</strong> card on Home and populate the <strong>Log</strong> screen. Every contact is stored on device as JSON; uploads mark each QSO so it is never sent twice.</p>
+                <h2 id="overview">Overview &amp; setup</h2>
+                <p>Open the <strong>Log</strong> screen (Operating Tools), then <strong>&hellip; &rarr; Log settings</strong> and turn on <strong>Enable logging</strong>. That shows a <strong>Log QSO</strong> card on Home and fills the Log screen. Also in Log settings:</p>
+                <ul>
+                    <li><strong>Station</strong>: <em>My call</em> and the <em>Default RST</em> (see <a href="#fields">RST by mode</a>).</li>
+                    <li><strong>QRZ</strong>: fill in names and US states from QRZ (needs your QRZ XML username and password in Settings).</li>
+                    <li><strong>LoTW station location</strong> and <strong>LoTW certificate</strong> (see <a href="#lotw">LoTW upload</a>).</li>
+                    <li><strong>Cloudlog / Wavelog</strong>: instance URL, station profile ID and API key (see <a href="#cloudlog">Cloudlog / Wavelog</a>).</li>
+                </ul>
+                <p>Every contact is stored on the device as JSON. Each QSO remembers which services it has been sent to, so a normal upload never sends it twice.</p>
 
                 <h2 id="quicklog">Quick-log on Home</h2>
-                <p>The Home <strong>Log QSO</strong> card is prefilled from the selected satellite, the current transponder (uplink/downlink and mode) and your station grid. Type the other station's call (and optionally their grid and RST), tap <strong>Log QSO</strong>, and it's saved — ready to upload later.</p>
+                <p>The Home <strong>Log QSO</strong> card is prefilled from the selected satellite, the current transponder (uplink and downlink frequencies and mode) and your station grid. Type the other station's call, adjust the labeled <strong>RST sent</strong> / <strong>RST rcvd</strong> fields if needed, optionally add their grid, and tap <strong>Log QSO</strong>.</p>
+                <ul>
+                    <li>The reports default by mode: 59 for voice, 599 for CW and data. With <strong>CW</strong> chosen on Home's Live Doppler card for a linear transponder, the QSO logs as CW/599.</li>
+                    <li>Tapping a callsign in the CW decoder's transcript puts it in the Call field with the mode set to CW; <strong>Use transponder mode</strong> undoes the override.</li>
+                    <li>FT4 and packet log their own QSOs automatically when an exchange completes (see <a href="digitalmodes.html">Digital Modes</a>).</li>
+                </ul>
 
                 <h2 id="logscreen">The Log screen</h2>
-                <p>The <strong>Log</strong> screen (Operating Tools) lists your contacts and pass recordings. From the &hellip; menu you can add or edit a QSO, import or export ADIF, and upload to LoTW or Cloudlog. Each QSO shows small <strong>L</strong> / <strong>C</strong> badges once it has been sent to LoTW / Cloudlog.</p>
+                <p>The Log screen lists your contacts, pass recordings and voice memos, and the FT4 activity log. Each QSO shows small <strong>L</strong> / <strong>C</strong> badges once it has been sent to LoTW / Cloudlog. The microphone button in the toolbar records a <a href="#memos">voice memo</a>. The <strong>&hellip;</strong> menu has:</p>
+                <ul>
+                    <li><strong>New QSO</strong>, <strong>Awards</strong> and <strong>Log report (PDF)</strong>.</li>
+                    <li><strong>Export ADIF</strong> and <strong>Import ADIF</strong>.</li>
+                    <li><strong>Upload to LoTW (<em>n</em>)</strong> and <strong>Upload to Cloudlog (<em>n</em>)</strong>, where <em>n</em> is the number not yet sent.</li>
+                    <li><strong>Re-send</strong>: re-send all to LoTW or Cloudlog, or select QSOs to re-send (see <a href="#resend">Re-sending</a>).</li>
+                    <li><strong>Log settings</strong>.</li>
+                </ul>
+                <p>Swipe a QSO to delete it; tap it to edit.</p>
+
+                <h2 id="editor">New QSO &amp; the editor</h2>
+                <p><strong>New QSO</strong> opens the same editor used to change a logged contact, prefilled from the selected satellite and transponder like the Home card. The editor has:</p>
+                <ul>
+                    <li><strong>Contact</strong>: call, name, labeled <strong>RST sent</strong> and <strong>RST rcvd</strong>, the worked station's grid(s), state, <strong>Time (UTC)</strong> (the date and time picker is in UTC, whatever your device's time zone), country and DXCC entity.</li>
+                    <li><strong>Satellite</strong>: satellite name, mode, optional separate uplink and downlink modes, and the downlink and uplink frequencies in <strong>Hz</strong>.</li>
+                    <li><strong>Station</strong>: your call and grid, and notes.</li>
+                    <li><strong>Uploads</strong>: <em>Uploaded to LoTW</em>, <em>Uploaded to Cloudlog</em> and <em>Confirmed in LoTW</em> toggles.</li>
+                </ul>
+                <p>Mode menus offer the common satellite modes (SSB, USB, LSB, FM, CW, AM, FT4, FT8, PKT, SSTV, DATA); free text is allowed too. The State field has a menu of US states.</p>
 
                 <h2 id="fields">What's logged</h2>
-                <p>Full parity with CardSat's satellite log: worked call, satellite, mode, uplink and downlink frequencies, RST sent/received, the worked station's grid (multiple grids for a rover, VUCC), your call and grid, time (UTC) and notes. Satellite names are normalized to the correct <strong>LoTW SAT_NAME</strong> automatically (e.g. an in-app name like <code>FOX-1B (AO-91)</code> logs as <code>AO-91</code>).</p>
+                <p>Each QSO holds the worked call, satellite, mode, uplink and downlink frequencies, RST sent and received, the worked station's grid (several grids for a rover or a grid-line/corner contact, for VUCC), name, US state (or other primary subdivision), DXCC entity and country, your call and grid, the UTC time and notes. Satellite names are normalized to the correct <strong>LoTW SAT_NAME</strong> automatically (e.g. an in-app name like <code>FOX-1B (AO-91)</code> logs as <code>AO-91</code>).</p>
+                <ul>
+                    <li><strong>RST by mode.</strong> The <em>Default RST</em> in Log settings is used as given for voice (59); CW and data modes add the tone digit (599). FT4 and FT8 log a dB report instead, so their RST starts empty.</li>
+                    <li><strong>Separate uplink and downlink modes.</strong> For a cross-mode contact (e.g. FM up, SSB down) set the uplink or downlink mode; leave them blank when they match. <em>Mode</em> stays the primary: it's what LoTW and ADIF <code>MODE</code> use. When SatNOGS lists a different uplink mode for the transponder, it's filled in for you.</li>
+                </ul>
+
+                <h2 id="fill">DXCC, QRZ name &amp; state</h2>
+                <ul>
+                    <li><strong>DXCC entity and country</strong> are resolved from the callsign for every QSO (from the Home card, the editor, FT4 and packet auto-logging, and ADIF import). QSOs logged before this existed are filled in once, automatically. You can correct either field in the editor.</li>
+                    <li><strong>QRZ name and state fill.</strong> With QRZ credentials set and <em>Fill in names and states from QRZ</em> on, OrbitDeck looks up the operator's first name (or QRZ nickname) in the background when a QSO is logged without one, and a US station's state (for WAS). It only fills empty fields, never overwrites what you typed, makes at most one lookup per second, and backs off after a login or network error. Logging never waits for it. ADIF imports are not looked up, so a big file can't flood QRZ.</li>
+                    <li>From <strong>Awards</strong>, <strong>Fill missing US states from QRZ</strong> queues every US contact that has no state yet.</li>
+                </ul>
+                <div class="note">A QRZ fill counts as an edit: if it adds a name or state to a QSO already sent to Cloudlog, that QSO's Cloudlog mark is cleared so the completed record is sent again.</div>
+
+                <h2 id="memos">Voice memos</h2>
+                <p>Tap <strong>Voice memo</strong> (on Home's Pass recording card, or the microphone button on the Log screen) and speak a note, for example the calls you worked while your hands were busy. A memo can run up to 2 minutes. When you stop, the clip is saved with your recordings and a <strong>QSO stub</strong> is added to the log with the UTC time, satellite, mode and frequencies, but no callsign.</p>
+                <p>Stubs are marked <em>Tap to add the callsign and complete this contact</em>. Open one to play the memo and fill in the call and anything else you noted, then save. Stubs without a callsign are left out of uploads, award totals, ADIF exports and PDF reports until you complete them.</p>
+                <p>Memos use the built-in microphone or a headset, or, with a USB audio interface connected, that interface's input.</p>
+
+                <h2 id="awards">Awards</h2>
+                <p><strong>&hellip; &rarr; Awards</strong> opens a sheet with your totals, computed from the log:</p>
+                <ul>
+                    <li><strong>QSOs</strong> and <strong>satellites</strong> worked.</li>
+                    <li><strong>VUCC grids</strong>: every 4-character grid in each QSO's grid field (all grids of a rover or grid-line contact).</li>
+                    <li><strong>WAS</strong>: US states out of 51 (50 states + DC), from each QSO's State field (typed, imported from ADIF or filled from QRZ). States are never guessed from a grid, since a grid can straddle a state line. The count of US QSOs still missing a state is shown.</li>
+                    <li><strong>DXCC entities</strong>, from the entity resolved from each call.</li>
+                </ul>
+                <p>Each total shows <strong>worked</strong> and, once your log carries LoTW QSL status, <strong>confirmed</strong> counts. Lists of grids, states and DXCC entities show each item as worked or confirmed; the state list is a full 51-item checklist with the ones you still need dimmed. <strong>By satellite</strong> drills down to one satellite's totals, lists and QSOs.</p>
+                <p><strong>Export CSV</strong> gives a totals block, one row per worked grid, state and entity (with the satellites it was worked on) and the per-satellite tally. <strong>Export PDF / Print</strong> makes a printable summary.</p>
+                <div class="note">The awards view is a working estimate for your own tracking, not an official award check. Confirmations come only from a LoTW download you import (see below).</div>
 
                 <h2 id="lotw">LoTW upload (signed on device)</h2>
-                <p>OrbitDeck signs a standard <code>.tq8</code> entirely on your device — no computer, no TQSL round-trip:</p>
+                <p>OrbitDeck signs a standard <code>.tq8</code> entirely on your device, with no computer and no TQSL round-trip:</p>
                 <ol>
                     <li>In TQSL on a computer, export your callsign certificate to a <strong>.p12</strong> file (with a passphrase).</li>
-                    <li>In OrbitDeck, <strong>Log settings &rarr; Import .p12 certificate</strong>, enter the passphrase. The certificate stays on your device; the passphrase is stored in the iOS Keychain.</li>
-                    <li>Fill in your <strong>station location</strong> (grid, DXCC, zones, and US state/county or a non-US subdivision as applicable).</li>
-                    <li>Tap <strong>Upload to LoTW</strong>. OrbitDeck signs each QSO (RSA over SHA-1, as LoTW requires), gzips the batch, and posts it — the whole log in one pass.</li>
+                    <li>In OrbitDeck, <strong>Log settings &rarr; Import .p12 certificate</strong>, then enter the passphrase and tap <strong>Import</strong>. The certificate file stays on your device; the passphrase is stored in the iOS Keychain. <strong>Remove certificate</strong> deletes both.</li>
+                    <li>Set your <strong>LoTW station location</strong>:
+                        <ul>
+                            <li><strong>Callsign (cert)</strong>, filled from the certificate.</li>
+                            <li><strong>DXCC entity</strong>: a searchable list, with the entities that have subdivisions first.</li>
+                            <li>The entity's <strong>primary subdivision</strong> and, where LoTW has one, the <strong>secondary subdivision</strong>, exactly as LoTW lists them: US state and county, Canadian province, Japanese prefecture and city/gun/ku, Russian oblast, and the others LoTW supports. US, Alaska and Hawaii stations must set a state (Alaska and Hawaii fill it in for you).</li>
+                            <li><strong>Grid</strong>, <strong>CQ zone</strong>, <strong>ITU zone</strong>, and an optional <strong>IOTA</strong> reference (e.g. NA-005).</li>
+                        </ul>
+                        These are signed into every upload, so set them before uploading.</li>
+                    <li>Choose <strong>Upload to LoTW</strong>. OrbitDeck signs each QSO not yet sent (RSA over SHA-1, as LoTW requires), gzips the batch and posts it to LoTW in one upload. QSOs are marked as sent only when LoTW accepts the file.</li>
                 </ol>
-                <div class="note">The signature format (field order, normalization and dates) matches TQSL's LoTW&nbsp;V2.0 specification exactly; anything else makes LoTW silently drop the QSO. Getting a certificate in the first place still requires ARRL's one-time postcard enrollment via TQSL — that can't happen on device.</div>
+                <div class="note">The signature format (field order, normalization and dates) follows TQSL's LoTW&nbsp;V2.0 specification exactly; anything else makes LoTW silently drop the QSO. Getting a certificate in the first place still requires ARRL's one-time enrollment through TQSL, which can't happen on device.</div>
+
+                <h2 id="confirm">Importing LoTW confirmations</h2>
+                <p>Download your QSLs from LoTW as an ADIF file and import it with <strong>Import ADIF</strong>. A record that matches a QSO already in your log (same base call, same satellite, same mode group (phone, CW or data), within &plusmn;2 minutes) is <strong>merged</strong>, not added again: the QSO is marked confirmed (<code>LOTW_QSL_RCVD</code> Y or V) and any empty state, grid, name or DXCC fields are filled from the download. What you logged is never overwritten, and upload marks are kept. Unmatched records are added as new QSOs.</p>
+                <p>After the import, the awards view shows confirmed totals alongside worked ones.</p>
 
                 <h2 id="cloudlog">Cloudlog / Wavelog</h2>
-                <p>Enter your instance URL, station profile ID and a read-write API key (kept in the Keychain), then <strong>Upload to Cloudlog</strong>. OrbitDeck posts the un-sent QSOs as ADIF in one request. A self-hosted Cloudlog can be configured to forward to LoTW server-side as an alternative to on-device signing.</p>
+                <p>In <strong>Log settings &rarr; Cloudlog / Wavelog</strong>, enter your instance URL (e.g. <code>https://log.example.org/index.php</code>), the station profile ID and a read-write API key. The key is kept in the iOS Keychain. Then choose <strong>Upload to Cloudlog</strong>: OrbitDeck posts the QSOs not yet sent as ADIF in one request.</p>
+                <h3>The https rule</h3>
+                <p>Cloudlog's API carries the key in the request body, so the address must start with <code>https://</code>. The one exception is a server on your local network (a private or link-local IP address, <code>localhost</code>, an unqualified name such as <code>shack</code>, or a <code>.local</code> name), where plain <code>http://</code> is allowed because many shack servers have no certificate. Log settings then warns: <em>Unencrypted: your API key is sent in plain text on this network.</em> Plain http to an internet host (including a public IP address) is blocked with an explanation.</p>
+                <h3>Checking the result</h3>
+                <p>Cloudlog and Wavelog answer "created" even when they reject individual records (duplicates, invalid fields), so OrbitDeck reads the whole reply. QSOs are marked as uploaded only when the server reports that <strong>every</strong> QSO in the batch was imported with no errors. Otherwise <strong>nothing is marked</strong>, and you see how many were accepted along with the server's own messages. Records the server already has may show as duplicates when you try again.</p>
+                <p>A self-hosted Cloudlog can also be set up to forward to LoTW on the server, as an alternative to signing on the device.</p>
+
+                <h2 id="resend">Re-sending</h2>
+                <ul>
+                    <li><strong>Edits re-send automatically.</strong> Changing the call, time, satellite, mode or frequencies clears both upload marks (those are what LoTW signs). Changing any other exported field (reports, grids, name, state, country, DXCC, notes, per-leg modes) clears only the Cloudlog mark. The corrected QSO goes out with the next upload.</li>
+                    <li><strong>Edits during an upload.</strong> If a QSO is edited (or filled from QRZ) while an upload is in progress, it isn't marked as sent; the status message says so and the new version goes next time.</li>
+                    <li><strong>Per-QSO marks.</strong> In the editor, turn <em>Uploaded to LoTW</em> or <em>Uploaded to Cloudlog</em> off to re-send just that QSO, or on to stop it being sent.</li>
+                    <li><strong>Re-send all</strong> sends the whole log again, including QSOs already marked as sent (after a confirmation). LoTW ignores exact duplicates.</li>
+                    <li><strong>Select QSOs to re-send&hellip;</strong> lets you pick contacts, then <em>Re-send to LoTW</em> or <em>Re-send to Cloudlog</em>. The selection can also be turned into a PDF.</li>
+                </ul>
 
                 <h2 id="adif">ADIF import/export</h2>
-                <p>Export your whole log as ADIF (share to any app), or import an <code>.adi</code> file to merge contacts in. Exports use the satellite ADIF conventions (<code>PROP_MODE=SAT</code>, uplink&rarr;<code>FREQ</code>/<code>BAND</code>, downlink&rarr;<code>FREQ_RX</code>/<code>BAND_RX</code>, VUCC grids).</p>
+                <p><strong>Export ADIF</strong> shares your whole log (completed QSOs) to any app. Exports use the satellite ADIF conventions: <code>PROP_MODE=SAT</code>, <code>SAT_NAME</code>, uplink&rarr;<code>FREQ</code>/<code>BAND</code>, downlink&rarr;<code>FREQ_RX</code>/<code>BAND_RX</code>, <code>GRIDSQUARE</code> plus <code>VUCC_GRIDS</code> for several grids, and <code>NAME</code>, <code>STATE</code>, <code>DXCC</code>, <code>COUNTRY</code> and <code>LOTW_QSL_RCVD</code> where known. FT4 is written as <code>MODE=MFSK</code> with <code>SUBMODE=FT4</code>. Field lengths are counted in bytes, so names with accents and other non-ASCII characters export correctly. Separate uplink and downlink modes travel in OrbitDeck's own application fields.</p>
+                <p><strong>Import ADIF</strong> reads an <code>.adi</code> file and merges it as described under <a href="#confirm">LoTW confirmations</a>: matching QSOs are updated, the rest are added. The importer is hardened against malformed files: impossible field lengths, a file truncated mid-value, and out-of-range or non-numeric frequencies are handled without losing the records that are readable.</p>
 
-                <h2 id="recordings">Pass recordings</h2>
-                <p>With an audio interface connected (see <a href="digitalmodes.html">Digital Modes</a>), the Home <strong>Pass recording</strong> card records the received audio to a compressed AAC <code>.m4a</code> tagged with the satellite and time; clips appear on the Log screen with playback and share.</p>
+                <h2 id="pdf">PDF log report</h2>
+                <p><strong>&hellip; &rarr; Log report (PDF)</strong> makes a landscape, paginated table of your QSOs: UTC, call, satellite, mode (uplink/downlink for cross-mode), uplink and downlink MHz, reports, grid, state, country, name and flags (L = sent to LoTW, C = sent to Cloudlog, Q = LoTW confirmed). Limit it to a date range (UTC) or one satellite, or make it from QSOs you selected. It opens in the share sheet: choose Print for AirPrint, or save or send the PDF. Voice-memo stubs without a callsign are left out.</p>
+
+                <h2 id="safety">Log file safety</h2>
+                <p>Your log is written atomically, so a save can never leave a half-written file.</p>
+                <ul>
+                    <li><strong>An unreadable log is never overwritten.</strong> If the QSO log (or the recordings list, SSTV image list or FT4 activity log) can't be read at launch, OrbitDeck moves it aside to <code>&lt;name&gt;.corrupt-&lt;UTC timestamp&gt;.json</code> in its Application Support folder and starts a new, empty file. A banner on the Log screen explains what happened and has a <strong>Share the preserved file</strong> button so you can send it to yourself or to the developer for recovery. If the file can't even be moved aside, OrbitDeck refuses to save over it for that session and tells you to restart the app.</li>
+                    <li><strong>Save errors are shown.</strong> If a save fails (for example, the device is full), a banner on the Log screen says so. Your latest changes are kept in memory and saved with the next successful write; the banner clears itself then.</li>
+                </ul>
+
+                <h2 id="recordings">Recordings &amp; FT4 activity</h2>
+                <p>With an audio interface connected (see <a href="digitalmodes.html">Digital Modes</a>), the Home <strong>Pass recording</strong> card records the received audio to a compressed AAC <code>.m4a</code> tagged with the satellite and time. Recordings and voice memos appear on the Log screen with playback and share. The <strong>FT4 traffic log</strong> keeps every FT4 decode and transmission for later review and can be shared as text.</p>
+
+                <h2 id="reports">Station reports</h2>
+                <p>The <strong>Exports</strong> screen (Operating Tools) has a <strong>Station &amp; outreach reports</strong> card, all shared through the share sheet so you can print them:</p>
+                <ul>
+                    <li><strong>Favorites' keps</strong>: your favorite satellites' element sets as TLE text or a PDF.</li>
+                    <li><strong>Station readiness (PDF)</strong>: the readiness checklist as a report.</li>
+                    <li><strong>Support AMSAT sheet (PDF)</strong>: a one-page handout.</li>
+                    <li><strong>Contact card</strong>: your name and callsign with a QR code to your QRZ page (set your callsign in Settings &rarr; Operator identity first).</li>
+                </ul>
 
                 <h2 id="privacy">Permissions &amp; privacy</h2>
-                <p>The log and your certificate stay on your device. Uploading sends your QSOs to LoTW (ARRL) or your Cloudlog instance only when you tap upload; credentials are stored in the iOS Keychain. See the <a href="privacy.html">privacy policy</a>.</p>
+                <p>The log, recordings and your LoTW certificate stay on your device. QSOs are sent to LoTW (ARRL) or your Cloudlog/Wavelog server only when you upload. The LoTW certificate passphrase, the Cloudlog API key and your QRZ password are stored in the iOS Keychain. QRZ lookups send the worked station's callsign to QRZ. Voice memos need microphone permission. See the <a href="privacy.html">privacy policy</a>.</p>
             </div>
         </div>
     </section>

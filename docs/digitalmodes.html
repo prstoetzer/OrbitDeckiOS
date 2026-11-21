@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Digital Modes &amp; Audio — OrbitDeck for iOS</title>
-    <meta name="description" content="OrbitDeck for iOS decodes SSTV, works full-duplex FT4 on linear transponders, and records passes — over a USB audio interface or an Icom network-audio radio.">
+    <meta name="description" content="OrbitDeck for iOS decodes CW (DeepCW neural decoder or Classic), works full-duplex FT4 on linear transponders, sends and receives packet/APRS at 1200 and 9600 baud, decodes SSTV, records passes and carries remote voice, over a USB audio interface, an Icom network radio or the built-in microphone.">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -25,78 +25,259 @@
 
     <section class="container">
         <h1>Digital Modes &amp; Audio</h1>
-        <p class="section-intro">OrbitDeck can record a pass, decode SSTV and CW, and work full-duplex FT4 on a linear transponder — all from the received audio of a <strong>USB audio interface</strong> or, experimentally, an <strong>Icom network-audio</strong> radio.</p>
+        <p class="section-intro">OrbitDeck records passes, copies CW, works full-duplex FT4 on linear transponders, sends and receives packet and APRS, decodes SSTV and carries remote voice. Everything runs from the received audio of a <strong>USB audio interface</strong>, an <strong>Icom network radio</strong> (RS-BA1 audio), or the phone's <strong>built-in microphone</strong>. Packet can also use a <strong>KISS TNC</strong> instead.</p>
 
         <div class="doc">
             <aside class="toc">
                 <h4>Contents</h4>
-                <a href="#audio">Audio interfaces</a>
+                <a href="#audio">Audio &amp; the Home cards</a>
                 <a href="#recording">Pass recording</a>
-                <a href="#sstv">SSTV</a>
-                <a href="#ft4">Full-duplex FT4</a>
                 <a href="#cw">CW decoder</a>
-                <a href="#doppler">Doppler compensation — deep dive</a>
-                <a href="#ptt">PTT for FT4</a>
+                <a href="#ft4">Full-duplex FT4</a>
+                <a href="#packet">Packet &amp; APRS</a>
+                <a href="#sstv">SSTV</a>
+                <a href="#remote">Remote voice</a>
+                <a href="#safety">Transmit safety</a>
+                <a href="#doppler">Doppler compensation, in depth</a>
                 <a href="#status">Maturity &amp; testing</a>
                 <a href="#privacy">Permissions &amp; privacy</a>
             </aside>
 
-            <div class="doc-body">
-                <h2 id="audio">Audio interfaces</h2>
-                <p>The recording, SSTV and FT4 cards appear on Home when audio is available: a <strong>class-compliant USB audio interface</strong> (via USB-C or the camera adapter), or an <strong>Icom network-audio</strong> radio (RS-BA1) that is configured and connected. Connect your radio's receive audio to the interface's input; for FT4, connect the interface's output to the radio's audio-in.</p>
-                <div class="note">iOS treats a USB audio input as a microphone, so the first time you record or decode, iOS asks for microphone permission.</div>
+            <div class="doc-body modes">
+                <h2 id="audio">Audio &amp; the Home cards</h2>
+                <p>Each audio feature is a card on Home: <strong>Pass recording</strong>, <strong>CW decoder</strong>, <strong>FT4 (full duplex)</strong>, <strong>Packet / APRS</strong>, <strong>SSTV</strong> and <strong>Remote audio (voice)</strong>. Audio comes from the first source available, in this order:</p>
+                <ol>
+                    <li>A <strong>class-compliant USB audio interface</strong> (USB-C, or the Lightning camera adapter). Connect the radio's receive audio to the interface's input. To transmit FT4 or packet, also connect the interface's output to the radio's audio or data input.</li>
+                    <li>An <strong>Icom network radio</strong> (RS-BA1 audio, e.g. the IC-9700 over its LAN port) that's configured and connected on the <a href="catcontrol.html">Rig control (CAT)</a> card. For a full walk-through, see <a href="ft4-ic9700-network.html">FT4 on the IC-9700 over the network</a>.</li>
+                    <li>The phone's <strong>built-in microphone</strong>, used only for cards you set to <strong>Always</strong> (see below). Hold the phone near the receiver's speaker.</li>
+                </ol>
+                <p>The small print at the bottom of each card says which source it's using, for example "your USB audio interface (…)", "your network radio's audio" or "the built-in microphone (hold the phone near the receiver)".</p>
 
-                <h3>Choosing which cards appear</h3>
-                <p>In <strong>Settings &rarr; Audio features</strong> each audio card (Pass recording, SSTV, FT4, Packet / APRS, CW decode, Remote audio) has an independent setting:</p>
+                <h3 id="cards">Choosing which cards appear</h3>
+                <p>Every card has its own setting in <strong>Settings &rarr; Audio features</strong> (Pass recording, SSTV decode, FT4, Packet / APRS, CW decode, Remote audio (voice)):</p>
                 <ul>
-                    <li><strong>Auto</strong> (default) — the card appears only when an audio interface is connected.</li>
-                    <li><strong>Always show</strong> — the card appears even without an interface, using the phone's <strong>built-in microphone</strong> (hold the phone near your receiver's speaker to decode/record acoustically).</li>
-                    <li><strong>Hidden</strong> — the card never appears, even with an interface plugged in. Handy if you only operate voice and want just the pass recorder without the SSTV/FT4 cards.</li>
+                    <li><strong>Auto</strong> (default): the card appears only when a USB or network audio interface is connected.</li>
+                    <li><strong>Always</strong>: the card is always shown. It still uses USB or network audio when available and falls back to the <strong>built-in microphone</strong> when not.</li>
+                    <li><strong>Hidden</strong>: the card never appears, even with an interface plugged in.</li>
                 </ul>
+                <p>Two cards have their own rules. With <strong>Auto</strong>, <strong>Packet / APRS</strong> appears when the selected satellite has a packet transponder (APRS, AFSK, packet, digipeater or G3RUH) <em>and</em> OrbitDeck can reach a radio, either through an audio interface or a chosen KISS TNC. It also stays up while packet is running. <strong>Remote audio</strong> needs a network radio and has no microphone fallback, because the phone's microphone is its transmit side.</p>
+
+                <h3 id="together">What runs together</h3>
+                <p><strong>FT4, SSTV, packet and remote voice</strong> each take the radio's audio for themselves, so only one of them runs at a time. If you start a second one, the card says which feature is using the audio. <strong>Pass recording</strong> and the <strong>CW decoder</strong> only listen, so they run alongside any of them on the same capture.</p>
 
                 <h3>Input &amp; output levels</h3>
-                <p>The SSTV and FT4 cards show a live <strong>input-level meter</strong> with a gain slider (and FT4 adds an <strong>output/TX</strong> level). Set the input so the meter rides in the green — too low buries the signal in noise, too high (red) clips and hurts decoding. The SSTV level control lives in <strong>Setup &amp; calibration</strong> and is available before you start decoding. Your gain settings are <strong>saved and restored</strong> across launches for each feature.</p>
+                <p>Each card has a live <strong>level meter</strong> with a visible track, so a quiet input still looks like a meter. It runs green, then yellow, then red near clipping. Gain sliders use a <strong>decibel scale</strong> with −/+ buttons that step 1&nbsp;dB, and they read as a multiplier (1.00×). Input gain runs from 0.25× to 40×, so even a low line-level jack (such as an IC-821's ACC/DATA output) can be brought up. FT4's <strong>Output (TX)</strong> slider only attenuates, from 0.01× (−40&nbsp;dB) to 1×. Each feature keeps its own input level, saved between launches, so changing one doesn't affect another.</p>
+
+                <h3 id="health">Audio health</h3>
+                <p>OrbitDeck watches the shared capture while a mode runs. If buffers stop arriving it shows <em>Audio input stalled — restarting capture…</em> and restarts the capture. If the USB interface is unplugged it shows <em>Audio interface disconnected — reconnect it to resume.</em> If the input stays at digital silence it shows <em>Silent input — check the selected audio device/cable.</em> These warnings appear on the recording, CW, FT4, SSTV and packet (built-in modem) cards.</p>
+
+                <h3 id="awake">Screen stays awake</h3>
+                <p>While FT4, SSTV, packet, the CW decoder or a pass recording is running, the screen stays awake automatically on any screen of the app. Auto-lock comes back as soon as the last one stops. The separate <strong>Settings &rarr; Display &rarr; Keep screen awake on Home</strong> option works as before, for using Home as a live display.</p>
 
                 <h3>Runs off the home screen and in the background</h3>
-                <p>Recording, SSTV, FT4, CAT and the rotator are all app-wide — they keep running when you navigate to other screens, and audio modes keep decoding/recording with the screen locked or the app backgrounded during a pass. If a connection drops while you're away (iOS reclaims Bluetooth and network sockets when an app is suspended), OrbitDeck re-establishes it when you return.</p>
+                <p>The audio modes, CAT and the rotator are app-wide. They keep running when you move to other screens, and the audio modes keep decoding and recording with the screen locked or the app in the background during a pass. If a connection drops while you're away (iOS reclaims Bluetooth and network sockets when an app is suspended), OrbitDeck reconnects when you return. Some transmitters deliberately stop when the app leaves the foreground; see <a href="#safety">Transmit safety</a>.</p>
+                <div class="note">iOS treats a USB audio input as a microphone, so the first time you record or decode, iOS asks for microphone permission. That one permission covers recording, SSTV, FT4, CW, packet, voice memos and the built-in-microphone fallback.</div>
 
                 <h2 id="recording">Pass recording</h2>
-                <p>The Home <strong>Pass recording</strong> card streams the received audio to a compressed <strong>AAC <code>.m4a</code></strong> file tagged with the satellite and UTC time — roughly a fifteenth the size of uncompressed WAV, so a full pass is a few MB. Recordings are listed on the <a href="logging.html#recordings">Log screen</a> with playback and share.</p>
-
-                <h2 id="sstv">SSTV</h2>
-                <p>The Home <strong>SSTV</strong> card decodes the video subcarrier live, auto-detecting the mode from the VIS header (or you can force a mode). Supported modes include Robot 36/72, Scottie S1/S2/DX, Martin M1/M2, Wraase SC2-180 and the full PD series (PD 50/90/120/160/180/240/290). The decoder locks onto the horizontal sync pulse on every line so the picture stays aligned across long modes.</p>
-                <p><strong>Doppler-aware decoding.</strong> A fast LEO on 70&nbsp;cm shifts the whole audio band during the pass, which slants the picture and casts its colors. OrbitDeck's <strong>Auto-tune</strong> (on by default) reads each line's sync pulse to measure that offset and correct it continuously, so the image stays straight and true-colored as the satellite moves. When you also have <strong>rig control</strong> connected, the app feeds its live Doppler tuning forward into the decoder so the dial steps it makes mid-image don't tear the picture (important for the long PD modes) — with no rig connected the decoder is unaffected.</p>
-                <p>Live <strong>calibration</strong> controls let you clean up a picture as it builds — <em>slant</em> (clock correction), <em>tuning</em> (receiver-offset), <em>H-shift</em> (horizontal position), and <em>contrast</em>/<em>saturation</em>. Each adjustment re-renders the current image instantly. Decoded images are saved to the dedicated <strong>SSTV Images</strong> screen (Operating Tools), where you can view them full-screen, share, delete (single or multi-select), or export to your iOS photo library.</p>
-                <p><strong>Fixing an image after the pass.</strong> Every saved image can be cleaned up from its viewer. <strong>Fix image</strong> straightens a leftover slant and adjusts brightness/contrast/saturation on the picture itself. <strong>Re-decode from recording</strong> goes further: OrbitDeck keeps the pass audio for each decode, so it can rebuild the image from scratch with different slant and Auto-tune settings — recovering geometry <em>and</em> the Doppler color cast that a picture-only edit can't. Both save a new copy and leave the original untouched.</p>
-
-                <h2 id="ft4">Full-duplex FT4</h2>
-                <p>On a linear transponder you can hear your own downlink while transmitting, so OrbitDeck runs FT4 <strong>full duplex</strong>: it decodes the downlink and transmits the uplink at the same time, on alternating 7.5-second slots. The card shows a live <strong>spectrum waterfall</strong> (with a TX-frequency marker), a scrolling WSJT-X-style <strong>decode panel</strong> (your own transmissions and any decode of your own signal are color-coded), and a countdown to the next slot. Tap <strong>Call CQ</strong> to start calling, or tap a decoded station to answer it — the auto-sequencer runs the exchange and logs the QSO. Set your <strong>TX audio frequency</strong> to drop your signal into a clear spot on the waterfall. A live <strong>Doppler-corrected RX/TX frequency readout</strong> under the pass line shows exactly where to set the radio, so you can operate FT4 by hand even without CAT. Signal reports (SNR) are calibrated to read close to WSJT-X. FT4/FT8 encode and decode use the open-source, MIT-licensed <a href="https://github.com/kgoba/ft8_lib" rel="noopener">ft8_lib</a>.</p>
-                <div class="note">
-                    <strong>FT4 runs at nearly 100% duty cycle.</strong> On a shared linear transponder, reduce power out of respect for other operators — the app shows this reminder on the FT4 card.
-                </div>
-                <p><strong>IC-9700 owners:</strong> there's a step-by-step guide to working FT4 on the 9700 entirely over its network connection (CAT and audio, no PC or USB interface) — see <a href="ft4-ic9700-network.html">FT4 on the IC-9700 over the network</a>.</p>
-
-                <h3>Doppler correction (on by default)</h3>
-                <p>The downlink Doppler drift is common to every signal on a linear transponder, so OrbitDeck flattens it in the audio domain. Two toggles under the FT4 card's setup — <strong>Doppler-correct RX audio</strong> and <strong>Doppler-correct TX audio</strong> — are <strong>on by default</strong>. RX de-chirps each received 7.5-second slot before decoding; TX pre-compensates your transmitted burst so the signal the satellite hears stays on one frequency. Both need a configured transponder.</p>
-                <p>While FT4 is running with a connected CAT radio, OrbitDeck <strong>holds the dial steady and only re-tunes at slot boundaries</strong> (between the receive and transmit slots) rather than chasing Doppler continuously — a mid-slot re-tune would shift the whole coherent burst and break the decode. Because the dial is frozen for the slot, the audio-domain correction isn't optional polish: it's what removes the within-slot drift. For exactly how this works — and why the transmit correction depends on your transponder's inversion — see the <a href="#doppler">deep dive</a> below.</p>
-
-                <h3 id="autocal">Automatic transponder calibration (opt-in)</h3>
-                <p>On a properly-netted linear transponder your own signal comes back at about the audio frequency you transmit. So while you work FT4 full duplex, OrbitDeck can measure where your own decoded signal actually lands and fold the difference into this satellite's saved <strong>calibration</strong>, refining it a little on every decode of your own signal — so both your receive and everyone else's line up better as the pass goes on. It's <strong>opt-in</strong> (<strong>Settings &rarr; Audio features &rarr; Auto-calibrate transponder from FT4</strong>), applies to linear transponders only, and is damped and clamped so a single stray decode can't throw the calibration off. You can review or clear the result on the Calibrations screen.</p>
-
-                <h3 id="pskreporter">PSKReporter reception reports</h3>
-                <p>OrbitDeck can upload the FT4 stations it decodes to <a href="https://pskreporter.info" rel="noopener">PSKReporter</a> so they show on its public map. This is <strong>opt-in</strong> — turn on <strong>Settings &rarr; PSKReporter &rarr; Upload FT4 reception reports</strong> (your callsign and grid must be set). The reported frequency is the absolute downlink RF — the Doppler-corrected downlink dial from CAT when connected, otherwise the transponder's downlink center — plus the decode's audio offset. Nothing is sent unless you enable it; see the <a href="privacy.html">privacy policy</a>.</p>
+                <p>The <strong>Pass recording</strong> card streams the received audio to a compressed <strong>AAC <code>.m4a</code></strong> file tagged with the satellite and UTC time. AAC is about a fifteenth the size of uncompressed WAV, so a full pass is a few MB. Tap <strong>Record</strong>; the headline shows the elapsed time. After <strong>Stop</strong> it reads <strong>Saved to Log · m:ss</strong> until the next recording. Set the <strong>Recording level</strong> so the meter rides in the green. Recordings are listed on the <a href="logging.html#recordings">Log screen</a> with playback and share. Recording runs alongside FT4, SSTV, packet, the CW decoder or remote voice.</p>
+                <p>The card also has a <strong>Voice memo</strong> button. Speak a short note and it's saved with your recordings. OrbitDeck also adds a QSO stub to the Log (time, satellite, mode and frequencies) for you to complete after the pass. Memos use the built-in microphone, a headset or the USB interface's input.</p>
 
                 <h2 id="cw">CW decoder</h2>
-                <p>The Home <strong>CW decoder</strong> card turns Morse code in the received audio into text — CW beacons and telemetry, and CW contacts on linear transponders. It only listens, so it runs alongside pass recording, FT4, SSTV or remote voice on the same audio interface. Show it without an interface (built-in microphone) with <strong>Settings &rarr; Audio features &rarr; CW decode &rarr; Always</strong>.</p>
-                <p>Tap <strong>Start</strong> and the decoder searches the tone range (300–1200&nbsp;Hz by default) for the strongest steady carrier, locks onto it, and follows it with <strong>AFC</strong> as Doppler or your dial moves it. A compact <strong>spectrum strip</strong> shows the range with the decoder's pitch and filter width marked; <strong>tap a trace</strong> to tune to that signal, or <strong>Lock</strong> the pitch so it stays put. The status line shows the pitch, the measured speed in WPM, and the tone's SNR. Speed is estimated from the code itself (5–50&nbsp;WPM by default, or set a fixed speed), and Farnsworth-spaced code is handled.</p>
-                <p>The transcript scrolls in a monospaced panel and starts a new line after a pause, with optional UTC timestamps. Prosigns show as <code>&lt;AR&gt;</code>, <code>&lt;SK&gt;</code>, <code>&lt;BT&gt;</code>, <code>&lt;KN&gt;</code>, <code>&lt;AS&gt;</code>, <code>&lt;BK&gt;</code> and <code>&lt;CL&gt;</code>; an unreadable character prints as <code>*</code>. <strong>Callsigns are underlined — tap one</strong> to put it in the Home <a href="logging.html">Log QSO</a> card with mode CW. Copy and Share export the transcript.</p>
-                <p><strong>Setup</strong> has the input level, search range, filter bandwidth (50/100/200&nbsp;Hz), squelch, speed range or fixed speed, AFC, and timestamps; settings are kept between launches.</p>
+                <figure class="doc-shot"><img src="img/ss-cw.png" width="460" height="1000" loading="lazy" alt="CW Decoder card on Home for AO-91 during a pass, ready to start"><figcaption>CW decoder — spectrum strip and transcript</figcaption></figure>
+                <p>The <strong>CW decoder</strong> card turns Morse in the received audio into text: CW beacons and telemetry, and CW contacts on linear transponders. It only listens, so it runs alongside pass recording, FT4, SSTV, packet or remote voice. To use it without an interface (built-in microphone), set <strong>Settings &rarr; Audio features &rarr; CW decode &rarr; Always</strong>.</p>
+                <p>Tap <strong>Start</strong>. The headline shows <em>Searching 300–1200 Hz…</em> until a tone is found, then <em>Tracking 720 Hz</em>, or <em>Locked at 720 Hz</em> once you lock it. Under it, the status line shows the <strong>pitch</strong>, <strong>speed</strong> (WPM) and <strong>SNR</strong>, plus a <strong>Lock</strong> button.</p>
+
+                <h3 id="cw-decoders">Two decoders: DeepCW and Classic</h3>
+                <p>Choose the decoder under <strong>Setup &rarr; Decoder</strong>:</p>
+                <ul>
+                    <li><strong>DeepCW</strong> (default) is a neural network that reads the whole <strong>400–1200&nbsp;Hz</strong> band. It copies weak signals and uneven hand-sent fists that defeat timing-based decoders. Text arrives <strong>in bursts, about two seconds behind the audio</strong>, because the network reads a sliding 12-second window and commits text once it stops changing. It runs entirely on the phone.</li>
+                    <li><strong>Classic</strong> is OrbitDeck's tone-tracking decoder. It locks onto one tone, filters it narrowly and times its dits and dahs. Its text appears character by character with no delay, and it has three extra settings: <strong>Filter bandwidth</strong> (50 / 100 / 200&nbsp;Hz), <strong>Squelch</strong> (0–20&nbsp;dB above the noise, default 8) and <strong>speed</strong> (adaptive 5–50&nbsp;WPM by default, or a <strong>Fixed speed</strong>). Farnsworth-spaced code is handled.</li>
+                </ul>
+                <p>The Classic demodulator always runs in the background. It drives the pitch, speed and SNR readouts and the spectrum strip, even when DeepCW writes the text. If the DeepCW model is missing from a build, Classic copies instead, and the Setup note says so.</p>
+                <p><strong>When to choose Classic:</strong></p>
+                <ul>
+                    <li>The CW tone is <strong>outside 400–1200&nbsp;Hz</strong>. DeepCW only hears that band, while Classic's search range can run from 200&nbsp;Hz to 2000&nbsp;Hz.</li>
+                    <li>You want to <strong>pick one signal out of several</strong>. Classic copies only the tone you tap on the spectrum strip or <strong>Lock</strong>, through its narrow filter. DeepCW reads the whole band whatever the readouts are tracking.</li>
+                    <li>You want text with no delay, or prosigns. Classic prints <code>&lt;AR&gt;</code>, <code>&lt;SK&gt;</code>, <code>&lt;BT&gt;</code>, <code>&lt;KN&gt;</code>, <code>&lt;AS&gt;</code>, <code>&lt;BK&gt;</code> and <code>&lt;CL&gt;</code> from the full ITU table, and an unreadable character as <code>*</code>. DeepCW's alphabet is letters, digits and <code>, . / ?</code>.</li>
+                </ul>
+
+                <h3>Spectrum strip, tuning and AFC</h3>
+                <p>A compact <strong>spectrum strip</strong> (a small waterfall) spans the search range, with the tracked pitch and filter width drawn in orange. <strong>Tap a trace</strong> to tune to that signal, or tap <strong>Lock</strong> to hold the pitch where it is. A locked pitch stops both the search and AFC. With <strong>AFC (follow drift)</strong> on (the default), the decoder follows the tone as Doppler or your dial moves it. The <strong>Search range</strong> (From / To) sets where it looks for a tone. The default is 300–1200&nbsp;Hz.</p>
+
+                <h3>Transcript and logging</h3>
+                <p>The transcript scrolls in a monospaced panel and starts a new line after a pause. Turn on <strong>Timestamps (UTC) on each line</strong> to show when each line arrived. <strong>Copy</strong> puts the transcript on the clipboard, <strong>Share</strong> sends it to another app, and <strong>Clear</strong> empties it. With logging on, <strong>callsigns are underlined</strong>: tap one to put it in the Home <a href="logging.html#quicklog">Log QSO</a> card with mode CW. <strong>Restore defaults</strong> resets the decoder settings, which are otherwise kept between launches.</p>
                 <div class="note">
-                    <strong>On a linear transponder</strong>, set the mode to <strong>CW</strong> on the Live Doppler card so the radio uses CW mode and its CW filter, then tune so the CW note falls inside the search range (about 600–800&nbsp;Hz is typical). With CAT Doppler tuning the pitch barely moves; without it, keep AFC on and use the 100 or 200&nbsp;Hz filter so the tone stays in the passband as the Doppler residual walks it.
+                    <strong>On a linear transponder</strong>, set the mode to <strong>CW</strong> on the Live Doppler card so the radio uses CW mode and its CW filter. Then tune so the CW note falls inside the band the decoder copies: 400–1200&nbsp;Hz for DeepCW (about 600–800&nbsp;Hz is typical), or the search range for Classic. The card reminds you of this. With CAT Doppler tuning the pitch barely moves. Without it, keep AFC on, and with Classic use the 100 or 200&nbsp;Hz filter so the tone stays in the passband as the leftover Doppler moves it.
+                </div>
+                <p><strong>Credit:</strong> DeepCW is by <a href="https://github.com/e04/deepcw-engine" rel="noopener">e04 (deepcw-engine)</a>, MIT License. OrbitDeck bundles the model converted to Core ML, with its own Swift version of the engine's reference pipeline. It's also credited in the app's Acknowledgments.</p>
+
+                <h2 id="ft4">Full-duplex FT4</h2>
+                <figure class="doc-shot"><img src="img/ss-ft4.png" width="460" height="1000" loading="lazy" alt="FT4 full-duplex card for RS-44, a linear transponder, with Transmit and Auto-seq switches, Call CQ and Pounce"><figcaption>FT4 — waterfall and Band Activity</figcaption></figure>
+                <p>On a linear transponder you can hear your own downlink while you transmit, so OrbitDeck runs FT4 <strong>full duplex</strong>. It decodes the downlink and transmits the uplink on alternating 7.5-second slots. The <strong>FT4 (full duplex)</strong> card shows the slot countdown, a live <strong>waterfall</strong> with the TX-frequency marker, and a WSJT-X-style <strong>Band Activity</strong> list. The headline shows <strong>N decoded</strong> for the last slot (or <em>No RX audio this slot</em>). A live <strong>Doppler-corrected RX/TX frequency readout</strong> shows where to set the radio, so you can operate by hand even without CAT. Signal reports (SNR) are calibrated to read close to WSJT-X. FT4 encode and decode use the open-source, MIT-licensed <a href="https://github.com/kgoba/ft8_lib" rel="noopener">ft8_lib</a>.</p>
+                <p><strong>IC-9700 owners:</strong> there's a step-by-step guide to working FT4 on the 9700 entirely over its network connection, with CAT and audio and no PC or USB interface: <a href="ft4-ic9700-network.html">FT4 on the IC-9700 over the network</a>.</p>
+
+                <h3>Calling and answering</h3>
+                <ul>
+                    <li><strong>Transmit</strong> enables your transmissions. It can't be turned on until your callsign is set (<em>Set your callsign in Settings to transmit.</em>). OrbitDeck uses <em>My call</em> from Log settings, otherwise the Settings &rarr; Operator identity callsign.</li>
+                    <li>Tap <strong>Call CQ</strong> to start calling (it starts FT4 if needed), or <strong>tap a decoded station</strong> to answer it. With <strong>Auto-seq</strong> on, the exchange (grid &rarr; report &rarr; RR73) and logging run automatically, with your report taken from their decoded SNR. Completed QSOs are logged with mode FT4.</li>
+                    <li>A <strong>NEXT TX</strong> panel shows the queued message, the sequence state, and when it goes out ("Sends in 4s · TX 1500 Hz on even slots"). It changes to <strong>TRANSMITTING</strong> while you're on the air.</li>
+                    <li><strong>Late start:</strong> if you call or answer within 2 seconds of the start of one of your slots, OrbitDeck still transmits in that slot. It skips the part of the burst that has already passed, so the rest stays on the slot clock.</li>
+                    <li>The sequencer ignores loose ends. If a station repeats RR73 after the QSO is complete, it gets one more 73 without a duplicate log entry. A stray 73 or RR73 from a station you haven't worked doesn't start or log a QSO. Hashed <code>&lt;…&gt;</code> callsigns are resolved from your own call and recent log calls.</li>
+                    <li>With Auto-seq off, type a <strong>TX message</strong>. The field's example uses your own call and grid. The message goes out only when you press Return, so a half-typed message never goes on the air. Choose <strong>Transmit on even slots</strong> or odd.</li>
+                    <li>If your grid is missing, a warning says CQs and replies will go out without a locator.</li>
+                </ul>
+
+                <h3>Pounce and the CQ block list</h3>
+                <p><strong>Wait-and-pounce:</strong> enter one or more callsigns or grids in <strong>Pounce on (call or grid)</strong> and turn on <strong>Pounce</strong>. OrbitDeck waits and automatically answers a matching CQ (or that station calling you) once. Matching decodes are tagged <strong>Target</strong>. <strong>Long-press</strong> any decode for <em>Work</em>, <em>Pounce on this station</em>, or <em>Block from auto-reply</em> / <em>Allow auto-reply</em>. Stations on the <strong>CQ block list</strong> (in Setup) are never answered automatically while you call CQ, but tapping their decode still works them.</p>
+
+                <h3>Band Activity</h3>
+                <p>Each row reads like WSJT-X: UTC time · SNR (dB) · <strong>DT</strong> · audio frequency · message. DT follows the WSJT-X convention: the signal's time offset from the slot start. Colors mark <strong>CQ</strong> (green), stations calling <strong>you</strong>, your own <strong>TX</strong> (orange) and your signal heard back through the transponder (<strong>self</strong>, cyan). Shading marks calls not yet in your log (<strong>new</strong>) and VUCC grids not yet in your log (<strong>grid</strong>). Tags mark pounce <strong>Target</strong>s, decodes found after subtraction (<strong>sub</strong>) and decodes from a deep re-decode (<strong>deep</strong>). The <strong>All / Me &amp; my echoes</strong> filter narrows the list to messages to you, your transmissions and your echoes.</p>
+
+                <h3>Decoding weaker stations</h3>
+                <ul>
+                    <li><strong>Subtract decoded signals (find weaker ones)</strong> (on by default): after the first pass, decoded signals are removed and the slot is decoded again (a second and third pass), finding weaker stations under strong ones.</li>
+                    <li><strong>Decode again (deep)</strong>: re-decodes the previous slot harder, using more candidates, 50 LDPC iterations and a range of chirp slopes for stations whose uplink slides. Tap the button under the waterfall or long-press the waterfall. New messages are merged into the list and tagged <em>deep</em>.</li>
+                    <li><strong>Hide decodes with |DT| over 1.5 s</strong> (on by default) drops implausibly timed decodes.</li>
+                    <li>The decoder's sync-candidate and block counts appear in Setup as a diagnostic line, while FT4 runs.</li>
+                </ul>
+
+                <h3>Waterfall</h3>
+                <p>The waterfall spans 0–3&nbsp;kHz with an orange <strong>TX</strong> marker at your transmit frequency. It tracks the noise floor quickly and averages 2–4 FFT frames per line. In Setup you can choose <strong>12 / 24 / 48 s</strong> of history (12&nbsp;s by default, the smoothest) and turn on <strong>Slot lines with UTC time</strong>. Set your <strong>TX freq</strong> (300–2700&nbsp;Hz) in Setup, or tap <strong>Clear spot</strong> to pick a quiet one.</p>
+
+                <h3 id="ft4-tune">Tune</h3>
+                <p><strong>Tune</strong> sends a steady carrier at your TX audio frequency for up to <strong>10 seconds</strong> so you can set drive and ALC. It goes through the same transmit path as a burst, so it has the same requirements:</p>
+                <ul>
+                    <li>FT4 is running, <strong>Transmit</strong> is on and your <strong>callsign</strong> is set.</li>
+                    <li>The transponder isn't FM-only or receive-only.</li>
+                    <li>No burst is on the air.</li>
+                </ul>
+                <p>When Tune is dimmed, the line under it says why (e.g. <em>Turn on Transmit to tune.</em>). Tap <strong>Stop</strong> at any time to unkey. Tapping Tune cancels a slot that was already armed to transmit. There's no elevation check, because levels are often set into a dummy load or before AOS. The TX level meter shows during Tune.</p>
+
+                <h3 id="ft4-safety">Safety checks</h3>
+                <ul>
+                    <li><strong>TX watchdog</strong> (on by default, 6 minutes, adjustable 2–15). It stops transmitting (CQ, auto-sequence or a repeated message) when nothing addressed to you has been decoded for that long, and a banner says so. Turn on Transmit or call CQ to resume.</li>
+                    <li><strong>No FT4 on FM transponders.</strong> FT4 refuses to start on an FM-only transponder, because an FM repeater carries one signal at a time and FT4's continuous duty would block everyone else. The check also runs before every burst, so switching to an FM transponder mid-session stops transmitting. Linear transponders, AO-7 included, are never blocked.</li>
+                    <li><strong>Full duplex only.</strong> FT4 won't start while the radio runs half duplex (split VFO or same-band transmit hold) for this satellite.</li>
+                    <li><strong>RF power reminder.</strong> When CAT can read the radio's power setting (CI-V, Kenwood, rigctld) and it's above about 30&nbsp;W, a reminder asks you to turn it down. It never blocks transmitting. A permanent banner reminds you that FT4 runs at nearly 100% duty cycle.</li>
+                </ul>
+                <div class="note">
+                    <strong>FT4 runs at nearly 100% duty cycle.</strong> On a shared linear transponder, reduce power out of respect for other operators. A few watts usually suffice.
                 </div>
 
-                <h2 id="doppler">Doppler compensation — deep dive</h2>
-                <p class="section-intro">How OrbitDeck keeps a coherent FT4 burst readable through the fast Doppler of a low-earth-orbit pass. This section is for the curious; you don't need any of it to operate.</p>
+                <h3 id="ft4-datamode">Data mode and audio levels</h3>
+                <p>With <strong>Settings &rarr; Audio features &rarr; Use data mode for FT4</strong> on (the default), starting FT4 on a connected radio selects its <strong>data sub-mode</strong>, so audio uses the rig's data port (ACC, USB or the network stream). Examples are USB-D/LSB-D over CI-V and PKTUSB/PKTLSB via rigctld. Stopping FT4 restores plain SSB. Data mode is only set during an FT4 session and is reapplied if a network radio reconnects mid-pass. Turn it off if you feed audio through the mic or headphone jack. Set <strong>Input (RX)</strong> and <strong>Output (TX)</strong> under <strong>Setup &amp; audio levels</strong>, so the input meter peaks in the green on a decode and TX stays modest.</p>
+
+                <h3>Doppler correction (on by default)</h3>
+                <p>On a linear transponder, the downlink Doppler drift is the same for every signal, so OrbitDeck removes it from the audio itself. Two toggles in the FT4 setup, <strong>Doppler-correct RX audio</strong> and <strong>Doppler-correct TX audio</strong>, are <strong>on by default</strong>. RX removes the drift from each received 7.5-second slot before decoding (a de-chirp). TX adds the opposite drift to your transmitted burst (a pre-chirp), so the signal the satellite hears stays on one frequency. Both need a configured transponder.</p>
+                <p>While FT4 is running with a connected CAT radio, OrbitDeck <strong>holds the dial steady and only retunes at slot boundaries</strong>, and only for the FT4 transponder. Retuning mid-slot would shift the whole burst and break the decode. Because the dial doesn't move during the slot, the audio correction is what removes the drift within the slot. For exactly how this works, and why the transmit correction depends on whether your transponder inverts, see <a href="#doppler">Doppler compensation, in depth</a> below.</p>
+
+                <h3 id="autocal">Automatic transponder calibration (opt-in)</h3>
+                <p>On a linear transponder your own signal comes back at about the audio frequency you transmit. While you work FT4 full duplex, OrbitDeck can measure where your own decoded signal actually lands and add the difference to the saved <strong>calibration</strong> for this transponder. It refines the calibration a little on every decode of your own signal, so your signal and everyone else's line up better as the pass goes on. It's <strong>opt-in</strong> (<strong>Settings &rarr; Audio features &rarr; Auto-calibrate transponder from FT4</strong>) and applies to linear transponders only. Each correction is small and capped, so a single stray decode can't throw the calibration off. You can review or clear the result on the Calibrations screen.</p>
+
+                <h3 id="pskreporter">PSKReporter reception reports</h3>
+                <p>OrbitDeck can upload the FT4 stations it decodes to <a href="https://pskreporter.info" rel="noopener">PSKReporter</a> so they show on its public map. This is <strong>opt-in</strong>: turn on <strong>Settings &rarr; PSKReporter &rarr; Upload FT4 reception reports</strong> (your callsign and grid must be set). The reported frequency is the downlink frequency plus the decode's audio offset. The downlink frequency is the Doppler-corrected dial from CAT when connected, otherwise the transponder's downlink center plus your saved calibration. Nothing is sent unless you enable it; see the <a href="privacy.html">privacy policy</a>.</p>
+
+                <h2 id="packet">Packet &amp; APRS</h2>
+                <figure class="doc-shot"><img src="img/ss-packet.png" width="460" height="1000" loading="lazy" alt="Packet / APRS card on Home with AO-91 up, the APRS / Plain text (UISS) choice, modem and ARISS path"><figcaption>Packet / APRS — monitor</figcaption></figure>
+                <p>The <strong>Packet / APRS</strong> card works APRS and UISS-style packet through satellite digipeaters and the ISS. It sends messages, positions and beacons, logs every frame per pass, and shows heard stations in a list and on a map.</p>
+
+                <h3>Connections</h3>
+                <p>Choose one under <strong>Setup &rarr; Connection</strong>:</p>
+                <ul>
+                    <li><strong>Built-in modem</strong>: <strong>1200 AFSK</strong> or <strong>9600 G3RUH</strong>, through your audio interface or network radio. The <strong>Modem</strong> menu is per satellite. <em>Auto</em> picks 9600 when the satellite's packet transponder is 4800 baud or faster or is marked G3RUH/9600. 9600 baud needs the radio's 9600 data port (flat, wide receive audio and direct modulator input) and the wide FM filter; speaker and mic audio are too filtered to decode or send it. Setup has <strong>TX delay</strong>, <strong>TX audio level</strong>, <strong>Send 3 s test signal</strong> and <strong>Off-frequency decoders (±175/±350 Hz, 1200 only)</strong>, which catch stations slightly off frequency from leftover Doppler. The 9600 decoder follows the offset itself. With CAT connected, <strong>Put the radio in data mode (CAT)</strong> selects e.g. FM-D while packet runs. Set about 3&nbsp;kHz deviation: send the test signal into a dummy load, then raise the level from low until the digipeated copy decodes.</li>
+                    <li><strong>BLE KISS</strong>: the radio's own TNC through a Bluetooth LE KISS adapter. The Kenwood <strong>TH-D74/D75</strong> only offer Bluetooth Classic, which iOS can't open, so they need the <strong>B.B. Link</strong> adapter (or a compatible ESP32 or Raspberry Pi bridge). Set the radio's KISS interface to Bluetooth (menu 983). With <strong>Tune the radio to the packet frequency (B.B. Link)</strong> on, OrbitDeck puts the radio on the satellite's packet frequency. The adapter serves one app at a time, so CAT over the same adapter isn't available while packet runs.</li>
+                    <li><strong>KISS TCP</strong>: KISS over TCP to <strong>Direwolf</strong> (default port <strong>8001</strong>), the <strong>UZ7HO</strong> soundmodem (8100) or a network TNC on your LAN. That software runs the modem and keys the radio, and OrbitDeck reconnects if the link drops.</li>
+                </ul>
+
+                <h3>Receive-only monitoring</h3>
+                <p>You don't need a callsign to listen. Without one, packet starts in <strong>receive-only</strong> mode (<em>Receive only — set your callsign in Settings to send, beacon or gate to APRS-IS.</em>). Every transmit path checks for a callsign itself: sending, macros, beacons, the test signal and the satgate login.</p>
+
+                <h3>Per-satellite setup</h3>
+                <p>Each satellite keeps its own <strong>Format</strong>, <strong>Modem</strong>, <strong>Minimum elevation</strong> and <strong>Path</strong>. The path defaults to ARISS, with presets ARISS, APRSAT, WIDE2-1, ARISS,WIDE2-1 and Direct (no path). Formats:</p>
+                <ul>
+                    <li><strong>APRS</strong>: a message to CQ (or to no one) goes out as an APRS status; a message to a callsign goes out as an APRS message, numbered for acks if you request them.</li>
+                    <li><strong>Plain text (UISS)</strong>: UISS-style unproto text. The addressee is the AX.25 destination (CQ by default) and your text is sent as typed, e.g. <code>N0CALL-6&gt;CQ,ARISS:CQ FN31</code>.</li>
+                </ul>
+                <p>Station settings include the <strong>SSID</strong> (shown as "SSID -6", the usual satellite SSID; or None), <strong>Position precision</strong> (Exact, ≈&nbsp;200&nbsp;m, ≈&nbsp;2&nbsp;km (default), ≈&nbsp;20&nbsp;km or Grid square center) and a <strong>Position comment</strong>.</p>
+
+                <h3>Sending, macros and acks</h3>
+                <p>Type a <strong>To</strong> call and a <strong>Message</strong> and tap <strong>Send</strong>, or tap a quick message. To fill in To, tap a frame in the monitor, <strong>Reply</strong> on a heard station, or a station on the map. Quick messages are editable macros (up to 12) with placeholders <code>{MYCALL}</code> <code>{MYGRID}</code> <code>{MYGRID4}</code> <code>{CALL}</code> (the To field) and <code>{HEARD}</code> (calls heard this pass, like UISS's MHeard). A macro of just <code>{POSITION}</code> sends your position, and a macro starting with CQ always goes to CQ. <strong>Number my messages (request acks)</strong> adds message numbers. <strong>Resend unacknowledged messages (2×, 30 s apart)</strong> then retries automatically, and the monitor shows <em>awaiting ack</em>, <em>retry 1/2</em>, <em>acked</em> or <em>no ack</em>. Retries are dropped if the satellite changes, because the old path is in the frame, and they wait for a known elevation. <strong>Acknowledge messages to me</strong> is off by default, because every ack uses digipeater time on a busy pass.</p>
+
+                <h3>Beacons and minimum elevation</h3>
+                <ul>
+                    <li><strong>Timed beacon</strong>: off, or every 1–30 minutes while the satellite is up.</li>
+                    <li><strong>Beacon sends</strong>: Position, Status text or Alternate (taking turns). Status text uses the same placeholders and goes out as an APRS status or as plain text to CQ, following the satellite's format.</li>
+                    <li><strong>Beacon when the satellite is first heard</strong>: one position as soon as the first digipeated frame of a pass arrives, then the timed beacon continues.</li>
+                    <li>Automatic beacons are never closer than 1 minute apart.</li>
+                    <li><strong>Minimum elevation</strong> (global, with a per-satellite override) applies to sending, beacons and message retries. With <strong>Block sending below the minimum elevation</strong> on (the default), the card shows when sending will be allowed again ("Below the horizon · AOS 14:05 (in 12 min)").</li>
+                </ul>
+
+                <h3>Monitor and filters</h3>
+                <p>The <strong>Monitor</strong> tab lists the latest frames, with the full <strong>via</strong> path. A <code>*</code> marks the digipeater that repeated a frame, and satellite digipeaters (RS0ISS, ARISS, PSAT and others) are highlighted. Tags mark <em>TX</em>, <em>MY DIGI</em> (your frame digipeated, with the delay), <em>TO ME</em>, <em>CQ</em>, <em>OBJ</em>, <em>ITEM</em>, <em>WX</em>, <em>STS</em>, <em>BCN</em> and <em>TLM</em>. Filter by <strong>Call</strong> or <strong>Text</strong>, or from the filter menu choose <strong>Only my traffic</strong>, <strong>Digipeated only</strong>, <strong>Hide beacons</strong>, <strong>Hide telemetry</strong> or <strong>Hide status</strong>. <strong>Raw TNC2</strong> shows the frames as raw text. OrbitDeck decodes APRS <strong>objects</strong>, <strong>items</strong> (including killed ones), <strong>weather</strong> (on its own or inside positions) and <strong>third-party</strong> packets. The card's status lines show <em>Channel busy</em>, <em>Heard yourself via the satellite</em>, and digipeat stats (sent, digipeated with success %, median delay, and this pass's frames, stations and frames per minute).</p>
+
+                <h3>Stations and the APRS map</h3>
+                <p>The <strong>Stations</strong> tab lists heard stations with their APRS symbol, grid, distance and bearing, frame count, last-heard time and any weather. Tap <strong>Reply</strong> to address a station or <strong>Log</strong> to log the contact (mode PKT). The <strong>Map</strong> tab plots heard stations by APRS symbol, with objects and items, your own station and the satellite's live <strong>footprint</strong>. Show <strong>This pass</strong> or <strong>All heard</strong>, and tap a station to put its call in To. With <strong>Log QSOs automatically</strong> on (the default), OrbitDeck logs a PKT QSO once you and a station have each sent the other's call and the exchange is confirmed. A station already logged on this satellite in the last 30 minutes isn't logged again.</p>
+
+                <h3>Alerts and speech</h3>
+                <p>Optional <strong>Alerts</strong> for <strong>A message to me</strong>, <strong>A watched callsign or word</strong> (a watch list such as "W1AW, RS0ISS, field day") and <strong>My frame was digipeated</strong>. You get a haptic and a sound while OrbitDeck is open, or a notification in the background, and the same alert repeats at most once a minute. <strong>Read messages to me aloud</strong> (and <strong>Also read bulletins</strong>) speaks them. Sounds and speech are skipped whenever the phone's audio output could reach the radio, including any time a USB audio interface is connected, and never play during transmit.</p>
+
+                <h3>Pass log</h3>
+                <p>Every frame heard or sent while packet runs is saved, one session per pass (the last 30 are kept). Open <strong>Pass log</strong> on the card for the session list (the running one is marked LIVE). Each session shows statistics: frames and stations heard, frames sent, digipeated with success %, median digipeat delay, frames per minute and the UTC time span. It exports as <strong>Text (TNC2)</strong> (UISS-style) or <strong>CSV</strong>.</p>
+
+                <h3 id="satgate">Satgate (RF &rarr; APRS-IS)</h3>
+                <p><strong>Satgate: forward heard packets to APRS-IS</strong> is off by default. When on, it forwards packets heard through the satellite to APRS-IS (aprs.fi and others), with your callsign as the gateway (<code>qAR</code>). It's <strong>receive-only</strong>: nothing from the Internet is ever transmitted. It never gates your own frames, duplicates within 30&nbsp;s, or packets marked NOGATE, RFONLY or TCPIP. Third-party packets are unwrapped first. Enter your APRS-IS <strong>Passcode</strong>, which is stored in the iOS Keychain. The server defaults to rotate.aprs2.net:14580 and the login SSID to -10. The status line shows the connection, whether the server verified your passcode, and how many packets were gated. <strong>Reconnect</strong> applies a new passcode. The satgate runs only while packet runs, in the foreground or in the background with audio.</p>
+
+                <h3>Channel access and the PTT watchdog</h3>
+                <p><strong>Duplex</strong> is Automatic, Half duplex or Full duplex. Automatic is full duplex only on a crossband transponder, where you can hear your own downlink. Half duplex waits for a clear channel, using <strong>Persistence</strong>, <strong>Slot time</strong> and <strong>Max wait for a clear channel</strong>, and ignores your own echo. The <strong>PTT watchdog</strong> (default 10&nbsp;s, up to 60) unkeys any transmission that runs too long. OrbitDeck keys over CAT when it can; otherwise use VOX. Keep transmissions short and infrequent: the channel is shared by everyone in the footprint, and a 1-minute beacon is the accepted minimum.</p>
+
+                <h2 id="sstv">SSTV</h2>
+                <figure class="doc-shot"><img src="img/ss-sstv.png" width="460" height="1000" loading="lazy" alt="SSTV card on Home for AO-91 with automatic VIS mode detection and automatic start and stop"><figcaption>SSTV — live decode</figcaption></figure>
+                <p>The <strong>SSTV</strong> card decodes pictures live, and the image builds as it arrives. Tap <strong>Start</strong>; the headline shows <em>Idle</em>, <em>Listening…</em> or the detected mode. The <strong>Mode</strong> picker defaults to <strong>Auto-detect (VIS)</strong>, or you can force a mode. Supported modes include Robot 36/72, Scottie S1/S2/DX, Martin M1/M2, Wraase SC2-180, the full PD series (PD 50/90/120/160/180/240/290), and the 128-line <strong>Martin M3/M4</strong> and <strong>Scottie S3/S4</strong>, which are detected from the VIS header. The decoder locks onto the sync pulse on every line, so the picture stays aligned across long modes.</p>
+
+                <h3>Weak-signal robustness</h3>
+                <ul>
+                    <li><strong>Per-satellite expected modes.</strong> OrbitDeck knows which modes common SSTV satellites send (the ISS: PD 120, PD 180, Robot 36; UmKA-1 and SakhaCube: Robot 36). The card lists them under the Mode picker.</li>
+                    <li><strong>Damaged-VIS fallback.</strong> When the VIS header is damaged, or you join a picture mid-transmission with no header at all, the decoder chooses among the expected modes by line timing. A picture picked up partway is placed at the bottom of the frame, where its lines belong.</li>
+                    <li><strong>Robot 36/72 guard.</strong> A weak Robot 36 header often reads as Robot 72. The detected mode is checked against the measured line timing over the first lines and corrected.</li>
+                    <li><strong>Repairs.</strong> Noisy lines (garbled sync, FM clicks) are rebuilt from good neighboring lines. <strong>Chroma smoothing</strong> lightly smooths color speckle in Robot and PD pictures.</li>
+                    <li><strong>Combined copies.</strong> When the same picture is repeated during a session, OrbitDeck saves a combined copy (<em>combined ×3</em>) alongside the originals, which cleans up noise. A newer combination with more copies replaces the earlier one.</li>
+                    <li><strong>Partial captures</strong> are saved and labeled <em>(partial)</em>.</li>
+                </ul>
+
+                <h3>Auto start/stop by elevation</h3>
+                <p>Turn on <strong>Auto start/stop by elevation</strong> and set <strong>Start above</strong> (0–60°). The card shows <em>Armed</em>, starts decoding when the satellite rises above that elevation, and stops after it sets. Keep OrbitDeck open while armed, because iOS may suspend it in the background before audio starts.</p>
+
+                <h3>Doppler-aware decoding and calibration</h3>
+                <p>A fast LEO on 70&nbsp;cm shifts the whole audio band during the pass, which slants the picture and tints its colors. <strong>Auto-tune (Doppler)</strong> (on by default) reads each line's sync pulse to measure that shift and correct it continuously. With <strong>rig control</strong> connected, the app also tells the decoder about its own Doppler tuning steps, so a mid-image dial step doesn't tear the picture. This matters most for the long PD modes. Under <strong>Setup &amp; calibration</strong> you can set the <strong>Input level</strong> before decoding, along with <em>slant</em>, <em>tuning</em>, <em>H-shift</em>, <em>contrast</em> and <em>saturation</em>, and <strong>Reset calibration</strong>. Each adjustment redraws the current image immediately.</p>
+                <p>Decoded images are saved to the <strong>SSTV Images</strong> screen (Operating Tools). There you can view them full screen, share, delete (one or several) or export to Photos. <strong>Fix image (slant / color)</strong> straightens a leftover slant and adjusts the picture's brightness, contrast and saturation. <strong>Re-decode from recording</strong> rebuilds the image from the saved pass audio with different slant and Auto-tune settings, which recovers geometry <em>and</em> the Doppler color tint that a picture-only edit can't. Both save a new copy and leave the original untouched.</p>
+
+                <h2 id="remote">Remote voice</h2>
+                <p>The <strong>Remote audio (voice)</strong> card turns the phone into the radio's speaker and microphone for an SSB or FM voice QSO. It needs an <strong>Icom network (RS-BA1) radio</strong> connected over CAT. Without one, <strong>Listen</strong> is disabled and the card says why. With a USB interface, iOS can capture only one input at a time, and that input is the radio's receive audio, so the phone's microphone isn't available to transmit. Use earphones to avoid feedback.</p>
+                <p>Tap <strong>Listen</strong>, then <strong>hold HOLD TO TRANSMIT</strong> to talk; it reads <em>ON AIR — release to stop</em>. The transmit safeguards:</p>
+                <ul>
+                    <li>The radio is keyed only <strong>after the microphone audio is flowing</strong>, so you never send an empty carrier. If audio can't start, nothing is keyed.</li>
+                    <li>A single transmission is limited to <strong>3 minutes</strong>. Release and press again to keep talking.</li>
+                    <li>It <strong>unkeys</strong> when you lift your finger, when the touch is interrupted (gesture canceled), when the control leaves the screen, and when the app leaves the foreground (Control Center, a call, the lock button, the app switcher).</li>
+                    <li>It refuses to key on a receive-only transponder. Without CAT PTT, it sends microphone audio only, for VOX.</li>
+                </ul>
+                <p>Remote voice is exclusive with FT4, SSTV and packet, but pass recording runs alongside. The network audio path is experimental, so validate it on your radio.</p>
+
+                <h2 id="safety">Transmit safety</h2>
+                <p>FT4, Tune, packet, remote voice and the rigctld network server all key the radio through <strong>one PTT authority</strong>:</p>
+                <ul>
+                    <li><strong>One transmitter at a time.</strong> If another feature is keyed, a request is refused with a reason (<em>Transmitter in use by packet — not keyed.</em>). Key and unkey requests are handled in order, so an unkey is never overtaken by a later key.</li>
+                    <li><strong>Maximum key times.</strong> Every owner has a backstop above its own limit (about 30&nbsp;s for an FT4 burst, 20&nbsp;s for Tune, the packet watchdog plus 5&nbsp;s, and a little over 3 minutes for remote voice and network clients), and nothing stays keyed longer than 4 minutes.</li>
+                    <li><strong>Stop always unkeys</strong>, including a key that hasn't gone out yet. So do Stop all, CAT disconnect and a dropped link. If an unkey can't be confirmed, OrbitDeck warns you to check the radio and retries the unkey when it reconnects.</li>
+                    <li><strong>Background:</strong> FT4 and packet sessions keep transmitting with the screen locked (the FT4 sequence, packet beacons and acks). Remote voice, Tune and network-client keys are released when the app leaves the foreground.</li>
+                    <li>Transmitting is refused on a transponder with no uplink (receive only).</li>
+                </ul>
+                <p>For the full picture, including network PTT and client approval, see <a href="catcontrol.html#safety">Rig Control: Transmit safety</a>.</p>
+
+                <h3 id="ptt">PTT for FT4 and packet</h3>
+                <p>When a CAT radio is connected, OrbitDeck keys transmit over CAT automatically: CI-V, Yaesu, Kenwood, <a href="catcontrol.html">rigctld</a> and Icom network. If your radio has no CAT PTT, use <strong>VOX</strong> or key by hand. The FT4 card shows a prominent <em>TRANSMIT NOW — key your radio (VOX / manual PTT)</em> indicator at the start of each of your slots. A KISS TNC (BLE or TCP) keys its own radio.</p>
+
+                <h2 id="doppler">Doppler compensation, in depth</h2>
+                <p class="section-intro">How OrbitDeck keeps an FT4 burst readable through the fast Doppler shift of a low-earth-orbit pass. This section is for the curious; you don't need any of it to operate.</p>
 
                 <h3>Why Doppler breaks FT4</h3>
                 <p>An FT4 transmission is a continuous-phase 4-GFSK burst: 105 symbols at a 0.048&nbsp;s symbol period (≈4.48–5&nbsp;s on the air), with the four tones spaced 20.83&nbsp;Hz apart. The decoder recovers each symbol by finding which tone bin holds the energy, coherently, across the whole burst. If the signal's frequency <em>slides</em> during the burst, each tone smears across bins and the decode collapses.</p>
@@ -130,19 +311,24 @@
                     <strong>Most linear transponders invert</strong> (RS-44, the CAS/XW birds, AO-7 mode B, …), and OrbitDeck keys their uplink in LSB when the downlink is USB. Applying the USB sign on an inverting bird doesn't just fail to help — it <strong>doubles</strong> the drift, so everyone reports you smearing. OrbitDeck derives the uplink sideband from the transponder's inversion flag and flips the correction automatically; the slope is anchored to the slot start so it matches the dial that was stepped at the boundary.</div>
 
                 <h3>Starting the burst on time</h3>
-                <p>FT4's signal occupies only ≈5&nbsp;s of the 7.5&nbsp;s slot, leaving dead air at the end. OrbitDeck uses that tail: on a transmit slot it steps the dial and keys PTT <strong>before</strong> the boundary, so the burst begins right on time instead of after the CAT round-trips. Receiving stations see this as your <code>dT</code> — the offset of your signal from the slot start — and it should sit well under a few tenths of a second. (Earlier builds could start ≈0.8&nbsp;s late, which both hurt your decodes and ate into the decode window.)</p>
+                <p>FT4's signal occupies only ≈5&nbsp;s of the 7.5&nbsp;s slot, leaving dead air at the end. OrbitDeck uses that tail: on a transmit slot it steps the dial and keys PTT about half a second <strong>before</strong> the boundary, so the burst begins right on time instead of after the CAT round-trips. Receiving stations see this as your <code>DT</code> — the offset of your signal from the slot start — and it should sit well under a few tenths of a second.</p>
 
                 <h3>Putting it together</h3>
                 <p>On a connected CAT radio, one FT4 cycle looks like this: at the slot boundary the dial steps to the new coarse Doppler and then holds; on receive slots the recorded audio is de-chirped and decoded; on transmit slots PTT is pre-armed in the previous slot's dead air and the burst is synthesized with a sideband-correct pre-chirp so the satellite hears a steady tone. The dial handles the big, slow, between-slot motion; the audio handles the small, smooth, within-slot motion. Neither double-corrects the other, because the dial never moves inside a slot.</p>
 
-                <h2 id="ptt">PTT for FT4</h2>
-                <p>When a CAT radio is connected, OrbitDeck keys transmit over CAT automatically — CI-V, Yaesu, Kenwood, <a href="catcontrol.html">rigctld</a>, and Icom network. If your radio has no CAT PTT, use <strong>VOX</strong> or key manually: the FT4 card shows a prominent <em>TRANSMIT NOW</em> indicator at the start of each of your slots so you key in time.</p>
-
                 <h2 id="status">Maturity &amp; testing</h2>
-                <p>These features are new in 0.9.14. SSTV and FT4 decode from a USB audio interface have been validated on-air; the SSTV calibration controls help with marginal or slanted pictures. The <strong>Icom network-audio path is experimental</strong> and best validated on your own radio — it now re-establishes automatically if the RS-BA1 link drops and reconnects mid-pass, rather than going silent for the rest of the pass. The <strong>CW decoder</strong> is new in 1.1 and has been exercised against synthesized, noisy, drifting CW; on-air reports are especially welcome. Feedback from on-air use is welcome.</p>
+                <p>SSTV and FT4 decoding from a USB audio interface have been validated on the air since 0.9.14. The 1.1 additions have been tested against synthesized, noisy and drifting signals and in the simulator. These still need on-air confirmation, and reports are especially welcome:</p>
+                <ul>
+                    <li>The <strong>CW decoder</strong> (DeepCW and Classic) on a real downlink.</li>
+                    <li>FT4 <strong>subtraction, deep decode and DT</strong>, the RF-power read on each radio, and <strong>Tune</strong> keying.</li>
+                    <li><strong>9600-baud packet</strong> working with other stations' equipment.</li>
+                    <li>SSTV thresholds and <strong>Martin M3/M4 and Scottie S3/S4</strong>.</li>
+                    <li>Data-mode switching (FM-D, PKT) on each radio.</li>
+                </ul>
+                <p>The <strong>Icom network-audio path is experimental</strong> and best checked on your own radio. It reconnects automatically if the RS-BA1 link drops mid-pass instead of going silent for the rest of the pass.</p>
 
                 <h2 id="privacy">Permissions &amp; privacy</h2>
-                <p>Audio is captured only while you record or decode, and stays on your device (SSTV images are saved to the app; you choose when to export to Photos). See the <a href="privacy.html">privacy policy</a>.</p>
+                <p>Audio is captured only while you record, decode or make a memo, and it stays on your device. CW decoding, including the DeepCW network, runs on the phone. SSTV images are saved in the app, and you choose when to export them to Photos. Packet alerts ask for notification permission the first time you turn one on. Two features send data off the device, and only if you turn them on. <strong>PSKReporter</strong> uploads the FT4 stations you decode, with your callsign and grid. The packet <strong>satgate</strong> sends the packets you hear, with your callsign and APRS-IS passcode, to the APRS-IS server you choose. See the <a href="privacy.html">privacy policy</a>.</p>
             </div>
         </div>
     </section>

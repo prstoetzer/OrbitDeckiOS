@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>OrbitDeck for iOS — Amateur satellite tracking</title>
-    <meta name="description" content="OrbitDeck for iOS is a comprehensive amateur-radio satellite tracker for iPhone and iPad: passes, Doppler, look angles, link budgets, orbital analysis, space weather, and classic OSCARLOCATOR overlays.">
+    <meta name="description" content="OrbitDeck for iOS is an amateur-radio satellite station for iPhone and iPad: passes, Doppler, rig and rotator control, FT4, CW, packet/APRS and SSTV, logging with LoTW and awards, automatic satellite switching, and a next-pass Live Activity.">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -27,7 +27,8 @@
         <div class="container">
             <img class="hero-icon" src="img/appicon.png" width="112" height="112" alt="OrbitDeck app icon">
             <h1>OrbitDeck for iOS</h1>
-            <p class="tagline">A comprehensive amateur-radio satellite tracker for iPhone and iPad — passes, Doppler, look angles, link budgets, orbital analysis, live space weather, and classic OSCARLOCATOR overlays.</p>
+            <p class="tagline">A complete amateur-radio satellite station for iPhone and iPad — passes and Doppler, rig and rotator control, FT4, CW, packet/APRS and SSTV, logging with LoTW and awards, and a Live Activity that counts down to your next pass.</p>
+            <p class="eyebrow"><a href="#whats-new">New in version 1.1</a></p>
             <div class="appstore-row">
                 <a class="appstore" href="https://apps.apple.com/app/orbitdeck/id6802070968" rel="noopener">
                     <img src="img/Download_on_the_App_Store_Badge_US-UK_RGB_blk_092917.svg" width="120" height="40" alt="Download on the App Store">
@@ -42,155 +43,282 @@
     </section>
 
     <section class="container">
-        <h2>See it in action</h2>
-        <p class="section-intro">A few screens from OrbitDeck on iPhone.</p>
-        <div class="shots">
-            <figure><img src="img/ss-home.png" width="460" height="1000" loading="lazy" alt="Home dashboard with live look angles and a polar sky plot"><figcaption>Home — live look angles &amp; sky plot</figcaption></figure>
-            <figure><img src="img/ss-track.png" width="460" height="1000" loading="lazy" alt="Track screen with a polar sky view of the pass"><figcaption>Track — polar sky view</figcaption></figure>
-            <figure><img src="img/ss-globe.png" width="460" height="1000" loading="lazy" alt="Animated 3D globe with the satellite ground track"><figcaption>3D globe</figcaption></figure>
-            <figure><img src="img/ss-groundtrack.png" width="460" height="1000" loading="lazy" alt="Ground-track map with footprint"><figcaption>Ground track</figcaption></figure>
-            <figure><img src="img/ss-passes.png" width="460" height="1000" loading="lazy" alt="Next-pass predictions with quality scoring"><figcaption>Next passes</figcaption></figure>
-            <figure><img src="img/ss-schedule.png" width="460" height="1000" loading="lazy" alt="Daily schedule of every favorite's passes by day"><figcaption>Daily schedule</figcaption></figure>
-            <figure><img src="img/ss-radar.png" width="460" height="1000" loading="lazy" alt="All-sky radar of every favorite satellite at once"><figcaption>All-sky radar</figcaption></figure>
+        <h2>About OrbitDeck</h2>
+        <p class="section-intro">OrbitDeck computes passes, Doppler, footprints and link budgets from live orbital elements and runs natively on iPhone and iPad. Version 1.1 turns it from a tracker into a station controller: it decodes CW and packet on the downlink, drives two radios and a rotator, switches satellites automatically as passes begin, keeps your log ready for LoTW and awards, and shows the next pass on the Lock Screen while the app is closed. It is a companion to the OrbitDeck desktop app and CardSat by Paul Stoetzer, N8HM.</p>
+    </section>
+
+    <section class="container" id="whats-new">
+        <h2>What's new in 1.1</h2>
+        <p class="section-intro">The biggest update since 1.0. The highlights are below; the <a href="documentation.html">documentation</a> covers every screen and setting.</p>
+        <div class="grid">
+            <div class="card">
+                <h3>CW decoder</h3>
+                <p>Copy Morse on the downlink. The DeepCW neural decoder is the default and handles weak signals and uneven fists; the Classic decoder is still available. Tap a decoded callsign to log it.</p>
+            </div>
+            <div class="card">
+                <h3>Packet &amp; APRS</h3>
+                <p>Built-in 1200 and 9600 baud modems or a KISS TNC over Bluetooth&nbsp;LE or TCP, APRS messaging and beacons through satellites and the ISS, a map of heard stations, a per-pass log and an optional receive-only satgate.</p>
+            </div>
+            <div class="card">
+                <h3>Awards &amp; a better log</h3>
+                <p>VUCC grids, WAS, DXCC and per-satellite totals; a LoTW station-location picker with IOTA; voice memos that become QSO entries; and PDF log reports.</p>
+            </div>
+            <div class="card">
+                <h3>Station control</h3>
+                <p>Two-radio stations with satellite rigs as legs, a live tune-mode selector, a one-tap Stop all, and rigctld/rotctld servers (with client approval) so desktop programs can share OrbitDeck's radio and rotator links.</p>
+            </div>
+            <div class="card">
+                <h3>Automatic satellite switching</h3>
+                <p>SatPC32-style priority switching, with a KlaTrack-style pass timeline on Home. The radio, rotator and Live Activity follow along.</p>
+            </div>
+            <div class="card">
+                <h3>Rotator upgrades</h3>
+                <p>Manual control, position read-back with a stall warning, a self-test, and Sun and Moon targets for sun-noise checks and EME.</p>
+            </div>
+            <div class="card">
+                <h3>Live Activity, Dynamic Island &amp; Apple Watch</h3>
+                <p>The next pass on the Lock Screen and in the Dynamic Island, now running through the pass and on to the next while OrbitDeck is closed, with a compact layout for the Apple Watch Smart Stack.</p>
+            </div>
+            <div class="card">
+                <h3>Planning extras</h3>
+                <p>Weather and cloud cover for visible passes, activation reminders, a Nearby &amp; DX hub, backup &amp; restore, in-app Help and a station readiness checklist.</p>
+            </div>
+            <div class="card">
+                <h3>Safer transmitting</h3>
+                <p>One transmitter authority for every mode, guaranteed unkey on Stop and disconnect, maximum key times, and approval before a network client can use your radio or rotator.</p>
+            </div>
         </div>
     </section>
 
     <section class="container">
-        <h2>Everything the satellite operator needs</h2>
-        <p class="section-intro">OrbitDeck computes passes, Doppler, footprints, and link budgets from live orbital elements, and runs natively on both iPhone and iPad. It is a companion to the OrbitDeck desktop app and CardSat by Paul Stoetzer, N8HM.</p>
+        <h2>See it in action</h2>
+        <p class="section-intro">Screens from OrbitDeck 1.1 on iPhone.</p>
+        <div class="shots">
+            <figure><img src="img/ss-home.png" width="460" height="1000" loading="lazy" alt="Home during an AO-91 pass: sky-track plot, LOS countdown, azimuth, elevation, range and range-rate tiles, and the Live Doppler card"><figcaption>Home — live look angles &amp; sky plot</figcaption></figure>
+            <figure><img src="img/ss-track.png" width="460" height="1000" loading="lazy" alt="Track screen for AO-91: polar sky plot and the Live Look table with LOS countdown, azimuth, elevation, range and subpoint"><figcaption>Track — polar sky view</figcaption></figure>
+            <figure><img src="img/ss-autoswitch.png" width="460" height="1000" loading="lazy" alt="Auto Switching turned on, waiting for a priority satellite, with a five-satellite priority list"><figcaption>Automatic satellite switching</figcaption></figure>
+            <figure><img src="img/ss-radio.png" width="460" height="1000" loading="lazy" alt="Radio link budget for AO-91: operating setup, pass times and the geometry-in-pass slider with slant range and range rate"><figcaption>Radio — Doppler &amp; link budget</figcaption></figure>
+            <figure><img src="img/ss-ft4.png" width="460" height="1000" loading="lazy" alt="FT4 full-duplex card for RS-44, a linear transponder, with Transmit and Auto-seq switches, Call CQ and Pounce"><figcaption>FT4 on a linear transponder</figcaption></figure>
+            <figure><img src="img/ss-cw.png" width="460" height="1000" loading="lazy" alt="CW Decoder card on Home for AO-91 during a pass, ready to start"><figcaption>CW decoder</figcaption></figure>
+            <figure><img src="img/ss-packet.png" width="460" height="1000" loading="lazy" alt="Packet / APRS card on Home with AO-91 up, the APRS / Plain text (UISS) choice, modem and ARISS path"><figcaption>Packet &amp; APRS</figcaption></figure>
+            <figure><img src="img/ss-sstv.png" width="460" height="1000" loading="lazy" alt="SSTV card on Home for AO-91 with automatic VIS mode detection and automatic start and stop"><figcaption>SSTV decode</figcaption></figure>
+            <figure><img src="img/ss-satellites.png" width="460" height="1000" loading="lazy" alt="Satellites catalog with search, Catalog / Visible now / By type tabs, orbit details and favorite stars"><figcaption>Satellite catalog</figcaption></figure>
+            <figure><img src="img/ss-globe.png" width="460" height="1000" loading="lazy" alt="3D Globe following AO-91 over the Americas with its track and footprint, the station marker and other favorites"><figcaption>3D globe</figcaption></figure>
+            <figure><img src="img/ss-groundtrack.png" width="460" height="1000" loading="lazy" alt="Ground Track map with three orbits of AO-91, its footprint and the station pin"><figcaption>Ground track</figcaption></figure>
+            <figure><img src="img/ss-skymap.png" width="460" height="1000" loading="lazy" alt="Sky Map: polar sky chart with constellations, planets, the Sun and Moon, radio sources and AO-91"><figcaption>Sky Map with star field</figcaption></figure>
+            <figure><img src="img/ss-amsat.png" width="460" height="1000" loading="lazy" alt="AMSAT Status board with recently reported satellites, heard counts and reporter grids"><figcaption>AMSAT status</figcaption></figure>
+            <figure><img src="img/ss-orbit.png" width="460" height="1000" loading="lazy" alt="Orbital Analysis live geometry for AO-91: azimuth, elevation, range, sub-satellite point, beta angle and eclipse time"><figcaption>Orbital analysis</figcaption></figure>
+            <figure><img src="img/ss-illum.png" width="460" height="1000" loading="lazy" alt="Illumination screen showing the satellite sunlit, with beta angle, altitude and station visibility"><figcaption>Sunlight &amp; eclipse</figcaption></figure>
+            <figure><img src="img/ss-learn.png" width="460" height="1000" loading="lazy" alt="Learn screen demonstrating Kepler&rsquo;s second law with eccentricity and mean-anomaly sliders"><figcaption>Learn: orbital mechanics</figcaption></figure>
+            <figure><img src="img/ss-passes.png" width="460" height="1000" loading="lazy" alt="Next Passes for AO-91 with a minimum-elevation selector, a pass in progress, quality scores and alarm bells"><figcaption>Next passes</figcaption></figure>
+            <figure><img src="img/ss-schedule.png" width="460" height="1000" loading="lazy" alt="Daily Schedule of favorite passes with direction, duration, UTC and local times and maximum elevation"><figcaption>Daily schedule</figcaption></figure>
+            <figure><img src="img/ss-radar.png" width="460" height="1000" loading="lazy" alt="Sky Radar with AO-91 highlighted and four other satellites above the horizon, with their elevations and azimuths listed"><figcaption>All-sky radar</figcaption></figure>
+        </div>
+        <div class="shots-wide">
+            <figure><img src="img/ss-liveactivity-lock.png" loading="lazy" alt="Lock Screen Live Activity: ISS rising, AOS clock time with a countdown, the following pass and the pass length"><figcaption>Live Activity on the Lock Screen</figcaption></figure>
+            <figure><img src="img/ss-dynamicisland.png" loading="lazy" alt="Expanded Dynamic Island: next pass with AOS time and direction, maximum elevation, countdown, auto-switch time and the pass after it"><figcaption>Next pass in the Dynamic Island</figcaption></figure>
+        </div>
+    </section>
 
+    <section class="container" id="features">
+        <h2>Everything the satellite operator needs</h2>
+        <p class="section-intro">Every feature area in OrbitDeck 1.1, at a glance. Follow the links for the detailed guides.</p>
+
+        <h3>Track &amp; plan</h3>
         <div class="grid">
             <div class="card">
                 <h3>Track &amp; predict</h3>
-                <ul>
-                    <li>Live look angles, range, range-rate, sub-point and footprint</li>
-                    <li>Next-pass predictions with quality scoring and elevation profiles</li>
-                    <li>Daily schedule of every favorite's passes by day, ordered by AOS</li>
-                    <li>Multi-day pass progression and a full ground-track map</li>
-                    <li>All-sky radar of every favorite at once</li>
-                    <li>3D globe with animation and a polar sky plot with AOS/LOS and direction-of-travel arrows</li>
-                </ul>
+                <p>Live look angles, range, range rate and footprint; next passes with quality scoring and elevation profiles; a daily schedule, multi-day pass progression, ground track, all-sky radar, 3D globe and polar sky plot. Geostationary satellites such as QO-100 are shown as continuously visible.</p>
             </div>
-
             <div class="card">
-                <h3>Work the birds</h3>
-                <ul>
-                    <li>Four-dial DX Doppler and a single-station Doppler playbook</li>
-                    <li>Per-satellite calibration shared across every Doppler screen, with a bulk Calibrations editor and CSV import/export</li>
-                    <li>Link budget with a per-elevation margin curve</li>
-                    <li>SatNOGS transponder database, two-way transponders listed first</li>
-                    <li>AO-7 A/B mode timer and mutual-visibility windows with paired sky plots</li>
-                </ul>
+                <h3>Automatic satellite switching</h3>
+                <p>Up to 9 priority satellites, switched SatPC32-style as each reaches your switch-in elevation, with "take over at", finish-current-pass and pause-after-manual-pick options. A 12-hour simulated plan shows what will happen. <a href="documentation.html#autoswitch">How it works</a></p>
             </div>
+            <div class="card">
+                <h3>Pass timeline</h3>
+                <p>A KlaTrack-style elevation timeline of your favorites' passes on Home, over 3, 6 or 12 hours, in per-satellite colors or sunlit/eclipse shading. Tap a pass to select that satellite.</p>
+            </div>
+            <div class="card">
+                <h3>Live Activity, Dynamic Island &amp; Apple Watch</h3>
+                <p>A countdown to the next AOS, then time left and a progress bar through the pass, with AOS/LOS times, directions and the pass after it. It keeps going while OrbitDeck is closed, dims with "Open OrbitDeck to update" when out of date, and opens that satellite when tapped. <a href="documentation.html#liveactivity">Details</a></p>
+            </div>
+            <div class="card">
+                <h3>Weather &amp; cloud cover</h3>
+                <p>Local weather from Open-Meteo on the Planning screen, and a forecast cloud-cover badge on optically visible passes and Sun/Moon transits for the next 48 hours.</p>
+            </div>
+            <div class="card">
+                <h3>Activations &amp; skeds</h3>
+                <p>Upcoming hams.at activations with "Can I work it?", your own activations and skeds stored on the device, reminders 60, 30 and 10 minutes before, and a cached feed when you're offline. Post your own alerts with your hams.at key.</p>
+            </div>
+            <div class="card">
+                <h3>AMSAT status</h3>
+                <p>The status.amsat.org board over a 3–72 hour window, with "heard" ages, reporter grid counts and heard marks in the Satellites list. File a public report from Home or the AMSAT Status screen, always after confirming.</p>
+            </div>
+            <div class="card">
+                <h3>Nearby &amp; DX</h3>
+                <p>One hub for receive-only APRS-IS stations around you, a DX cluster, aircraft from your own ADS-B receiver on the local network, and a telnet console.</p>
+            </div>
+        </div>
 
+        <h3>Radio &amp; station control</h3>
+        <div class="grid">
+            <div class="card">
+                <h3>Doppler &amp; calibration</h3>
+                <p>Live Doppler for every transponder with an SSB | CW switch, passband tuning slider and a no-CAT HOLD/TUNE calculator. Per-satellite calibration is shared across every Doppler screen, with a bulk Calibrations editor and CSV import/export.</p>
+            </div>
             <div class="card">
                 <h3>Rig control (CAT)</h3>
-                <ul>
-                    <li>Doppler-tune your transceiver over a BLE serial adapter or Icom network (Wi-Fi)</li>
-                    <li>Icom CI-V, Yaesu, Kenwood (incl. TS-2000/790 satellite mode and the TH-D74/D75 via the B.B. Link), and any Hamlib radio via rigctld</li>
-                    <li>One full-duplex radio, a single uplink/downlink radio, or two radios</li>
-                    <li>Follows your dial with the One True Rule; transverter, calibration and passband aware</li>
-                    <li><a href="catcontrol.html">Read the Rig Control guide</a></li>
-                </ul>
+                <p>Doppler-tune Icom, Yaesu and Kenwood radios, or any Hamlib radio via rigctld, over a BLE serial adapter, Icom network (Wi-Fi), or the IC-705/IC-905's built-in Bluetooth. Split-VFO Doppler on one radio, per-satellite CTCSS and data modes for FT4 and packet. <a href="catcontrol.html">Rig Control guide</a></p>
             </div>
-
+            <div class="card">
+                <h3>Two radios &amp; satellite-rig legs</h3>
+                <p>Use a satellite rig as one leg of a two-radio station, for example an IC-821 on the 2&nbsp;m uplink and an IC-705 on the 10&nbsp;m downlink for AO-7 Mode A. Setup mistakes such as one adapter for both radios are caught before connecting.</p>
+            </div>
+            <div class="card">
+                <h3>Tune modes &amp; Beacon</h3>
+                <p>Switch Doppler live from the Home rig card: Full (follow downlink), Full (follow uplink), Downlink only, Uplink only or Hold. A one-tap Beacon button tunes the satellite's beacon or telemetry downlink.</p>
+            </div>
+            <div class="card">
+                <h3>Stop all</h3>
+                <p>One button releases PTT, stops FT4, packet and remote-voice transmit, ends network-client control, disconnects the radio, and parks and disconnects the rotator.</p>
+            </div>
+            <div class="card">
+                <h3>Network servers with approval</h3>
+                <p>Built-in rigctld (TCP 4532) and rotctld (TCP 4533) servers let Gpredict, SatPC32, WSJT-X or a logger on your LAN share OrbitDeck's links. New clients wait for your Allow once, Always allow or Deny; network PTT is a separate opt-in with a 3-minute limit.</p>
+            </div>
             <div class="card">
                 <h3>Rotator control</h3>
-                <ul>
-                    <li>Steer an az/el rotator to follow the pass over a BLE serial adapter or the network</li>
-                    <li>GS-232, Easycomm I/II/III, SPID Rot2Prog, SAEBRTrack, rotctld (Hamlib), PstRotator and OZ9AAR URC</li>
-                    <li>Pre-position before AOS, slew lead, park on LOS, flip mode and 0–360 / ±180 / 0–450° ranges</li>
-                    <li>Alignment offsets, magnetic correction, deadband and minimum-elevation gating</li>
-                    <li><a href="rotator.html">Read the Rotator Control guide</a></li>
-                </ul>
+                <p>GS-232 (including azimuth-only), Easycomm, SPID, SAEBRTrack, rotctld, PstRotator and OZ9AAR URC. Manual jog and go-to, position read-back with a stall warning, a self-test, Sun/Moon/fixed-bearing targets, and automatic retry of failed points. <a href="rotator.html">Rotator guide</a></p>
             </div>
+        </div>
 
+        <h3>Digital modes &amp; audio</h3>
+        <div class="grid">
+            <div class="card">
+                <h3>CW decoder</h3>
+                <p>DeepCW, a neural decoder by e04, copies 400–1200&nbsp;Hz including weak signals and uneven fists, about two seconds behind the audio. The Classic decoder offers tone search with AFC, 50/100/200&nbsp;Hz filters, squelch and 5–50&nbsp;WPM. <a href="digitalmodes.html#cw">CW guide</a></p>
+            </div>
+            <div class="card">
+                <h3>Packet &amp; APRS</h3>
+                <p>Built-in 1200 baud AFSK and 9600 baud G3RUH modems, or a KISS TNC over Bluetooth&nbsp;LE (including the B.B. Link for the TH-D74/D75) or TCP (Direwolf, UZ7HO soundmodem). APRS or UISS-style messages, macros, timed beacons and automatic QSO logging.</p>
+            </div>
+            <div class="card">
+                <h3>APRS map, pass log &amp; alerts</h3>
+                <p>A map of heard stations, objects and items; a log of every frame per pass with statistics and CSV export; alerts for messages to you and your digipeated frames; and an opt-in, receive-only satgate to APRS-IS.</p>
+            </div>
+            <div class="card">
+                <h3>FT4</h3>
+                <p>Full-duplex FT4 on linear transponders with signal subtraction, a deep "Decode again" pass, DT filtering, Band Activity shading for new calls and grids, wait-and-pounce, a TX watchdog and a short Tune carrier. <a href="digitalmodes.html#ft4">FT4 guide</a></p>
+            </div>
+            <div class="card">
+                <h3>SSTV</h3>
+                <p>Decodes satellite and ISS SSTV, now including Martin M3/M4 and Scottie S3/S4, with damaged-header fallback, noisy-line repair, combined repeat copies, and automatic start and stop by elevation.</p>
+            </div>
+            <div class="card">
+                <h3>Recording &amp; audio health</h3>
+                <p>Record a pass over USB or Icom network audio (or the built-in microphone). OrbitDeck detects a stalled input and restarts it, and keeps the screen awake while any decoder or recording runs. <a href="digitalmodes.html">Digital Modes guide</a></p>
+            </div>
+        </div>
+
+        <h3>Logging &amp; awards</h3>
+        <div class="grid">
             <div class="card">
                 <h3>Logging &amp; uploads</h3>
-                <ul>
-                    <li>On-device QSO log with a Home quick-log card and a dedicated Log screen</li>
-                    <li>LoTW upload — the <code>.tq8</code> is signed on your device from your .p12 certificate</li>
-                    <li>Cloudlog / Wavelog upload and ADIF import/export; automatic LoTW satellite naming</li>
-                    <li><a href="logging.html">Read the Logging guide</a></li>
-                </ul>
+                <p>An on-device QSO log with LoTW upload signed on your device, Cloudlog/Wavelog upload, ADIF import/export, DXCC and country on every QSO and default RST by mode. An unreadable log is set aside, never overwritten, and only QSOs the server accepted are marked uploaded. <a href="logging.html">Logging guide</a></p>
             </div>
-
             <div class="card">
-                <h3>Digital modes &amp; audio</h3>
-                <ul>
-                    <li>Record a pass, decode SSTV, and work full-duplex FT4 over USB (or network) audio</li>
-                    <li>FT4 decodes the downlink while transmitting — live Doppler tune readout, automatic transponder calibration, PTT over CAT or a manual-PTT prompt</li>
-                    <li>SSTV image gallery with export to Photos; FT4 via the MIT ft8_lib</li>
-                    <li><a href="digitalmodes.html">Read the Digital Modes guide</a></li>
-                </ul>
+                <h3>Awards</h3>
+                <p>Totals for QSOs, satellites, VUCC grids, WAS (50 states plus DC) and DXCC, worked versus LoTW-confirmed, with per-satellite drill-down and CSV/PDF export.</p>
             </div>
+            <div class="card">
+                <h3>LoTW location &amp; IOTA</h3>
+                <p>Pick your DXCC entity and its subdivisions as LoTW lists them (US counties, Canadian provinces, Japanese prefectures and city/gun/ku, Russian oblasts and more), plus an optional IOTA reference.</p>
+            </div>
+            <div class="card">
+                <h3>Voice memos</h3>
+                <p>Speak a note during a pass; it's saved with your recordings and a QSO stub with the time, satellite, mode and frequencies goes into the log for you to finish later.</p>
+            </div>
+            <div class="card">
+                <h3>PDF reports</h3>
+                <p>Print or share a QSO log report, awards, a station readiness report, favorites' element sets, a Support AMSAT sheet and a contact card with a QR code.</p>
+            </div>
+        </div>
 
+        <h3>Maps, tools &amp; learning</h3>
+        <div class="grid">
+            <div class="card">
+                <h3>Location tools</h3>
+                <p>A location converter for Maidenhead, decimal degrees, DMS, DDM, Plus Code, UTM, MGRS and USNG, and grid distance &amp; bearing with short and long path, QRZ lookup and a "Point rotator" button.</p>
+            </div>
+            <div class="card">
+                <h3>Workable states &amp; DXCC</h3>
+                <p>See which grids, US states and DXCC entities a pass reaches, tested against real boundaries, with CSV/PDF export. The globe shows a DX footprint of mutual visibility, and the Sky Map adds a star field.</p>
+            </div>
             <div class="card">
                 <h3>Plan &amp; analyze</h3>
-                <ul>
-                    <li>Orbital analysis: elements, J2 nodal/apsidal rates, beta angle, eclipse fraction, LTAN</li>
-                    <li>Equator crossings, Sun/Moon transits, illumination and orbital zones</li>
-                    <li>Conjunction awareness and workable-grid discovery</li>
-                    <li>State-vector &rarr; GP element recovery (TEME or J2000 input) with export</li>
-                </ul>
+                <p>Orbital analysis with element-set number, epoch age and launch siblings; J2 rates, beta angle and eclipse fraction; equator crossings, Sun/Moon transits, conjunctions, a debris-group screen and comet positions.</p>
             </div>
-
-            <div class="card">
-                <h3>Station &amp; grid squares</h3>
-                <ul>
-                    <li>Set your station as a fixed site or follow the device's current location</li>
-                    <li>Enter a location by latitude/longitude or by Maidenhead grid square</li>
-                    <li>Save secondary sites, including from your current GPS position</li>
-                    <li>VUCC grid-line and corner recognition per ARRL rules — every claimable grid shown</li>
-                    <li>Live Grid Finder that guides you onto a grid line or corner with a compass arrow</li>
-                    <li>Current DXCC, state and county (LoTW/TQSL names) while following your location</li>
-                    <li>Times in UTC or your local zone, with both shown in pass lists</li>
-                </ul>
-            </div>
-
             <div class="card">
                 <h3>Propagation &amp; space weather</h3>
-                <ul>
-                    <li>MUF / HF path tool and a 6 m / HF operating outlook</li>
-                    <li>Live space weather: solar flux and planetary Kp/A from NOAA SWPC, sunspot number from hamqsl.com (N0NBH)</li>
-                    <li>Aurora likelihood and geomagnetic condition summaries</li>
-                </ul>
+                <p>Solar flux, Kp and A from NOAA SWPC and sunspot number from hamqsl.com (N0NBH), now with trend changes, plus an MUF/HF path tool, 6&nbsp;m/HF outlook and aurora likelihood.</p>
             </div>
-
             <div class="card">
                 <h3>Classic OSCARLOCATOR</h3>
-                <ul>
-                    <li>On-screen simulator (polar and QTH-centered) with minute-tick ground tracks</li>
-                    <li>Printable OSCARLOCATOR overlays — base map, range circle and path arc</li>
-                    <li>Reference Orbits schedule</li>
-                </ul>
+                <p>An on-screen simulator in polar and QTH-centered projections, printable overlays, and the Reference Orbits schedule.</p>
             </div>
-
             <div class="card">
                 <h3>Bench tools</h3>
-                <ul>
-                    <li>60+ calculators for antennas, feedline, RF, link and orbits</li>
-                    <li>Receipt-tape scientific calculator with RF/orbit functions and metric prefixes</li>
-                    <li>Graphing calculator with trace, roots, integral, table and CSV export</li>
-                    <li>Maidenhead grid &harr; lat/lon converter, Tiny BASIC, DXCC lookup</li>
-                </ul>
+                <p>60+ calculators, a receipt-tape scientific calculator, a graphing calculator with zeros, intersections, slope, integral and CSV export, <a href="tinybasic.html">Tiny BASIC</a> and a DXCC lookup.</p>
             </div>
-
             <div class="card">
-                <h3>Data, offline &amp; export</h3>
-                <ul>
-                    <li>Elements from CelesTrak and AMSAT, refreshed automatically</li>
-                    <li>Respects CelesTrak's usage policy so you won't be rate-limited</li>
-                    <li>Cached data keeps core features working offline</li>
-                    <li>PDF and CSV/XLSX exports for passes, sites and overlays</li>
-                </ul>
+                <h3>Learn &amp; References</h3>
+                <p>Animated orbit types, an AMSAT Fox CubeSat anatomy, an introduction to the AMSAT CubeSat Simulator, interactive lessons, and reference tables including a worldwide band plan.</p>
+            </div>
+            <div class="card">
+                <h3>Notes</h3>
+                <p>Plain-text notes for skeds, frequencies, grids to work or a pass plan, also available in the Files app under On My iPhone &rarr; OrbitDeck &rarr; Notes.</p>
+            </div>
+        </div>
+
+        <h3>Setup, help &amp; data</h3>
+        <div class="grid">
+            <div class="card">
+                <h3>Help &amp; readiness checklist</h3>
+                <p>Searchable in-app Help, and a station readiness checklist (shown on first run for new installs) that marks what's ready and what needs attention, with a tap to fix each item and a PDF report.</p>
+            </div>
+            <div class="card">
+                <h3>Backup &amp; restore</h3>
+                <p>Save your station, favorites, calibrations, CAT, rotator, auto-switch, digital-mode and logging setup to one JSON file, optionally with the QSO log, and restore it after a preview. Passwords and keys are never included. A factory reset is there too.</p>
+            </div>
+            <div class="card">
+                <h3>Units &amp; times</h3>
+                <p>Metric, US customary or automatic by region, throughout the app and calculators; exports stay metric. Times in UTC or your local zone.</p>
+            </div>
+            <div class="card">
+                <h3>Station &amp; grid squares</h3>
+                <p>A fixed site or your current location, entered by coordinates or grid, with saved secondary sites. VUCC grid-line and corner recognition, a Grid Finder, and current DXCC, state and county in LoTW's names.</p>
+            </div>
+            <div class="card">
+                <h3>Catalog, offline &amp; export</h3>
+                <p>Elements from AMSAT, CelesTrak or your own URL, within CelesTrak's usage policy. Imported TLE/OMM elements persist until the feed catches up, malformed entries are skipped, and cached data keeps core features working offline. PDF and CSV/XLSX exports.</p>
+            </div>
+            <div class="card">
+                <h3>Safety</h3>
+                <p>One transmitter at a time ("Transmitter in use by …"), Stop and disconnect always unkey (an unconfirmed unkey is retried and flagged), maximum key times, voice transmit limited to 3 minutes, and FT4 Tune only with Transmit on and a callsign set. Packet monitoring works without a callsign.</p>
             </div>
         </div>
     </section>
 
     <section class="container">
         <h2>Requirements</h2>
-        <p class="section-intro">OrbitDeck runs on iPhone and iPad with iOS 17 or later. An internet connection is used to download orbital elements and space-weather data; once cached, core tracking works offline.</p>
+        <p class="section-intro">OrbitDeck runs on iPhone and iPad with iOS or iPadOS 17 or later. An internet connection is used to download orbital elements, space weather and the online services you choose to use; once cached, core tracking works offline.</p>
+        <ul>
+            <li>The next-pass Live Activity and Dynamic Island need iOS 18 or later; on iOS 17 the rest of the app works without them. The Dynamic Island appears only on iPhone models that have one.</li>
+            <li>Starting the next pass's Live Activity automatically while OrbitDeck is closed needs iOS 26 or later.</li>
+            <li>The Apple Watch Smart Stack layout appears on a paired Apple Watch whose software shows iPhone Live Activities (watchOS 11 or later).</li>
+            <li>Rig and rotator control need a supported Bluetooth&nbsp;LE serial adapter, an Icom network or Bluetooth radio, or a Hamlib server on your network, and run while OrbitDeck is in the foreground.</li>
+            <li>The audio features work best with a USB audio interface or an Icom network-audio radio; most can also use the built-in microphone.</li>
+        </ul>
 
         <div class="note">
             Please support <a href="https://www.amsat.org" rel="noopener">AMSAT</a> — the Radio Amateur Satellite Corporation — which builds and operates many of the satellites OrbitDeck is made to track.
