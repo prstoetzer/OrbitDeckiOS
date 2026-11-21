@@ -93,7 +93,7 @@
                 <h2 id="readiness">Station readiness</h2>
                 <p>The station readiness checklist shows what is set up and what isn't, and opens automatically on the first run of a new install (upgrading users don't see it automatically). Open it any time from <strong>Settings &rarr; Station readiness</strong> or from Help.</p>
                 <ul>
-                    <li>It checks your station location, favorites, callsign, QRZ, LoTW upload, Cloudlog / Wavelog, notifications, the CAT radio, the rotator and the audio interface.</li>
+                    <li>It checks your station location, orbital element data, favorites, callsign, QRZ, LoTW upload, Cloudlog / Wavelog, notifications, the CAT radio, the rotator and the audio interface.</li>
                     <li>Each row is marked <strong>OK</strong> (green, ready), <strong>CHECK</strong> (amber, needs attention), <strong>MISSING</strong> (red, blocks useful results) or <strong>OPTIONAL</strong> (gray). Tap a row to go to the screen that fixes it.</li>
                     <li><strong>Check again</strong> re-reads everything; <strong>Readiness report (PDF)</strong> shares a printable summary.</li>
                 </ul>
@@ -148,14 +148,14 @@
                 <p>Choose your element source in <strong>Settings &rarr; GP element source</strong>:</p>
                 <ul>
                     <li><strong>AMSAT</strong> — the AMSAT daily bulletin GP feed (default).</li>
-                    <li><strong>CelesTrak</strong> — select a group such as the amateur satellites set. Switching groups fetches the new group right away; OrbitDeck still honors CelesTrak's limit of one download per dataset every two hours.</li>
+                    <li><strong>CelesTrak</strong> — select a group such as the amateur satellites set. OrbitDeck honors CelesTrak's limit of one download per dataset every two hours; the limit applies to each group separately, so switching groups fetches the new group right away.</li>
                     <li><strong>Custom</strong> — a URL to your own OMM JSON (it must start with <code>https://</code>).</li>
                 </ul>
                 <h3>Adding satellites and elements</h3>
                 <p>The <strong>Add</strong> menu on the Satellites screen offers <strong>Search CelesTrak Online</strong>, <strong>Add Manual Satellite</strong>, <strong>Manual Transponders</strong>, <strong>Import Elements (OMM / TLE)</strong>, <strong>Imported Elements</strong> and <strong>Cache all transponders (SatNOGS)</strong>. You can also recover elements from a state vector on the <strong>Tools</strong> screen.</p>
                 <ul>
-                    <li><strong>Imported elements persist.</strong> Elements you import are kept across launches and GP updates. Each one is used only while its epoch is newer than the downloaded elements for that satellite; once the feed catches up it is removed automatically. <strong>Add &rarr; Imported Elements</strong> lists them; swipe one to delete it and the downloaded elements take over. Imports for a manual satellite update that satellite instead.</li>
-                    <li><strong>Bad data is skipped.</strong> Malformed entries in a feed or import (impossible or missing values) are skipped and counted rather than breaking the catalog. TLE drag terms are read correctly, and a TLE export never writes a NORAD ID that doesn't fit the format; manual entry warns above 339999.</li>
+                    <li><strong>Imported elements are kept.</strong> Elements you import survive relaunches and catalog updates. Each one is used only while its epoch is newer than the downloaded elements for that satellite; once the feed catches up it is removed automatically. <strong>Add &rarr; Imported Elements</strong> lists them; swipe one to delete it and the downloaded elements take over. Imports for a manual satellite update that satellite instead.</li>
+                    <li><strong>Bad data is skipped.</strong> Malformed entries in a feed or import (impossible or missing values) are skipped and counted rather than breaking the catalog. TLE drag terms are read correctly, and a TLE export skips any satellite whose NORAD ID doesn't fit the TLE format. Manual satellite entry warns about NORAD IDs above 339999.</li>
                 </ul>
 
                 <h2 id="passes">Passes &amp; tracking</h2>
@@ -179,10 +179,11 @@
                 <ul>
                     <li><strong>The selected satellite</strong> and, while <a href="#autoswitch">automatic switching</a> is on, an <strong>AUTO</strong> banner with its status, the next planned switch, and a <strong>Turn off</strong> button.</li>
                     <li><strong>Live tracking</strong> — azimuth, elevation, range and range rate, a sky plot, and the AOS or LOS countdown.</li>
-                    <li><strong>Transponder</strong> and <strong>Live Doppler</strong> cards for the chosen transponder (see <a href="#radio">Radio &amp; Doppler</a>).</li>
+                    <li><strong>Live Doppler</strong> and <strong>Transponder</strong> cards for the chosen transponder (see <a href="#radio">Radio &amp; Doppler</a>).</li>
                     <li>The <a href="#home-cards">station cards</a> for the equipment and features you have set up: rig control, rotator, logging, audio and digital modes.</li>
                     <li><strong>Report AMSAT status</strong> — a one-tap public report for the selected satellite (see <a href="#activations">AMSAT status</a>).</li>
-                    <li><strong>Station</strong>, <strong>Next qualifying pass</strong>, <strong>Elements</strong>, <strong>Space weather</strong>, <strong>Overhead now</strong> (favorites above the horizon, with LOS), <strong>Upcoming favorite passes</strong> and the <a href="#timeline">Pass timeline</a>.</li>
+                    <li>With favorites starred: <strong>Space weather</strong>, <strong>Overhead now</strong> (favorites above the horizon, with LOS), <strong>Upcoming favorite passes</strong> and the <a href="#timeline">Pass timeline</a>.</li>
+                    <li><strong>Station</strong>, <strong>Next qualifying pass</strong> and <strong>Elements</strong>.</li>
                 </ul>
                 <p>Home refreshes when you come back from the background, and passes drop off the lists once they end.</p>
 
@@ -213,19 +214,25 @@
                 <p>While anything is running, the rig control card (or, with no CAT radio, the rotator card) shows a red <strong>Stop all</strong> button. After you confirm <em>Stop everything?</em>, it releases PTT, stops FT4, packet and remote-voice transmit, ends rigctld/rotctld client control, disconnects the radio, and parks and disconnects the rotator.</p>
 
                 <h3>Rotator card</h3>
-                <p>Shows the rotator's state and the commanded bearing, a <strong>Target</strong> selector (<strong>Satellite</strong>, <strong>Sun</strong>, <strong>Moon</strong> or <strong>Manual</strong>) and <strong>Manual control</strong> for jogging, go-to, Stop, Park and resuming tracking. With position read-back on, it warns <em>Rotator isn't following the command</em> if the rotator stalls. If a pointing command fails, the card says it is retrying; failed points are retried with a short backoff. See the <a href="rotator.html">Rotator page</a>.</p>
+                <p>Shows the rotator's state and the commanded bearing, a <strong>Target</strong> selector (<strong>Satellite</strong>, <strong>Sun</strong>, <strong>Moon</strong> or <strong>Manual</strong>) and <strong>Manual control</strong> for jogging, go-to, Stop, Park and resuming tracking. With position read-back on, it warns <em>Rotator isn't following the command</em> if the rotator stalls. If a pointing command fails, the card says it is retrying; OrbitDeck tries again every 2–10 seconds until it gets through. See the <a href="rotator.html">Rotator page</a>.</p>
 
                 <h3>Log QSO</h3>
                 <p>The quick-entry card is prefilled from the selected satellite, transponder, mode and your grid. Callsigns tapped in the CW decoder or packet card land here. See the <a href="logging.html">Logging page</a>.</p>
 
                 <h3>Audio and digital-mode cards</h3>
-                <p>The <strong>Pass recording</strong>, <strong>SSTV</strong>, <strong>FT4 (full duplex)</strong>, <strong>CW decoder</strong>, <strong>Packet / APRS</strong> and <strong>Remote audio (voice)</strong> cards appear when a USB audio interface or an Icom network-audio radio is connected. In <strong>Settings &rarr; Audio features</strong> set any of them to <strong>Always</strong> to show it without an interface (it then falls back to the built-in microphone; remote audio needs a network radio) or <strong>Hidden</strong> to keep it off Home. Each card's setup options are in its <strong>Setup</strong> section.</p>
+                <p>The <strong>Pass recording</strong>, <strong>SSTV</strong>, <strong>FT4 (full duplex)</strong>, <strong>CW decoder</strong>, <strong>Packet / APRS</strong> and <strong>Remote audio (voice)</strong> cards are controlled in <strong>Settings &rarr; Audio features</strong>, where each one is <strong>Auto</strong>, <strong>Always</strong> or <strong>Hidden</strong>:</p>
                 <ul>
-                    <li><strong>CW decoder</strong> — tap <strong>Start</strong>. Under <strong>Setup &rarr; Decoder</strong>, choose <strong>DeepCW</strong> (the default: a neural decoder that copies 400–1200&nbsp;Hz, weak signals and uneven fists included, with text about two seconds behind the audio) or <strong>Classic</strong> (tone search with AFC, filter bandwidth, squelch and a speed range or fixed speed). On a linear transponder, set the Live Doppler card to CW first, then tune so the CW pitch falls in the decoder's range. Tap an underlined callsign to put it in the Log QSO card with mode CW; <strong>Copy</strong> and <strong>Share transcript</strong> export the text.</li>
-                    <li><strong>Packet / APRS</strong> — choose a <strong>Connection</strong> (<strong>Built-in modem</strong>, <strong>BLE KISS</strong> or <strong>KISS TCP</strong>) and, for the built-in modem, the <strong>Modem</strong> (Auto, 1200 AFSK or 9600 G3RUH). The <strong>Monitor</strong>, <strong>Stations</strong> and <strong>Map</strong> views show traffic, heard stations and their positions; <strong>Pass log</strong> keeps every frame per pass with statistics and export. Monitoring works without a callsign; sending, beacons and the satgate need one.</li>
-                    <li><strong>FT4 (full duplex)</strong> — <strong>Transmit</strong>, <strong>Auto-seq</strong> and <strong>Tune</strong> controls, the waterfall and Band Activity list. <strong>Tune</strong> sends a carrier of at most 10 seconds and needs Transmit on and your callsign set.</li>
+                    <li><strong>Auto</strong> (the default) shows the card only while a USB audio interface or an Icom network-audio radio is connected.</li>
+                    <li><strong>Always</strong> shows it without an interface; it then uses the built-in microphone (remote audio still needs an Icom network radio).</li>
+                    <li><strong>Hidden</strong> keeps it off Home even with an interface connected.</li>
+                </ul>
+                <p>Each card's options are in its <strong>Setup</strong> section.</p>
+                <ul>
+                    <li><strong>CW decoder</strong> — tap <strong>Start</strong>. Under <strong>Setup &rarr; Decoder</strong>, choose <strong>DeepCW</strong> (the default: a neural decoder that copies 400–1200&nbsp;Hz, weak signals and uneven fists included, with text about two seconds behind the audio) or <strong>Classic</strong> (tone search with AFC, filter bandwidth, squelch and a speed range or fixed speed). On a linear transponder, set the Live Doppler card to CW first, then tune so the CW pitch falls in the decoder's range. If the DeepCW model is unavailable, OrbitDeck uses Classic. Tap an underlined callsign to put it in the Log QSO card with mode CW; <strong>Copy</strong> and <strong>Share transcript</strong> export the text.</li>
+                    <li><strong>Packet / APRS</strong> — choose a <strong>Connection</strong> (<strong>Built-in modem</strong>, <strong>BLE KISS</strong> or <strong>KISS TCP</strong>) and, for the built-in modem, the <strong>Modem</strong> (Auto, 1200 AFSK or 9600 G3RUH). The <strong>Monitor</strong>, <strong>Stations</strong> and <strong>Map</strong> views show traffic, heard stations and their positions; <strong>Pass log</strong> keeps every frame per pass with statistics and export. Monitoring works without a callsign; sending, beacons and the satgate need one. KISS TCP defaults to port 8001 (Direwolf); UZ7HO soundmodem uses 8100.</li>
+                    <li><strong>FT4 (full duplex)</strong> — <strong>Transmit</strong>, <strong>Auto-seq</strong> and <strong>Tune</strong> controls, the waterfall and Band Activity list. <strong>Tune</strong> sends a carrier of at most 10 seconds; it needs Transmit on, your callsign set and a transponder that isn't FM-only or receive-only. The TX watchdog stops transmitting when nothing addressed to you has been decoded for 6 minutes (adjustable from 2 to 15).</li>
                     <li><strong>Pass recording</strong> — records the pass and also takes a <strong>Voice memo</strong> (up to 2 minutes), which adds a QSO stub to the log for you to complete.</li>
-                    <li><strong>Remote audio (voice)</strong> — listen to an Icom network radio and hold <strong>HOLD TO TRANSMIT</strong> to talk. Transmit stops after 3 minutes, and when you lift your finger, the gesture is canceled or OrbitDeck goes to the background.</li>
+                    <li><strong>Remote audio (voice)</strong> — listen to an Icom network radio and press and hold <strong>HOLD TO TRANSMIT</strong> to talk. The radio keys only once your audio has started playing. Transmit stops when you lift your finger, if the press is interrupted, when OrbitDeck goes to the background, or after 3 minutes.</li>
                 </ul>
                 <p>Full details are on the <a href="digitalmodes.html">Digital Modes page</a>.</p>
 
@@ -259,7 +266,7 @@
                 </ul>
                 <p>Because the countdowns sit next to the clock times they count to, every layout stays correct through AOS and LOS without the app redrawing it.</p>
                 <h3>Which satellite</h3>
-                <p>With <a href="#autoswitch">auto switching</a> on, it follows the satellite auto switching has selected and then each one it will switch to, with the switch time. Otherwise it shows the next pass of any favorite (the selected satellite if you have no favorites). Changing favorites or priorities replans it.</p>
+                <p>With <a href="#autoswitch">auto switching</a> on, it follows the satellite auto switching has selected and then each one it will switch to, with the switch time. Otherwise it shows the next pass of any favorite (the selected satellite if you have no favorites). Changing favorites or priorities updates it.</p>
                 <h3>While OrbitDeck is closed</h3>
                 <ul>
                     <li>iOS doesn't let OrbitDeck run in the background, so the activity carries the next few passes with it: it runs through the current pass by itself and moves on to the next one at LOS.</li>
@@ -284,25 +291,28 @@
                 <p>On Home, the <strong>Live Doppler</strong> card carries the SSB | CW switch, passband tuning and the no-CAT HOLD/TUNE calculator described under <a href="#home-cards">Home station cards</a>.</p>
 
                 <h2 id="catcontrol">Rig control (CAT)</h2>
-                <p>OrbitDeck Doppler-tunes your transceiver over a Bluetooth&nbsp;LE serial adapter, an Icom network (Wi-Fi) connection, the IC-705/IC-905's built-in Bluetooth, or a Hamlib <strong>rigctld</strong> server — one full-duplex radio, one radio using split VFOs, or two radios (including a satellite rig as one leg, such as an IC-821 on the uplink and an IC-705 on the downlink). It follows your dial (the "One True Rule"), picks receive modes from the transponder, sets per-satellite CTCSS and data modes for FT4 and packet, and leaves the radio clean on disconnect. Configure it in <strong>Settings &rarr; Rig control &rarr; CAT / rig control</strong> and operate it from the Home <strong>Rig control (CAT)</strong> card. CAT works only while OrbitDeck is in the foreground. See the <a href="catcontrol.html">Rig Control page</a> for supported radios, adapters and tuning options.</p>
+                <p>OrbitDeck Doppler-tunes your transceiver over a Bluetooth&nbsp;LE serial adapter, an Icom network (Wi-Fi) connection, the IC-705/IC-905's built-in Bluetooth, or a Hamlib <strong>rigctld</strong> server — one full-duplex radio, one radio using split VFOs, or two radios (including a satellite rig as one leg, such as an IC-821 on the uplink and an IC-705 on the downlink). It follows your dial (the "One True Rule"), picks receive modes from the transponder, sets per-satellite CTCSS and data modes for FT4 and packet, and leaves the radio clean on disconnect.</p>
+                <p>Configure it in <strong>Settings &rarr; Rig control &rarr; CAT / rig control</strong> and operate it from the Home <strong>Rig control (CAT)</strong> card. CAT works only while OrbitDeck is in the foreground. See the <a href="catcontrol.html">Rig Control page</a> for supported radios, adapters and tuning options.</p>
 
                 <h2 id="rotator">Rotator control</h2>
-                <p>OrbitDeck steers an az/el antenna rotator to follow the pass — GS-232 (including azimuth-only controllers), Easycomm&nbsp;I/II/III, SPID and SAEBRTrack over a Bluetooth&nbsp;LE serial adapter, or rotctld (Hamlib), PstRotator and OZ9AAR URC over the network. It pre-positions before AOS, leads the bird to cover mechanical lag, parks on LOS, and handles flip mode and 0–360 / &minus;180…+180 / 0–450° ranges with alignment offsets, magnetic correction, a deadband and minimum-elevation gating. In <strong>Settings &rarr; Rotator control &rarr; Antenna rotator</strong>, <strong>Control &amp; diagnostics</strong> has <strong>Manual control</strong>, <strong>Self-test</strong>, <strong>Monitor</strong> and <strong>Read back position</strong> (where the protocol supports it). The <strong>Target</strong> selector on the Home rotator card points at the Satellite, the Sun, the Moon or a manual bearing, for sun-noise checks and EME. See the <a href="rotator.html">Rotator page</a>.</p>
+                <p>OrbitDeck steers an az/el antenna rotator to follow the pass — GS-232 (including azimuth-only controllers), Easycomm&nbsp;I/II/III, SPID and SAEBRTrack over a Bluetooth&nbsp;LE serial adapter, or rotctld (Hamlib), PstRotator and OZ9AAR URC over the network. It pre-positions before AOS, leads the bird to cover mechanical lag, parks on LOS, and handles flip mode and 0–360 / &minus;180…+180 / 0–450° ranges with alignment offsets, magnetic correction, a deadband and minimum-elevation gating. If a pointing command fails, it is retried every 2–10 seconds.</p>
+                <p>In <strong>Settings &rarr; Rotator control &rarr; Antenna rotator</strong>, <strong>Control &amp; diagnostics</strong> has <strong>Manual control</strong>, <strong>Self-test</strong>, <strong>Monitor</strong> and <strong>Read back position</strong> (where the protocol supports it). The <strong>Target</strong> selector on the Home rotator card points at the Satellite, the Sun, the Moon or a manual bearing, for sun-noise checks and EME. See the <a href="rotator.html">Rotator page</a>.</p>
 
                 <h2 id="servers">Network servers (rigctld &amp; rotctld)</h2>
-                <p>OrbitDeck can run a <strong>rigctld server</strong> (TCP 4532, at the bottom of the CAT settings) and a <strong>rotctld server</strong> (TCP 4533, in the rotator settings) so Gpredict, SatPC32, WSJT-X or a logger on your local network can read and drive the radio and rotator through OrbitDeck's links. Both are off by default and run while OrbitDeck is in the foreground (or running background audio).</p>
+                <p>OrbitDeck can run a <strong>rigctld server</strong> (TCP 4532, at the bottom of the CAT settings) and a <strong>rotctld server</strong> (TCP 4533, in the rotator settings) so Gpredict, SatPC32, WSJT-X or a logger on your local network can read and drive the radio and rotator through OrbitDeck's links. Both are off by default and run while OrbitDeck is in the foreground (or while a pass recording, decoder or remote voice keeps audio running in the background).</p>
                 <ul>
-                    <li><strong>Client approval.</strong> With <strong>Require approval for new clients</strong> on, a client on another device waits until you answer the <em>Allow network client?</em> prompt, which appears on any screen: <strong>Allow once</strong>, <strong>Always allow</strong> or <strong>Deny</strong>. Unanswered requests are denied after 30 seconds or when OrbitDeck goes to the background. Clients on the same device are always allowed. <em>Always allowed</em> addresses are listed in the server settings; swipe one to remove it.</li>
+                    <li><strong>Client approval.</strong> With <strong>Require approval for new clients</strong> on (the default), a client on another device waits until you answer the <em>Allow network client?</em> prompt, which appears on any screen: <strong>Allow once</strong>, <strong>Always allow</strong> or <strong>Deny</strong>. Unanswered requests are denied after 30 seconds or when OrbitDeck goes to the background. Clients on the same device are always allowed. <em>Always allowed</em> addresses are listed in the server settings; swipe one to remove it.</li>
                     <li><strong>Local network only.</strong> Connections arriving over a VPN tunnel or cellular are refused.</li>
                     <li><strong>Network PTT</strong> is a separate opt-in, <strong>Allow PTT from network clients</strong> (off by default). A client's key is released when it disconnects, the server stops, OrbitDeck goes to the background, or after 3 minutes keyed; a client's <code>T 0</code> releases only its own key. With PTT off, PTT commands are refused.</li>
                 </ul>
 
                 <h2 id="safety">Transmit safety</h2>
                 <ul>
-                    <li><strong>One transmitter authority.</strong> FT4, Tune, packet, remote voice and network clients all key through one gate, one at a time. If another feature holds the transmitter, the request is refused with <em>Transmitter in use by &hellip; — not keyed.</em></li>
+                    <li><strong>One transmitter at a time.</strong> FT4, FT4 Tune, packet, remote voice and network clients all key through one gate, and only one of them can hold it. If another feature holds the transmitter, the request is refused with <em>Transmitter in use by &hellip; — not keyed.</em></li>
                     <li><strong>Stop always unkeys.</strong> Stop, Stop all, disconnect and a dropped link send PTT-off before anything else. If the unkey can't be confirmed, OrbitDeck retries it when the radio reconnects and shows a warning on the rig card.</li>
-                    <li><strong>Maximum key times.</strong> Every mode has a limit; remote voice stops after 3 minutes and unkeys when OrbitDeck goes to the background or the press is canceled. FT4 has a TX watchdog that stops transmitting when nothing addressed to you is decoded.</li>
-                    <li><strong>Sensible gates.</strong> PTT refuses to key on a transponder without an uplink; FT4 won't start on FM-only transponders; FT4 Tune needs Transmit on and a callsign. Packet monitoring needs no callsign, but every transmit path checks for one.</li>
+                    <li><strong>Maximum key times.</strong> Every key has a time limit, and no key lasts longer than 4 minutes. Remote voice and network clients are limited to 3 minutes and Tune to 10 seconds. FT4 also has a TX watchdog that stops transmitting when nothing addressed to you has been decoded for a while (6 minutes by default).</li>
+                    <li><strong>Background.</strong> When OrbitDeck goes to the background, remote voice, Tune and network-client keys are released. FT4 and packet sessions you started keep running.</li>
+                    <li><strong>Sensible gates.</strong> PTT refuses to key on a transponder without an uplink; FT4 won't start on FM-only transponders; FT4 Tune needs Transmit on and a callsign. Packet monitoring needs no callsign, but every transmit path checks for one. The packet PTT watchdog defaults to 10 seconds (1–60).</li>
                 </ul>
                 <p>Always listen before you transmit and use the minimum power needed.</p>
 
@@ -311,9 +321,10 @@
                 <ul>
                     <li><strong>Awards</strong> (from the Log screen) — QSOs, satellites, VUCC grids, WAS (50 states plus DC) and DXCC, worked versus LoTW-confirmed, with per-satellite drill-down and CSV/PDF export.</li>
                     <li><strong>LoTW station location</strong> — pick your DXCC entity and its subdivisions as LoTW lists them, plus an optional IOTA reference.</li>
-                    <li><strong>Re-send</strong> to LoTW or Cloudlog; editing a QSO clears its upload flags, and importing a LoTW download marks matching QSOs confirmed.</li>
+                    <li><strong>Re-send all</strong> to LoTW or Cloudlog; editing a QSO clears its upload flags, and importing a LoTW download marks matching QSOs confirmed.</li>
                     <li><strong>Log report (PDF)</strong> to print or share; <strong>voice memos</strong> that become QSO stubs; DXCC entity and country on every QSO; QRZ name and US state fill; default RST by mode.</li>
-                    <li><strong>Log integrity</strong> — save errors are shown in a banner, and a log file that can't be read is moved aside rather than overwritten. Cloudlog/Wavelog replies are checked, so QSOs the server rejected aren't marked uploaded. Cloudlog URLs must use https, except http to a server on your local network (with a warning that the key is sent unencrypted).</li>
+                    <li><strong>Log integrity</strong> — save errors are shown in a banner, and a log file that can't be read is moved aside (renamed <code>&lt;name&gt;.corrupt-&lt;timestamp&gt;.json</code>) rather than overwritten.</li>
+                    <li><strong>Honest uploads</strong> — a Cloudlog/Wavelog upload counts only if the server reports every QSO imported; otherwise nothing is marked uploaded and the server's messages are shown. Cloudlog/Wavelog URLs must use https, except http to a server on your local network (with a warning that the key is sent unencrypted).</li>
                 </ul>
                 <p>See the <a href="logging.html">Logging &amp; Uploads page</a>.</p>
 
@@ -407,11 +418,11 @@
                 <p>In <strong>Settings &rarr; Backup &amp; restore</strong>, <strong>Back up settings to Files&hellip;</strong> saves your station and sites, favorites, display options, manual satellites, calibrations, CAT, rotator, auto-switch, FT4/packet/SSTV and logging setup, and your own activation skeds in one JSON file. Turn on <strong>Include QSO log</strong> to add the log (ADIF export is the usual way to move a log).</p>
                 <p><strong>Restore from a backup&hellip;</strong> shows a preview first — when the backup was made, the OrbitDeck version, and what it will replace — then <strong>Restore now</strong> applies it. Settings not in the backup are left as they are, and restored QSOs are merged into your log (existing QSOs are kept). If CAT or the rotator was connected, quit and relaunch OrbitDeck to apply its restored setup.</p>
                 <div class="note">
-                    Passwords, API keys and the LoTW certificate stay in the iOS Keychain and are never included in a backup. Re-enter them after restoring on a new device.
+                    Passwords and API keys (kept in the iOS Keychain) and the LoTW certificate (kept as a protected file on the device, with its passphrase in the Keychain) are never included in a backup. Re-enter them, and re-import the certificate, after restoring on a new device.
                 </div>
                 <h3>Factory reset</h3>
                 <p>The <strong>Reset</strong> section of Settings erases every setting (station, sites, favorites, calibrations, CAT, rotator, auto switching, digital modes, logging setup), the downloaded catalogs and caches. Choose first whether to <strong>Keep QSO log, recordings &amp; SSTV images</strong>, <strong>Keep notes &amp; BASIC programs</strong>, and <strong>Also remove saved passwords, keys &amp; LoTW certificate</strong>. Tap <strong>Reset OrbitDeck&hellip;</strong>, confirm twice (<strong>Continue</strong>, then <strong>Erase now</strong>), then close OrbitDeck from the app switcher and open it again. Back up first if you might want anything back.</p>
-                <p>To remove only credentials, use <strong>Settings &rarr; Saved credentials &rarr; Clear all saved passwords &amp; keys</strong>. Keychain entries persist even if you delete the app.</p>
+                <p>To remove only credentials, use <strong>Settings &rarr; Saved credentials &rarr; Clear all saved passwords &amp; keys</strong>. Keychain entries persist even if you delete the app, so clear them first if you want them gone.</p>
 
                 <h2 id="data">Data sources</h2>
                 <p>OrbitDeck retrieves data from public services and identifies itself politely. Optional services are contacted only when you use the feature that needs them:</p>
@@ -432,7 +443,7 @@
                     <tr><td>Space-Track (optional)</td><td>Archival elements for Orbital History, if you provide credentials</td></tr>
                     <tr><td>hams.at API key (optional)</td><td>Posting activation alerts, if you provide your token (stored in the iOS Keychain)</td></tr>
                 </table>
-                <p>OrbitDeck honors CelesTrak's usage policy — at most one request per dataset every two hours, with back-off on rate-limit responses — so normal use will not get your address blocked. Catalog and transponder data also refresh automatically about once a week. See the <a href="privacy.html">Privacy page</a> for what each service receives.</p>
+                <p>OrbitDeck honors CelesTrak's usage policy — at most one request per dataset every two hours, with back-off on rate-limit responses — so normal use will not get your address blocked. Orbital elements refresh automatically when they are more than a day old, and the SatNOGS transponder database about once a week. See the <a href="privacy.html">Privacy page</a> for what each service receives.</p>
 
                 <h2 id="troubleshooting">Troubleshooting</h2>
                 <h3>No passes or empty screens</h3>
@@ -440,7 +451,7 @@
                 <h3>The audio or digital-mode cards are missing</h3>
                 <p>They appear only with a USB audio interface or Icom network audio connected. Set them to <strong>Always</strong> in <strong>Settings &rarr; Audio features</strong> to use the built-in microphone instead.</p>
                 <h3>The Live Activity is dimmed or stopped updating</h3>
-                <p>"Open OrbitDeck to update" means the activity has run past the passes it carries. Open OrbitDeck to replan it, and turn on Background App Refresh for OrbitDeck in the iOS Settings app so iOS can refresh it in the background. iOS also ends every Live Activity after 8 hours; opening the app renews it.</p>
+                <p>"Open OrbitDeck to update" means the activity's information may be out of date, usually because it has run past the passes it carries. Open OrbitDeck to update it, and turn on Background App Refresh for OrbitDeck in the iOS Settings app so iOS can refresh it in the background. iOS also ends every Live Activity after 8 hours; opening the app renews it.</p>
                 <h3>A desktop program can't connect to the rigctld or rotctld server</h3>
                 <p>Keep OrbitDeck open and answer the <em>Allow network client?</em> prompt within 30 seconds. Both devices must be on the same local network; connections over VPN or cellular are refused.</p>
                 <h3>Space weather shows blank K or A</h3>

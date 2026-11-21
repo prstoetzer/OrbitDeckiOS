@@ -361,7 +361,6 @@ struct RigControlSettingsView: View {
             Stepper("Command delay: \(rig.config.tuning.commandDelayMs) ms", value: bindTuning(\.commandDelayMs), in: 0...500, step: 10)
             Toggle("MAIN = uplink, SUB = downlink", isOn: bindTuning(\.mainIsUplink))
             Toggle("Command radio satellite mode", isOn: bindTuning(\.satMode))
-            Toggle("Assign MAIN/SUB bands (IC-9100/9700)", isOn: bindTuning(\.assignBands))
             Stepper("FM deadband: \(rig.config.tuning.fmDeadbandHz) Hz", value: bindTuning(\.fmDeadbandHz), in: 0...2000, step: 50)
             Stepper("Linear deadband: \(rig.config.tuning.linearDeadbandHz) Hz", value: bindTuning(\.linearDeadbandHz), in: 0...500, step: 10)
             if !rig.config.twoRadios, rig.config.slots[0].splitVFO {

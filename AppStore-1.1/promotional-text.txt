@@ -1,0 +1,1 @@
+New in 1.1: decode CW on the downlink, work packet and APRS through satellites, track your awards, and follow the next pass on the Lock Screen and Apple Watch.

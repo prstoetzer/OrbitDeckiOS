@@ -1,0 +1,23 @@
+OrbitDeck 1.1 is the biggest update since launch. It turns the tracker into a station controller.
+
+• CW decoder: copy Morse on the downlink. The DeepCW neural decoder (on-device, the new default) handles weak signals and uneven fists; the Classic decoder adds tone search with AFC, 50/100/200 Hz filters, squelch and 5–50 WPM. Tap a decoded callsign to log it.
+• Packet and APRS: built-in 1200 baud AFSK and 9600 baud G3RUH modems, or a KISS TNC over Bluetooth LE or TCP. APRS messaging and beacons through satellites and the ISS, a map of heard stations, a per-pass frame log with statistics, alerts for messages to you, and an optional receive-only satgate.
+• Awards and a better log: QSO, satellite, VUCC grid, WAS and DXCC totals, worked vs. LoTW-confirmed; a LoTW station-location picker with subdivisions and IOTA; voice memos that become QSO entries; PDF log reports; DXCC and country on every QSO.
+• Station control: two-radio stations, including a satellite rig as one leg; split-VFO Doppler on one radio; IC-705/IC-905 built-in Bluetooth; a live tune-mode selector (Full, Downlink only, Uplink only, Hold); a Beacon button; per-satellite CTCSS and data modes; and a one-tap Stop all.
+• Network servers: built-in rigctld and rotctld servers let programs on your local network share OrbitDeck's radio and rotator links. Off by default; new clients need your approval.
+• Automatic satellite switching: up to 9 priority satellites, switched as each one rises, with a 12-hour simulated plan and a pass timeline on Home.
+• Rotator control: manual jog and go-to, position read-back with a stall warning, a self-test, automatic retry, and Sun, Moon and fixed-bearing targets.
+• Live Activity, Dynamic Island and Apple Watch: the next pass counts down on the Lock Screen and runs through the pass and on to the next while OrbitDeck is closed, with a compact Apple Watch Smart Stack layout (iOS 18 or later).
+• FT4: signal subtraction, a deep "Decode again" pass, DT filtering, Band Activity shading for new calls and grids, a TX watchdog and a short Tune carrier.
+• SSTV: Martin M3/M4 and Scottie S3/S4, damaged-header fallback, noisy-line repair and automatic start and stop by elevation.
+• Planning extras: weather and cloud cover on visible passes, activation reminders, AMSAT status with heard marks, a Nearby & DX hub, a location converter, grid distance and bearing, workable states and DXCC, comet positions, Notes, in-app Help, a station readiness checklist, and backup and restore.
+
+Safer transmitting and more reliable operation
+• One transmitter authority for every mode: only one feature keys the radio at a time, Stop and disconnect always unkey, and every mode has a maximum key time.
+• Transmit refuses a receive-only transponder; FT4 refuses FM-only transponders and Tune needs Transmit on and a callsign.
+• Network PTT is a separate opt-in with a 3-minute limit, and clients are refused over VPN and cellular.
+• The rotator retries failed moves instead of skipping them.
+• An unreadable log file is set aside, never overwritten, and only QSOs the server accepted are marked uploaded.
+• Imported TLE/OMM elements persist, malformed elements are skipped, and geostationary satellites such as QO-100 show as continuously visible.
+• The audio input is watched for stalls and restarted, and the screen stays awake while a decoder or recording runs.
+• Faster FT4 and waterfalls, layout fixes on smaller iPhones, and VoiceOver improvements.

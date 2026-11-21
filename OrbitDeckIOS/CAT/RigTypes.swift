@@ -487,7 +487,7 @@ struct CATTuning: Codable, Sendable, Equatable {
     var commandDelayMs = 70          // pause after each CAT frame
     var mainIsUplink = true          // VFO_MAIN_UP_SUB_DOWN default
     var satMode = false              // command the rig's own satellite mode
-    var assignBands = false          // send CI-V 07 D2 band assignment at engage
+    var assignBands = false          // legacy, unused: the IC-9100/9700 MAIN/SUB exchange is automatic; kept so saved configs decode
     var fmDeadbandHz = 300           // FM write deadband
     var linearDeadbandHz = 20        // SSB/CW write deadband (tight for FT4/CW tracking)
     var narrowFM = true              // command narrow FM (FM-N) on FM satellites (they're narrow-band)

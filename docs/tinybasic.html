@@ -72,7 +72,7 @@
                     <li><strong>Several statements per line</strong> may be separated by a colon <code>:</code> — for example <code>10 A=1: B=2: PRINT A+B</code>.</li>
                     <li><strong>Keywords are case-insensitive</strong> (<code>print</code> = <code>PRINT</code>). Variable and function names are treated as upper-case.</li>
                     <li><strong>Comments</strong> use <code>REM</code>; everything to the end of the line is ignored. <code>DATA</code> lines are likewise skipped during normal execution and read only by <code>READ</code>.</li>
-                    <li><strong>Immediate mode</strong> — a program with no line numbers runs its statements top to bottom, but flow-control statements that need line targets (<code>GOTO</code>, <code>GOSUB</code>, <code>RETURN</code>, <code>DATA</code>, <code>READ</code>, <code>RESTORE</code>) require a numbered program and will report an error in immediate mode.</li>
+                    <li><strong>Immediate mode</strong> — a program with no line numbers runs its statements top to bottom. Statements that need line targets or the <code>DATA</code> list (<code>GOTO</code>, <code>GOSUB</code>, <code>RETURN</code>, <code>ON…GOTO</code>, <code>IF…THEN&nbsp;<em>lineNumber</em></code>, <code>DATA</code>, <code>READ</code>, <code>RESTORE</code>) report an error in immediate mode, and <code>FOR…NEXT</code> loops also need a numbered program. Unnumbered lines are ignored when the program also has numbered lines.</li>
                 </ul>
                 <div class="note">Because the colon splits a line into independent statements, only the statement immediately after <code>THEN</code> is guarded by an <code>IF</code>. In <code>10 IF X&gt;0 THEN PRINT "POS" : PRINT "ALWAYS"</code>, the second <code>PRINT</code> runs regardless of <code>X</code>. Put conditional work on its own line or branch with <code>THEN&nbsp;<em>lineNumber</em></code>.</div>
 
@@ -89,7 +89,7 @@
                 <h3>Arrays</h3>
                 <p>Arrays are declared with <code>DIM</code> and are <strong>zero-based</strong> — <code>DIM A(12)</code> creates indices <code>0</code>…<code>11</code>. Two kinds exist:</p>
                 <ul>
-                    <li><strong>Named arrays</strong> share the letter namespace with functions but are separate from the same-letter scalar: <code>DIM A(10)</code> then <code>A(3)=7</code>. A scalar <code>A</code> and the array <code>A(…)</code> are independent.</li>
+                    <li><strong>Named arrays</strong> use a single letter <code>A</code>–<code>Z</code>: <code>DIM A(10)</code> then <code>A(3)=7</code>. A scalar <code>A</code> and the array <code>A(…)</code> are independent.</li>
                     <li><strong>The anonymous array</strong> <code>@()</code> — a single unnamed array: <code>DIM @(6)</code> then <code>@(0)=2</code>.</li>
                     <li>Clear a named array with <code>ERASE&nbsp;<em>name</em></code>.</li>
                 </ul>
@@ -113,7 +113,7 @@
                     <tr><td>Unary</td><td><code>-</code> <code>+</code> <code>NOT</code></td><td><code>NOT</code> yields 1 for a zero operand, else 0</td></tr>
                 </table>
                 <p>Comparison and logical operators produce <code>1</code> for true and <code>0</code> for false, so they can be used directly in arithmetic. Parentheses group as usual. Dividing or taking a remainder by zero raises <code>?divide by zero</code>.</p>
-                <p><strong>Strings</strong> concatenate with <code>+</code> and compare with the same relational operators (<code>=</code>, <code>&lt;&gt;</code>, ordering by Unicode). A relation is treated as a string comparison when either side looks like a string (a literal in quotes or a <code>$</code> variable/function).</p>
+                <p><strong>Strings</strong> concatenate with <code>+</code>. In an <code>IF</code> condition they compare with the same relational operators (<code>=</code>, <code>&lt;&gt;</code>, ordering by Unicode); the relation is treated as a string comparison when either side looks like a string (a literal in quotes or a <code>$</code> variable/function).</p>
                 <div class="note">Trigonometric functions work in <strong>degrees</strong>, not radians — <code>SIN(30)</code> is 0.5. Use the <code>RAD</code> and <code>DEG</code> constants to convert if you need radians.</div>
 
                 <h2 id="statements">Statements</h2>
@@ -124,7 +124,7 @@
                     <tr><td><code>LPRINT <em>items</em></code></td><td>Like <code>PRINT</code> but the line is prefixed with <code>[LPRINT]</code> (a stand-in for a printer).</td></tr>
                     <tr><td><code>INPUT <em>v</em>[,<em>v</em>…]</code></td><td>Read values supplied in the INPUT panel before the run. Numeric or <code>$</code> variables.</td></tr>
                     <tr><td><code>IF <em>cond</em> THEN <em>…</em></code></td><td>If the condition is non-zero, run the statement after <code>THEN</code>; if <code>THEN</code> is followed by a bare line number, jump there.</td></tr>
-                    <tr><td><code>FOR <em>v</em>=<em>a</em> TO <em>b</em> [STEP <em>s</em>]</code> … <code>NEXT</code></td><td>Counted loop; default step 1. Negative steps count down.</td></tr>
+                    <tr><td><code>FOR <em>v</em>=<em>a</em> TO <em>b</em> [STEP <em>s</em>]</code> … <code>NEXT</code></td><td>Counted loop; default step 1. Negative steps count down. The body always runs at least once. <code>NEXT</code> closes the innermost loop (a variable name after it is ignored).</td></tr>
                     <tr><td><code>GOTO <em>n</em></code></td><td>Jump to line <em>n</em>.</td></tr>
                     <tr><td><code>GOSUB <em>n</em></code> … <code>RETURN</code></td><td>Call a subroutine and return to the following statement.</td></tr>
                     <tr><td><code>ON <em>expr</em> GOTO <em>n1</em>,<em>n2</em>,…</code></td><td>Jump to the <em>expr</em>-th line number (1-based); out-of-range falls through.</td></tr>
@@ -146,7 +146,7 @@
                     <li><strong>Comma</strong> inserts two spaces between items (a light column effect).</li>
                     <li><strong>Semicolon</strong> joins items with no space.</li>
                     <li>A <strong>trailing</strong> comma or semicolon suppresses the line break, so the next <code>PRINT</code> continues the same line. A <code>PRINT</code> with no arguments flushes the pending line.</li>
-                    <li>Whole numbers print without a decimal point; other values use a compact general format.</li>
+                    <li>Whole numbers print without a decimal point; other values use a compact general format with six significant digits.</li>
                 </ul>
 <pre><code>10 A=42: N$="ISS"
 20 PRINT "SAT ", N$, "CODE"; A</code></pre>
@@ -168,10 +168,10 @@
                     <tr><td><code>FRAC(x)</code></td><td>Fractional part</td></tr>
                     <tr><td><code>SGN(x)</code></td><td>&minus;1, 0, or 1</td></tr>
                     <tr><td><code>SQR(x)</code></td><td>Square root (of max(0, x))</td></tr>
-                    <tr><td><code>EXP(x)</code>, <code>LOG(x)</code>, <code>LOG10(x)</code></td><td>Exponential and natural / base-10 logs</td></tr>
+                    <tr><td><code>EXP(x)</code>, <code>LOG(x)</code>, <code>LOG10(x)</code></td><td>Exponential and natural / base-10 logs (the logs return 0 for x &le; 0)</td></tr>
                     <tr><td><code>SIN(x)</code>, <code>COS(x)</code>, <code>TAN(x)</code></td><td>Trig, argument in <strong>degrees</strong></td></tr>
                     <tr><td><code>ASN(x)</code>, <code>ACS(x)</code>, <code>ATN(x)</code></td><td>Inverse trig, result in <strong>degrees</strong></td></tr>
-                    <tr><td><code>ATN2(y,x)</code></td><td>Two-argument arctangent, degrees 0…360 range via atan2</td></tr>
+                    <tr><td><code>ATN2(y,x)</code></td><td>Two-argument arctangent in degrees, &minus;180…180</td></tr>
                     <tr><td><code>MIN(a,b)</code>, <code>MAX(a,b)</code>, <code>HYP(a,b)</code></td><td>Minimum, maximum, hypotenuse</td></tr>
                     <tr><td><code>RND</code> · <code>RND(n)</code></td><td>Random 0…1; with an argument, a random integer 0…n&minus;1</td></tr>
                 </table>
@@ -229,7 +229,7 @@
                     <tr><td><code>UTCH UTCM UTCS</code></td><td>Hour, minute, second</td></tr>
                     <tr><td><code>UTCDAY UTCMON UTCYR</code></td><td>Day, month, year</td></tr>
                     <tr><td><code>LSTHR</code></td><td>Local sidereal time, hours</td></tr>
-                    <tr><td><code>TIMEOK</code></td><td>1 when the clock is set (also gates <code>TIME$</code>/<code>DATE$</code>)</td></tr>
+                    <tr><td><code>TIMEOK</code></td><td>1 when the clock is set (always 1 on iOS; also gates <code>TIME$</code>/<code>DATE$</code>)</td></tr>
                 </table>
 
                 <h3>Station</h3>
@@ -261,7 +261,7 @@
                     <tr><td><code>AOSIN LOSIN</code></td><td>Minutes to AOS / LOS of the next pass</td></tr>
                     <tr><td><code>PASSEL</code></td><td>Maximum elevation of the next pass (degrees)</td></tr>
                     <tr><td><code>PASSVIS</code></td><td>1 if the next pass is optically visible (satellite sunlit, Sun below &minus;6&deg;)</td></tr>
-                    <tr><td><code>PASSN</code></td><td>Number of upcoming passes found (up to 8)</td></tr>
+                    <tr><td><code>PASSN</code></td><td>Number of upcoming passes found (up to 8 in the next 10 days, above your minimum-elevation setting)</td></tr>
                     <tr><td><code>PASSOK</code></td><td>1 when a pass was found</td></tr>
                 </table>
                 <p>Use <code>PASSAOS(k)</code>, <code>PASSLOS(k)</code> and <code>PASSMAX(k)</code> to read individual passes 1…<code>PASSN</code>.</p>
@@ -300,10 +300,10 @@
                     <tr><td><code>BFIELD BRATIO</code></td><td>Field magnitude (nT) and B/B<sub>0</sub> ratio</td></tr>
                     <tr><td><code>INBELT INSAA</code></td><td>1 inside a radiation belt / South Atlantic Anomaly</td></tr>
                 </table>
-                <div class="note">Several host variables are defined for source-compatibility with CardSat firmware (for example GPS, battery, heap and additional space-weather fields such as <code>FLARE</code>, <code>BZ</code>, <code>SWSPEED</code>). On iOS these read 0 unless OrbitDeck has a value for them; guard on the matching "OK" flag where one exists. The geomagnetic figures use the same centered-dipole model as Orbital Zones, not a full IGRF model.</div>
+                <div class="note">Several host variables are defined for source-compatibility with CardSat firmware (for example GPS, battery, heap and additional space-weather and weather fields such as <code>FLARE</code>, <code>BZ</code>, <code>SWSPEED</code>, <code>WXTEMP</code>). On iOS these read 0 unless OrbitDeck has a value for them; guard on the matching "OK" flag where one exists. The geomagnetic figures use the same centered-dipole model as Orbital Zones, not a full IGRF model.</div>
 
                 <h2 id="satsel">Selecting satellites &amp; transponders</h2>
-                <p>By default the live variables describe OrbitDeck's currently selected satellite. Inside a program you can switch context:</p>
+                <p>By default the live variables describe OrbitDeck's currently selected satellite (or the first catalog entry if none is selected). Inside a program you can switch context:</p>
                 <ul>
                     <li><code>SATSEL <em>i</em></code> — select catalog index <em>i</em> (0-based) and refresh all <code>SAT…</code>, pass and geomagnetic variables, plus the <code>PASSAOS/PASSLOS/PASSMAX</code> tables. It clears any transponder selection.</li>
                     <li><code>TXSEL <em>i</em></code> — select transponder index <em>i</em> (0-based) on the current satellite and populate <code>TX…</code> and <code>DOPPRX/DOPPTX</code>.</li>
@@ -331,7 +331,7 @@
                     <tr><td><code>PSET x,y[,c]</code></td><td>Plot a point (color defaults to 1)</td></tr>
                     <tr><td><code>LINE x1,y1,x2,y2[,c]</code></td><td>Draw a line</td></tr>
                     <tr><td><code>CIRCLE x,y,r[,c]</code></td><td>Draw a circle outline</td></tr>
-                    <tr><td><code>TEXT x,y,<em>value</em></code></td><td>Draw text (a string or a number) at x,y</td></tr>
+                    <tr><td><code>TEXT x,y,<em>value</em></code></td><td>Draw text (a string or a number) in white with its top-left corner at x,y</td></tr>
                     <tr><td><code>SHOW</code></td><td>Marker to present the frame (drawing is shown after the run regardless)</td></tr>
                 </table>
 

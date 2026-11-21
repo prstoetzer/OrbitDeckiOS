@@ -101,7 +101,7 @@
                 <ul>
                     <li><strong>DXCC entity and country</strong> are resolved from the callsign for every QSO (from the Home card, the editor, FT4 and packet auto-logging, and ADIF import). QSOs logged before this existed are filled in once, automatically. You can correct either field in the editor.</li>
                     <li><strong>QRZ name and state fill.</strong> With QRZ credentials set and <em>Fill in names and states from QRZ</em> on, OrbitDeck looks up the operator's first name (or QRZ nickname) in the background when a QSO is logged without one, and a US station's state (for WAS). It only fills empty fields, never overwrites what you typed, makes at most one lookup per second, and backs off after a login or network error. Logging never waits for it. ADIF imports are not looked up, so a big file can't flood QRZ.</li>
-                    <li>From <strong>Awards</strong>, <strong>Fill missing US states from QRZ</strong> queues every US contact that has no state yet.</li>
+                    <li>From <strong>Awards</strong>, <strong>Fill <em>n</em> missing US state(s) from QRZ</strong> queues every US contact that has no state yet; they fill in at one lookup per second.</li>
                 </ul>
                 <div class="note">A QRZ fill counts as an edit: if it adds a name or state to a QSO already sent to Cloudlog, that QSO's Cloudlog mark is cleared so the completed record is sent again.</div>
 
@@ -153,7 +153,7 @@
 
                 <h2 id="resend">Re-sending</h2>
                 <ul>
-                    <li><strong>Edits re-send automatically.</strong> Changing the call, time, satellite, mode or frequencies clears both upload marks (those are what LoTW signs). Changing any other exported field (reports, grids, name, state, country, DXCC, notes, per-leg modes) clears only the Cloudlog mark. The corrected QSO goes out with the next upload.</li>
+                    <li><strong>Edits re-send automatically.</strong> Changing the call, time, satellite, mode or frequencies clears both upload marks (those are what LoTW signs). Changing any other exported field (reports, grids, name, state, country, DXCC, notes, per-leg modes, or your own call or grid) clears only the Cloudlog mark. The corrected QSO goes out with the next upload.</li>
                     <li><strong>Edits during an upload.</strong> If a QSO is edited (or filled from QRZ) while an upload is in progress, it isn't marked as sent; the status message says so and the new version goes next time.</li>
                     <li><strong>Per-QSO marks.</strong> In the editor, turn <em>Uploaded to LoTW</em> or <em>Uploaded to Cloudlog</em> off to re-send just that QSO, or on to stop it being sent.</li>
                     <li><strong>Re-send all</strong> sends the whole log again, including QSOs already marked as sent (after a confirmation). LoTW ignores exact duplicates.</li>
@@ -183,7 +183,7 @@
                     <li><strong>Favorites' keps</strong>: your favorite satellites' element sets as TLE text or a PDF.</li>
                     <li><strong>Station readiness (PDF)</strong>: the readiness checklist as a report.</li>
                     <li><strong>Support AMSAT sheet (PDF)</strong>: a one-page handout.</li>
-                    <li><strong>Contact card</strong>: your name and callsign with a QR code to your QRZ page (set your callsign in Settings &rarr; Operator identity first).</li>
+                    <li><strong>Contact card</strong>: your callsign, the name you type next to the button, your grid and a QR code to your QRZ page (set your callsign in Settings &rarr; Operator identity first).</li>
                 </ul>
 
                 <h2 id="privacy">Permissions &amp; privacy</h2>

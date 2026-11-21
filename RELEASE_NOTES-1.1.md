@@ -1,14 +1,14 @@
 # OrbitDeck 1.1 — change log since 1.0 (working notes)
 
-Running log of everything added or changed since **1.0 (18)**, the App Store release, for the 1.1 App Store notes and the website/documentation update. **The website (`docs/`) has deliberately not been updated yet** — do that when 1.1 is submitted. See "Website pages to update" at the end.
+Running log of everything added or changed since **1.0 (18)**, the App Store release, for the 1.1 App Store notes and the website/documentation update. **The website (`docs/`) has been updated for 1.1** (build 5); see "Website" at the end.
 
-Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build each item landed in is shown in brackets.
+Builds so far: 1.1 (1) → 1.1 (5). Everything below is in `main`; the build each item landed in is shown in brackets. Build 5's changes are collected in "Build 5 additions" below (and tagged [5] where they change an earlier item).
 
 ---
 
 ## Highlights (for the App Store "What's New")
 
-- **CW decoder** — copy Morse on the downlink with automatic tone tracking, adaptive speed, prosigns and tap-to-log callsigns. [4]
+- **CW decoder with DeepCW** — copy Morse on the downlink with DeepCW, an on-device neural decoder that copies weak signals and uneven fists, or the Classic decoder with tone tracking, adaptive speed and prosigns; tap a callsign to log it. [4, DeepCW 5]
 - **Packet / APRS** — built-in 1200 and 9600 baud modems, APRS messaging and beacons through satellites and the ISS, a map of heard stations, or a Bluetooth LE KISS TNC. [1–3]
 - **Awards and a better log** — VUCC grids, WAS, DXCC and per-satellite totals; LoTW location picker for every entity LoTW supports; voice memos that become QSO entries; PDF log reports. [3]
 - **Two-radio stations with satellite rigs**, a live tune-mode selector, Stop all, and rigctld/rotctld servers so desktop programs can share OrbitDeck's radio and rotator links. [3]
@@ -16,6 +16,8 @@ Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build eac
 - **Rotator**: manual control, position read-back, self-test, Sun/Moon aiming. [3]
 - **Live Activity & Dynamic Island** for the next pass, now staying current while the app is closed. [1–4]
 - **Planning extras**: weather and cloud cover on visible passes, activation reminders, backup & restore, in-app Help and a station readiness checklist. [3]
+- **Safer transmitting** — one feature keys the radio at a time, every key has a time limit, Stop all and disconnects always unkey, and network clients need your approval before they can control the radio or rotator. [5]
+- **More dependable data** — the log is never overwritten if a file can't be read, Cloudlog uploads are checked, and imported orbital elements are kept. [5]
 
 ---
 
@@ -31,7 +33,7 @@ Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build eac
 - **Live tune mode** on the Home rig card — Full (downlink-follow), Full (uplink-follow), Downlink only, Uplink only, Hold. [3]
 - **Receive-only transponders/beacons** on Icom satellite rigs — satellite mode off and tuning on MAIN; a one-tap **Beacon** button. [3]
 - **Engaged-satellite lock** — picking another satellite mid-pass asks before retuning the radio and moving the antenna (automatic switching still switches); shared rule for CAT and rotator. [3]
-- **Stop all** — releases PTT, stops FT4/packet, disconnects CAT, parks the rotator. [3]
+- **Stop all** — releases PTT, stops FT4/packet, disconnects CAT, parks the rotator. [3] Also stops remote-voice transmit and ends rigctld/rotctld client control. [5]
 - **Passband-edge banner**, **CAT monitor** (per-frame trace) and **guided self-test**, **CAT rate floor** for slow serial rates, **tilt-to-tune** (optional). [3]
 - **No-CAT HOLD/TUNE calculator** — hold one leg at a fixed dial (HT, FT-817) and read the other's corrected dial live.[3]; type the held dial in MHz, kHz or Hz with a live result and a keypad Done button [4]
 - **Kenwood TS-590/590SG/890/990** as single-radio legs. [1]
@@ -42,7 +44,7 @@ Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build eac
 
 ## Network servers
 
-- **rigctld server** (TCP 4532) and **rotctld server** (TCP 4533) so Gpredict, SatPC32, WSJT-X or a logger on your LAN can read/drive the radio and rotator through OrbitDeck's link. Off by default. Network PTT is a separate opt-in (default off) with a 3-minute keyed limit and automatic unkey when the client drops. Foreground (or background-audio) only. [3]
+- **rigctld server** (TCP 4532) and **rotctld server** (TCP 4533) so Gpredict, SatPC32, WSJT-X or a logger on your LAN can read/drive the radio and rotator through OrbitDeck's link. Off by default. Network PTT is a separate opt-in (default off) with a 3-minute keyed limit and automatic unkey when the client drops. Foreground (or background-audio) only. [3] New clients from other devices need approval (Allow once / Always allow / Deny), and network PTT is limited to the client's own key. [5]
 
 ## Rotator
 
@@ -54,7 +56,7 @@ Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build eac
 
 ## Digital modes and audio
 
-- **CW decoder** — automatic tone search (300–1,200 Hz) with AFC, 50/100/200 Hz filters, squelch, adaptive 5–50 WPM (or fixed) with Farnsworth handling, full ITU table + prosigns; spectrum strip (tap to tune), transcript with copy/share/timestamps, tappable callsigns → quick log. Runs alongside recording, FT4 and SSTV. [4]
+- **CW decoder** — automatic tone search (300–1,200 Hz) with AFC, 50/100/200 Hz filters, squelch, adaptive 5–50 WPM (or fixed) with Farnsworth handling, full ITU table + prosigns; spectrum strip (tap to tune), transcript with copy/share/timestamps, tappable callsigns → quick log. Runs alongside recording, FT4 and SSTV. [4] This is now the **Classic** decoder; DeepCW became the default in build 5 (see below). [5]
 - **Packet / APRS** — built-in AFSK 1200 modem and BLE KISS TNC (B.B. Link for the TH-D74/D75) [1]; UISS-style messages, per-satellite path/format, macros, PTT watchdog, timed beacon, heard-station list, automatic QSO logging when a two-way exchange completes [1]; **9600 baud G3RUH** modem, **APRS map** of heard stations with symbols, data mode [1].
   - **Pass log** — every frame heard or sent is saved per pass (last 30 kept) with a session list, per-pass statistics (frames and stations heard, sent/digipeated and success %, median digipeat delay, frames per minute) and TNC2/UISS-style text and CSV export. [4]
   - **Monitor** — full via path with `*` on the digipeater that repeated it and satellite digipeaters (RS0ISS, ARISS, PSAT…) highlighted; raw TNC2 view; filters by callsign, text, digipeated only, and hide beacons/telemetry/status. [4]
@@ -62,7 +64,7 @@ Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build eac
   - **Minimum elevation** for sending and beacons (global, per-satellite override); **beacon when the satellite is first heard**; **status/text beacon** alone or alternating with the position; **automatic resend** of unacknowledged messages (2×, 30 s apart, with retry state). [4]
   - **APRS objects, items (incl. killed), weather** (positionless and in positions) and **third-party** packets decoded; objects/items on the station map, weather in the station list. [4]
   - **KISS over TCP** — Direwolf, UZ7HO soundmodem or a LAN TNC (default port 8001), with automatic reconnect. [4]
-  - **Satgate (RF → APRS-IS)** — opt-in, receive-only: gates heard packets with `qAR,<your call>`, 30 s duplicate suppression, never own/NOGATE/RFONLY/TCPIP packets, never Internet → RF; passcode in the Keychain. **Privacy policy and App Privacy label need updating:** with the satgate on, heard packets and the operator's callsign/passcode go to the chosen APRS-IS server. [4]
+  - **Satgate (RF → APRS-IS)** — opt-in, receive-only: gates heard packets with `qAR,<your call>`, 30 s duplicate suppression, never own/NOGATE/RFONLY/TCPIP packets, never Internet → RF; passcode in the Keychain. **Privacy policy updated [5]; App Privacy label still to review:** with the satgate on, heard packets and the operator's callsign/passcode go to the chosen APRS-IS server. [4]
 - **FT4** — late start within 2 s of a slot, wait-and-pounce, CQ block list, remembered `<…>` callsigns, per-transponder echo calibration, missing-grid warning, more robust message parsing; Doppler hold only on the FT4 transponder. [1]
 - **FT4 decoding** — signal subtraction with a second/third decode pass for weaker stations under strong ones (on by default); **Decode again (deep)** on the previous slot (button or long-press the waterfall: more candidates, 50 LDPC iterations, de-chirp grid for sliding uplinks), merged and tagged "deep"; DT column (WSJT-X convention) with an optional |DT| > 1.5 s filter. [4]
 - **FT4 Band Activity** — shading for calls and VUCC grids not yet in the log, a "Target" tag for pounce targets, and an All / Me & my echoes filter. [4]
@@ -109,25 +111,81 @@ Builds so far: 1.1 (1) → 1.1 (4). Everything below is in `main`; the build eac
 
 ## Privacy, permissions and credits
 
-- New network services (all user-initiated or shown only on the screens that use them): Open-Meteo (location rounded to ~1 km), APRS-IS, DX cluster, ADS-B (user's own LAN receiver), status.amsat.org. **Privacy policy and App Privacy label need review for these.**
+- New network services (all user-initiated or shown only on the screens that use them): Open-Meteo (location rounded to ~1 km), APRS-IS, DX cluster, ADS-B (user's own LAN receiver), status.amsat.org. **Privacy policy updated for these [5]; App Privacy label still to review.**
 - Microphone purpose string now covers voice memos; local-network string covers the servers, ADS-B and DX cluster. [3]
 - In-app **Acknowledgments** (ft8_lib, SatelliteKit, d3-celestial BSD-3, Natural Earth, Yale BSC, Open-Meteo CC BY 4.0); README/website credit contributors. [3, 4]
 
 ---
 
-## Website pages to update (when 1.1 is submitted)
+## Build 5 additions
 
-| Page | What to add or change |
-|------|----------------------|
-| `index.html` | 1.1 highlights; feature grid (CW, packet, awards, servers, auto switching, Live Activity) |
-| `documentation.html` | Home cards (CW, packet, tune mode, Stop all, Beacon, SSB/CW), auto switching, pass timeline, Live Activity, weather, activations, AMSAT, Nearby & DX, maps/tools, Notes, Help, readiness, backup/restore, reset |
-| `catcontrol.html` | IC-705/905 Bluetooth, split VFO, satellite rigs as legs, tune modes, receive-only/beacon, engaged lock, Stop all, per-satellite CTCSS, data modes, Kenwood HF legs, rigctld VFO mode, monitor/self-test, rigctld server + network PTT safety |
-| `rotator.html` | Flip fix, compass display, GS-232 az-only, SPID, manual control, read-back, self-test, Sun/Moon targets, rotctld server |
-| `digitalmodes.html` | CW section exists (added in build 4) — review; packet 9600/APRS map; FT4 additions; SSTV additions; audio health |
-| `logging.html` | Awards, LoTW location picker/IOTA, re-send, LoTW confirmation import, PDF, voice memos, DXCC/QRZ fill, RST by mode |
-| `privacy.html` | Open-Meteo, APRS-IS, DX cluster, ADS-B, status.amsat.org; voice-memo microphone use; local-network servers |
-| `source.html` | Contributors section exists (added in build 4); repository layout (widget extension, tests) |
+### CW: DeepCW neural decoder [5]
+
+- **DeepCW** (by e04, MIT; converted to Core ML and bundled) is now the default CW decoder. It copies the 400–1200 Hz band, including weak signals and uneven fists; text appears in bursts about 2 s behind the audio. Runs on the device (about 6 ms per window on CPU+GPU).
+- **Classic** stays as an option (CW Setup → Decoder: DeepCW / Classic) for pitches outside 400–1200 Hz, prosigns, and following one signal among several. Squelch, bandwidth and speed settings show only for Classic; the pitch, speed, SNR and spectrum readouts work with both. Falls back to Classic if the model is missing.
+- Credited in Acknowledgments and THIRD_PARTY_NOTICES.md; conversion tooling, a Python reference decoder and a test-audio generator in `tools/deepcw/`.
+
+### Transmit safety [5]
+
+- **One PTT authority** — one feature holds the transmitter at a time (FT4, FT4 Tune, packet, remote voice, a rigctld client); others are refused ("Transmitter in use by …"). Keys and unkeys go out strictly in order, so an unkey is never overtaken; releasing a pending key cancels it. Each feature has a maximum key time, with a 4-minute absolute cap.
+- PTT is released on Stop all, disconnect, link drop, and when OrbitDeck goes to the background for remote voice, Tune and network clients (FT4 and packet sessions keep running). Disconnect and link drop send PTT-off first; an unconfirmed unkey is retried on reconnect and a warning is shown; quitting the app sends PTT-off.
+- **FT4** — Stop always releases PTT (including a key still in flight); Tune needs Transmit on and a callsign; sends without a callsign are refused.
+- **Packet** — Stop cancels a pending transmission; a refused key no longer plays the frame; playback errors unkey at once. Monitoring starts without a callsign; every transmit path checks for one.
+- **Remote voice** — keys only after playback starts; 3-minute limit; unkeys on background, gesture cancel or leaving the screen.
+
+### Network server approval [5]
+
+- rigctld/rotctld servers hold new clients from other devices until you choose **Allow once**, **Always allow** or **Deny** (prompt on any screen, or in the server settings); unanswered requests are denied after 30 s or when OrbitDeck goes to the background. Clients on the same device are always allowed; "Require approval for new clients" is on by default; allowlist entries can be swiped away.
+- VPN and cellular interfaces are refused. `T 0` only releases the caller's own key, and a forced release can't leave a stale client key.
+
+### Rotator [5]
+
+- Failed position commands are retried with a 2–10 s backoff instead of being skipped until the target moved far enough.
+
+### Logbook integrity [5]
+
+- Save errors are shown in a banner. An unreadable log file is moved to `<name>.corrupt-<timestamp>.json` before starting empty, and never overwritten (QSO log, recordings, SSTV and FT4 files).
+- An upload only marks QSOs that still match what was sent; QRZ fills clear the Cloudlog mark like any edit.
+- Cloudlog/Wavelog replies are checked: success needs a created status and every QSO imported, otherwise nothing is marked and the server's messages are shown.
+- Cloudlog URLs must be https, except plain http to a local-network host (with an unencrypted-key warning); ATS errors explain the fix.
+- ADIF field lengths and frequencies can't overflow.
+
+### Catalog and prediction [5]
+
+- CelesTrak cooldown is per group/URL (plus a device-wide back-off after rate limiting), so switching groups fetches the new one.
+- Imported TLE/OMM element sets are kept across launches and catalog updates; newer imports win until the feed catches up; listed under Satellites → Add → Imported Elements with swipe-to-delete.
+- Malformed element values (NaN, infinity, out of range) are skipped and counted instead of crashing.
+- **BSTAR fix** — TLE parsing reads BSTAR (and Kozai mean motion) from the text itself; SatelliteKit's parser left drag at about 1e-53, so decay was effectively ignored.
+- Always-visible (GEO) satellites such as QO-100 show a continuously visible state; Home no longer hangs on them.
+- TLE export skips NORAD IDs that can't be written (instead of writing another satellite's ID); manual entry warns above 339999.
+- Location follow starts as soon as permission is granted on first run.
+
+### Live Activity redesign [5]
+
+- **Truthful layouts** — every layout (Lock Screen, Dynamic Island expanded/compact/minimal, Smart Stack) reads correctly through AOS and LOS without a redraw: countdowns sit next to the clock time they count to, compact shows the AOS/LOS time, minimal is an AOS-to-LOS ring; a background wake at AOS.
+- **Stale state** — content iOS marks out of date is dimmed with "Open OrbitDeck to update"; Settings explains when Background App Refresh is off.
+- **Deep link** — tapping the activity opens OrbitDeck on that satellite.
+- **VoiceOver** labels for every layout.
+- **No truncation** — timers are sized for their widest reading (hours-away countdowns no longer cut off), the Smart Stack gives the timer its own line, times and long names fall back to shorter forms.
+- Element epochs are part of the replan check; a scheduled activity starts no earlier than the running pass's LOS.
+
+### UI review fixes (summary) [5]
+
+- Simulator UI review: no mid-word wraps or truncation on Next Passes, Satellites, Pass Detail, Illumination, Orbital Analysis, Sky Radar, Home, Radio and Track; menu close button, current-screen highlight and VoiceOver buttons; labeled fields throughout Settings, Log, DX Cluster and activations; empty states for Mutual Windows, satellite-picker favorites, search and Daily Schedule.
+- Functional fixes: band names ("30 m") no longer converted to feet; friendlier location errors; APRS-IS port without a thousands separator; moon phase names; AO-7 phase uncertainty; consistent meteor-scatter verdict; correct downlink on the exported pass card; rotator enable toggle; Awards opens as a sheet from Log.
+- Audio-feature cards name their real input (USB, network radio or built-in mic); FT4 card polish (plain headline, dB gain sliders, visible meter track); units keep their case in section headers; network-client approval prompts appear on any screen.
+- Cleanups: the unused "Assign MAIN/SUB bands (IC-9100/9700)" toggle is gone (the IC-9100/9700 MAIN/SUB exchange is automatic); "Clear all saved passwords & keys" also deletes the imported LoTW certificate; Tiny BASIC FOR/NEXT without line numbers loops on one line instead of crashing; the BASIC files caption shows the real folder (Application Support/OrbitDeck/Basic).
+
+### Website [5]
+
+- `docs/` rewritten for 1.1: home page, documentation, rig control, rotator, digital modes (DeepCW and Classic CW), FT4 on the IC-9700 over the network, logging, privacy and source pages, with refreshed screenshots and Live Activity / Dynamic Island images. Requirements: iOS 17; Live Activity iOS 18; scheduled next pass iOS 26.
+
+---
+
+## Website
+
+The website (`docs/`) has been updated for 1.1 (build 5): every page listed in the earlier plan (`index`, `documentation`, `catcontrol`, `rotator`, `digitalmodes`, `ft4-ic9700-network`, `logging`, `privacy`, `source`) now covers the 1.1 features above, including DeepCW, transmit safety, server approval, logbook integrity and the Live Activity redesign. `PrivacyInfo.xcprivacy` now declares Precise and Coarse Location, User ID (callsign) and Other User Content, all linked and for App Functionality, with no tracking; the App Store **App Privacy** label must match (answers in `AppStore-1.1/app-privacy.md`).
 
 ## Still to verify on hardware before submitting
 
-CAT: IC-705 BT re-test, FM-D/PKT data modes, IC-9700 sat-mode-off on disconnect, satellite rigs as legs, receive-only layout, Kenwood OM0/MD and TS-590 TN, rigctld VFO mode. Servers with real Gpredict/WSJT-X. Rotator SPID reply format, read-back, self-test. Packet 9600 interoperability. CW decoder on a real downlink. FT4 subtraction/deep decode/DT on air, RF-power read per rig, Tune keying. SSTV thresholds and M3/M4/S3/S4 on air. LoTW upload with subdivisions/IOTA. Live Activity while closed: runs through a pass and moves on at LOS with the app suspended, background refresh, scheduled start (iOS 26), single activity after reopening/relaunch, renewal after 4 h, layouts on small/large phones and with another app sharing the island. App Review: keep the built-in-mic repro for background audio in the review notes.
+CAT: IC-705 BT re-test, FM-D/PKT data modes, IC-9700 sat-mode-off on disconnect, satellite rigs as legs, receive-only layout, Kenwood OM0/MD and TS-590 TN, rigctld VFO mode. Servers with real Gpredict/WSJT-X, including client approval (Allow once / Always allow / Deny, the 30 s timeout, denial in the background) and network PTT. Rotator SPID reply format, read-back, self-test. Packet 9600 interoperability. CW decoder on a real downlink: DeepCW (weak and drifting signals, the ~2 s delay) and Classic. PTT authority on real radios: FT4, Tune, packet, remote voice and network-client keys hand over cleanly, Stop all / disconnect / link drop always unkey, and the unconfirmed-unkey warning and retry. FT4 subtraction/deep decode/DT on air, RF-power read per rig, Tune keying. SSTV thresholds and M3/M4/S3/S4 on air. LoTW upload with subdivisions/IOTA. Live Activity while closed: runs through a pass and moves on at LOS with the app suspended, background refresh, scheduled start (iOS 26), single activity after reopening/relaunch, renewal after 4 h, the redesigned layouts on device (Lock Screen, Dynamic Island expanded/compact/minimal, Smart Stack on Apple Watch) on small/large phones, at large text sizes and with another app sharing the island, stale dimming, tap-to-open and VoiceOver. App Review: keep the built-in-mic repro for background audio in the review notes.

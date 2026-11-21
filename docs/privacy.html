@@ -57,7 +57,7 @@
                 <li>your <strong>APRS-IS passcode</strong>, for the optional packet satgate.</li>
             </ul>
             <p>Your <strong>LoTW callsign certificate</strong> (the .p12 file you import) is kept in OrbitDeck's private app storage on your device, protected by iOS data protection, not in the Keychain. Non-secret settings, such as your callsign, grid, QRZ and Space-Track user names, the Cloudlog address and station profile ID, and your LoTW station location, are stored in the app's preferences on your device.</p>
-            <p>Each secret is transmitted only to the corresponding service, and only when you use that feature. Your use of those services is governed by their own privacy policies. Settings has a <strong>Clear credentials</strong> button that removes every stored OrbitDeck password and key from the Keychain (Keychain items can survive deleting the app), and factory reset can remove them along with the LoTW certificate.</p>
+            <p>Each secret is transmitted only to the corresponding service, and only when you use that feature. Your use of those services is governed by their own privacy policies. <strong>Settings &rarr; Saved credentials &rarr; Clear all saved passwords &amp; keys</strong> removes every stored OrbitDeck password and key from the Keychain (Keychain items can survive deleting the app) and deletes the imported LoTW certificate; Settings &rarr; Reset can also remove them.</p>
 
             <h2>Third-party data services</h2>
             <p>To function, OrbitDeck downloads publicly available data from the following services. These requests are made directly from your device to each service and necessarily include your device's IP address, which those services may process according to their own policies. Except where noted, OrbitDeck does not send them your personal information.</p>
@@ -73,7 +73,7 @@
                 <li><strong>QRZ</strong>: callsign lookups, only if you enter your QRZ login (see below)</li>
                 <li><strong>PSKReporter</strong>: FT4 reception reports, only if you opt in (see below)</li>
             </ul>
-            <p>OrbitDeck identifies itself and rate-limits its requests in accordance with these services' usage policies.</p>
+            <p>OrbitDeck caches this data and limits how often it asks for it, following these services' usage policies.</p>
 
             <h2>Services that publish what you send</h2>
             <ul>
@@ -82,7 +82,7 @@
             </ul>
 
             <h2>QRZ lookups</h2>
-            <p>If you enter your QRZ XML login, OrbitDeck looks up callsigns you ask about and, with "Fill in names and states from QRZ" on (Log settings), the callsigns of stations you log, to fill in an empty name and a US station's state. Each lookup sends your QRZ user name and password and the callsign looked up to QRZ (xmldata.qrz.com) over an encrypted connection.</p>
+            <p>If you enter your QRZ XML login, OrbitDeck looks up callsigns you ask about and, with "Fill in names and states from QRZ" on (Log settings), the callsigns of stations you log, to fill in an empty name and a US station's state. OrbitDeck signs in to QRZ (xmldata.qrz.com) with your QRZ user name and password, then sends each callsign it looks up, all over an encrypted connection.</p>
 
             <h2>APRS-IS, DX cluster, ADS-B and telnet (Nearby &amp; DX)</h2>
             <p>These connections are made only while you use the Nearby &amp; DX screen (or, for the satgate, while the packet decoder runs with the satgate on):</p>
@@ -122,7 +122,7 @@
             <p>The next-pass Live Activity on the Lock Screen, in the Dynamic Island and in the Apple Watch Smart Stack is computed and updated <strong>entirely on your device</strong>. It does not use a push server. With Background App Refresh on, iOS occasionally wakes OrbitDeck to update it from data already on the device. You can turn Live Activities off in OrbitDeck's Settings or in iOS Settings.</p>
 
             <h2>Files, backups and diagnostic logs</h2>
-            <p>Notes are plain text files in OrbitDeck's folder in the Files app. A <strong>backup</strong> you export contains your settings, station details, log setup and activations, and goes only where you save or send it; passwords, API keys and your LoTW certificate are not included.</p>
+            <p>Notes are plain text files in OrbitDeck's folder in the Files app. A <strong>backup</strong> you export contains your settings, station details, log setup and activations (and, if you choose, your QSO log), and goes only where you save or send it; passwords, API keys and your LoTW certificate are never included.</p>
             <p>OrbitDeck keeps an on-device diagnostic log (rig, audio, and network activity) to help troubleshoot problems. The log stays on your device and is never sent automatically. You may choose to share a log file with the developer, for example by email, when reporting an issue; only then does any log content leave your device, and only to the recipient you pick. You can disable logging or clear the logs at any time on the Diagnostics screen. The same applies to a log file that OrbitDeck set aside because it couldn't be read: it stays on your device unless you share it.</p>
 
             <h2>Analytics, advertising, and tracking</h2>
@@ -132,7 +132,7 @@
             <p>OrbitDeck is a utility for amateur-radio operators and is not directed to children. We do not knowingly collect personal information from anyone, including children under 13.</p>
 
             <h2>Data retention and deletion</h2>
-            <p>Because OrbitDeck stores its data only on your device and the developer maintains no servers or accounts, there is no personal data held by the developer to retain or delete. You can remove OrbitDeck's local data with factory reset or by deleting the app from your device; use Settings &rarr; Clear credentials (or factory reset) to remove passwords and keys from the Keychain. Data you have sent to a third-party service (for example, uploaded QSOs, hams.at alerts, AMSAT reports, PSKReporter spots or gated APRS packets) is held by that service under its own policies.</p>
+            <p>Because OrbitDeck stores its data only on your device and the developer maintains no servers or accounts, there is no personal data held by the developer to retain or delete. You can remove OrbitDeck's local data with Settings &rarr; Reset or by deleting the app from your device; use <strong>Clear all saved passwords &amp; keys</strong> in Settings (or the reset option that also removes them) to remove passwords and keys from the Keychain. Data you have sent to a third-party service (for example, uploaded QSOs, hams.at alerts, AMSAT reports, PSKReporter spots or gated APRS packets) is held by that service under its own policies.</p>
 
             <h2>Security</h2>
             <p>OrbitDeck's connections to web services use encrypted transport (HTTPS/TLS). Some amateur-radio protocols have no encryption: PSKReporter reports, APRS-IS, DX clusters, telnet, the rigctld/rotctld servers and clients, and the local radio, rotator and TNC links, as well as a Cloudlog/Wavelog server you reach over http:// on your local network. Credentials are stored in the iOS Keychain. No method of transmission or storage is completely secure, but OrbitDeck minimizes risk by keeping your data on your device.</p>

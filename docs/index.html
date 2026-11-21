@@ -85,7 +85,7 @@
             </div>
             <div class="card">
                 <h3>Safer transmitting</h3>
-                <p>One transmitter authority for every mode, guaranteed unkey on Stop and disconnect, maximum key times, and approval before a network client can use your radio or rotator.</p>
+                <p>Only one feature can key the transmitter at a time, Stop and disconnect always send PTT-off first, every key has a time limit, and a network client needs your approval before it can use your radio or rotator.</p>
             </div>
         </div>
     </section>
@@ -180,7 +180,7 @@
             </div>
             <div class="card">
                 <h3>Stop all</h3>
-                <p>One button releases PTT, stops FT4, packet and remote-voice transmit, ends network-client control, disconnects the radio, and parks and disconnects the rotator.</p>
+                <p>One button on Home releases PTT, stops FT4, packet and remote-voice transmit, ends rigctld/rotctld client control, disconnects the radio, and parks and disconnects the rotator.</p>
             </div>
             <div class="card">
                 <h3>Network servers with approval</h3>
@@ -196,7 +196,7 @@
         <div class="grid">
             <div class="card">
                 <h3>CW decoder</h3>
-                <p>DeepCW, a neural decoder by e04, copies 400–1200&nbsp;Hz including weak signals and uneven fists, about two seconds behind the audio. The Classic decoder offers tone search with AFC, 50/100/200&nbsp;Hz filters, squelch and 5–50&nbsp;WPM. <a href="digitalmodes.html#cw">CW guide</a></p>
+                <p>DeepCW, a neural decoder by e04, copies 400–1200&nbsp;Hz including weak signals and uneven fists, about two seconds behind the audio. The Classic decoder offers tone search with AFC, 50/100/200&nbsp;Hz filters, squelch and an adjustable speed range (5–60&nbsp;WPM) or fixed speed. <a href="digitalmodes.html#cw">CW guide</a></p>
             </div>
             <div class="card">
                 <h3>Packet &amp; APRS</h3>
@@ -208,7 +208,7 @@
             </div>
             <div class="card">
                 <h3>FT4</h3>
-                <p>Full-duplex FT4 on linear transponders with signal subtraction, a deep "Decode again" pass, DT filtering, Band Activity shading for new calls and grids, wait-and-pounce, a TX watchdog and a short Tune carrier. <a href="digitalmodes.html#ft4">FT4 guide</a></p>
+                <p>Full-duplex FT4 on linear transponders with signal subtraction, a deep "Decode again" pass, DT filtering, Band Activity shading for new calls and grids, wait-and-pounce, a TX watchdog (6 minutes by default) and a Tune carrier of up to 10 seconds. <a href="digitalmodes.html#ft4">FT4 guide</a></p>
             </div>
             <div class="card">
                 <h3>SSTV</h3>
@@ -224,7 +224,7 @@
         <div class="grid">
             <div class="card">
                 <h3>Logging &amp; uploads</h3>
-                <p>An on-device QSO log with LoTW upload signed on your device, Cloudlog/Wavelog upload, ADIF import/export, DXCC and country on every QSO and default RST by mode. An unreadable log is set aside, never overwritten, and only QSOs the server accepted are marked uploaded. <a href="logging.html">Logging guide</a></p>
+                <p>An on-device QSO log with LoTW upload signed on your device, Cloudlog/Wavelog upload, ADIF import/export, DXCC and country on every QSO and default RST by mode. An unreadable log is set aside, never overwritten, and a Cloudlog/Wavelog upload is marked done only when the server confirms it imported every QSO. <a href="logging.html">Logging guide</a></p>
             </div>
             <div class="card">
                 <h3>Awards</h3>
@@ -300,11 +300,11 @@
             </div>
             <div class="card">
                 <h3>Catalog, offline &amp; export</h3>
-                <p>Elements from AMSAT, CelesTrak or your own URL, within CelesTrak's usage policy. Imported TLE/OMM elements persist until the feed catches up, malformed entries are skipped, and cached data keeps core features working offline. PDF and CSV/XLSX exports.</p>
+                <p>Elements from AMSAT, CelesTrak or your own URL, within CelesTrak's usage policy (at most one download per dataset every two hours). Imported TLE/OMM elements are kept until the feed catches up, malformed entries are skipped and counted, and cached data keeps core features working offline. PDF and CSV/XLSX exports.</p>
             </div>
             <div class="card">
                 <h3>Safety</h3>
-                <p>One transmitter at a time ("Transmitter in use by …"), Stop and disconnect always unkey (an unconfirmed unkey is retried and flagged), maximum key times, voice transmit limited to 3 minutes, and FT4 Tune only with Transmit on and a callsign set. Packet monitoring works without a callsign.</p>
+                <p>One transmitter at a time ("Transmitter in use by …"), Stop and disconnect always unkey (an unconfirmed unkey is retried and flagged), no key longer than 4 minutes, voice transmit limited to 3 minutes, and FT4 Tune only with Transmit on and a callsign set. Packet monitoring works without a callsign; transmitting needs one.</p>
             </div>
         </div>
     </section>
@@ -314,10 +314,10 @@
         <p class="section-intro">OrbitDeck runs on iPhone and iPad with iOS or iPadOS 17 or later. An internet connection is used to download orbital elements, space weather and the online services you choose to use; once cached, core tracking works offline.</p>
         <ul>
             <li>The next-pass Live Activity and Dynamic Island need iOS 18 or later; on iOS 17 the rest of the app works without them. The Dynamic Island appears only on iPhone models that have one.</li>
-            <li>Starting the next pass's Live Activity automatically while OrbitDeck is closed needs iOS 26 or later.</li>
+            <li>Starting the next pass's Live Activity automatically while OrbitDeck is closed needs iOS 26 or later; iOS starts it 15 minutes before AOS.</li>
             <li>The Apple Watch Smart Stack layout appears on a paired Apple Watch whose software shows iPhone Live Activities (watchOS 11 or later).</li>
             <li>Rig and rotator control need a supported Bluetooth&nbsp;LE serial adapter, an Icom network or Bluetooth radio, or a Hamlib server on your network, and run while OrbitDeck is in the foreground.</li>
-            <li>The audio features work best with a USB audio interface or an Icom network-audio radio; most can also use the built-in microphone.</li>
+            <li>The audio features work best with a USB audio interface or an Icom network-audio radio. Set a feature to <strong>Always</strong> in Settings &rarr; Audio features to use the built-in microphone instead; remote voice needs an Icom network radio.</li>
         </ul>
 
         <div class="note">

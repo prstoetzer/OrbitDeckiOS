@@ -1,0 +1,42 @@
+OrbitDeck is a complete amateur-radio satellite station for iPhone and iPad. It predicts passes, computes Doppler, steers your radio and antenna rotator, decodes the downlink and keeps your log ready for LoTW and awards. It is free, has no ads, no accounts and no tracking, and its source code is open (MIT).
+
+TRACK AND PLAN
+• Live look angles, range, range rate and footprint from current orbital elements (AMSAT, CelesTrak or your own source), computed on your device with SGP4/SDP4.
+• Next passes with quality scoring, a daily schedule, a pass timeline, all-sky radar, sky plot, ground track and 3D globe.
+• Automatic satellite switching across up to 9 priority satellites, with a 12-hour simulated plan.
+• Weather and cloud cover for visible passes, activation reminders, AMSAT status, space weather, workable grids, states and DXCC, and orbital analysis.
+• Cached data keeps core tracking working offline.
+
+NEXT PASS ON THE LOCK SCREEN
+• A Live Activity counts down to AOS, then shows time left and a progress bar through the pass, on the Lock Screen, in the Dynamic Island and in the Apple Watch Smart Stack. It keeps advancing while OrbitDeck is closed. (Live Activity requires iOS 18 or later.)
+
+RIG CONTROL (CAT) AND DOPPLER
+• Live Doppler for every transponder, per-satellite calibration, and a no-CAT HOLD/TUNE calculator.
+• Doppler tuning over a Bluetooth LE serial adapter, Icom network (Wi-Fi), the IC-705/IC-905's built-in Bluetooth, or a Hamlib rigctld server.
+• Radio families in the catalog: Icom CI-V (IC-9700, IC-9100, IC-910, IC-821, IC-820, IC-970, IC-705, IC-905, IC-7100, IC-7000, IC-706 series and older VHF/UHF rigs, plus IC-R receivers), Yaesu (FT-847, FT-736R, FT-817/818/857/897, FT-100, VR-5000), Kenwood (TS-2000, TS-790, TS-711/811, TS-590/590SG/890/990, TH-D74/D75), and any radio Hamlib supports through rigctld.
+• One full-duplex radio, split-VFO Doppler on one radio, or two radios (including a satellite rig as one leg). Tune modes, per-satellite CTCSS, data modes for digital work, a Beacon button and a one-tap Stop all.
+• Built-in rigctld and rotctld servers (off by default, with client approval) let programs on your local network share the radio and rotator.
+
+ROTATOR CONTROL
+• Yaesu GS-232A/B (including azimuth-only), Easycomm I/II/III, SPID Rot2Prog and SAEBRTrack over a Bluetooth LE serial adapter, or rotctld, PstRotator and OZ9AAR URC over the network.
+• Pre-positioning, flip mode, parking, manual control, position read-back, a self-test, and Sun and Moon targets.
+
+DIGITAL MODES
+Audio comes from a USB audio interface, an Icom network-audio radio, or the built-in microphone. All decoding happens on your device.
+• CW: the DeepCW neural decoder, or the Classic decoder with tone search, filters and adaptive speed. Tap a callsign to log it.
+• FT4 on linear transponders, with signal subtraction, a deep decode pass, wait-and-pounce and a TX watchdog.
+• Packet and APRS: 1200 and 9600 baud modems or a KISS TNC (Bluetooth LE or TCP), messaging and beacons through satellites and the ISS, a station map and per-pass logs.
+• SSTV: satellite and ISS images in the common Robot, Martin, Scottie and PD modes.
+• Pass recording and voice memos; recording and decoding continue with the screen locked.
+
+LOGGING AND AWARDS
+• An on-device QSO log with LoTW upload (signed on your device), Cloudlog/Wavelog upload, ADIF import and export, QRZ lookups and PDF reports.
+• Totals for QSOs, satellites, VUCC grids, WAS and DXCC, worked vs. confirmed.
+
+TOOLS AND LEARNING
+• Grid and location converters, distance and bearing, 60+ calculators, Tiny BASIC, lessons, references and Notes.
+• In-app Help, a station readiness checklist, and backup and restore.
+
+Transmitting requires an amateur radio license and your own equipment. Rig and rotator control work while OrbitDeck is in the foreground. Tracking, planning and logging need no extra hardware.
+
+Please support AMSAT, which builds many of the satellites OrbitDeck tracks.

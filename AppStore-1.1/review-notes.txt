@@ -1,0 +1,34 @@
+OrbitDeck is an amateur-radio satellite tracking and operating app. No account or login is needed. On a new install a station readiness checklist opens once; tap Done. The menu button (top left on iPhone; the sidebar on iPad) reaches every screen.
+
+WITHOUT RADIO HARDWARE
+Tracking, pass prediction, maps, planning tools, calculators and the log need no hardware.
+The audio cards (Pass recording, SSTV, FT4, CW, Packet / APRS) are hidden by default unless a USB or network audio interface is connected. To see them, open Settings > Audio features and set Pass recording, SSTV decode, FT4, Packet / APRS and CW decode to "Always". They then appear on Home using the built-in microphone.
+Live Activity (iOS 18 or later): Settings > Display > "Next pass on Lock Screen and Dynamic Island" is on by default. Lock the device to see the next-pass countdown.
+
+BACKGROUND AUDIO (UIBackgroundModes: audio)
+A satellite pass lasts 8-15 minutes and the operator routinely locks the screen partway through. The app keeps recording and processing audio for the whole pass: (1) Pass recording saves the radio's received audio to an AAC file; (2) the SSTV, FT4, CW and packet decoders process received audio continuously, and FT4 and packet also play transmit audio out to the radio; (3) Remote voice streams a network radio's received audio to the speaker. Interrupting any of these loses the pass.
+To verify with the built-in microphone:
+1. Settings > Audio features > Pass recording > "Always".
+2. Go to Home; the Pass recording card appears.
+3. Tap Record and allow microphone access. The timer starts.
+4. Go to the Home Screen or lock the device. The orange microphone indicator stays on.
+5. Wait 30 seconds, reopen OrbitDeck: the timer has kept counting. Tap Stop, then open Log > Pass recordings & voice memos and play the file, including the audio captured in the background.
+SSTV decode set to "Always" behaves the same way. Rig (CAT) and rotator control are foreground-only and do not rely on the audio mode.
+BACKGROUND FETCH (UIBackgroundModes: fetch) is used only for BGAppRefreshTask to keep the next-pass Live Activity current from data already on the device.
+
+PERMISSIONS
+- Local network: only when the user connects a LAN device: an Icom network radio or rigctld server (CAT), a network rotator, a KISS TNC over TCP, or their own ADS-B receiver. The optional rigctld/rotctld servers (TCP 4532/4533) are off by default; each new client must be approved (allow once, always, deny; denied after 30 s or in the background); VPN and cellular clients are refused.
+- Bluetooth: only to connect a Bluetooth LE serial adapter for CAT or a rotator, the IC-705/IC-905's built-in Bluetooth, or a Bluetooth LE KISS TNC.
+- Microphone: iOS treats a USB audio interface as a microphone. Used only while recording, decoding, making a memo or talking; decoding is on-device and audio is never uploaded.
+- Location (when in use): the observer position for pass predictions; a grid square or coordinates can be entered instead.
+- Notifications (local only): pass alarms, activation reminders and packet message alerts.
+- Calendar (write-only) and Photos (add-only): only when the user adds a pass to the calendar or exports an SSTV image.
+
+TRANSMIT FEATURES
+FT4, packet/APRS, remote voice, Tune and network PTT key a radio and require an amateur radio license and the user's own radio. All are off by default: FT4 Transmit is an explicit toggle, every transmit path needs the user's callsign and a connected radio, and keying from network clients is a separate opt-in with a 3-minute limit. One transmitter authority enforces maximum key times and unkeys on Stop, disconnect and link loss. They cannot be exercised without a radio.
+
+CONTACT
+Paul Stoetzer, N8HM (developer)
+Email: n8hm@arrl.net
+Documentation: https://orbitdeckios.n8hm.radio/documentation.html
+Privacy: https://orbitdeckios.n8hm.radio/privacy.html

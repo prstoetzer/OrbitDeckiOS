@@ -8,16 +8,57 @@
     <key>NSPrivacyTrackingDomains</key>
     <array/>
 
-    <!-- Data types collected. OrbitDeck uses coarse/precise location solely on-device
-         to compute the observer station for pass predictions; it is not linked to the
-         user's identity and is not used for tracking. No other data is collected. -->
+    <!-- Data types collected. The developer receives nothing; these are sent from the
+         device, only when the user uses the feature, to services the app integrates
+         that retain or publish them: the callsign (User ID) to status.amsat.org,
+         hams.at, PSKReporter, APRS-IS and DX clusters; position to APRS-IS (filter,
+         ~100 m) and hams.at (precise), Open-Meteo (~1 km) and grid squares to AMSAT
+         and PSKReporter (coarse); QSO records, status reports and activation alerts
+         (other user content) to LoTW, Cloudlog/Wavelog, AMSAT and hams.at.
+         Nothing is used for tracking. -->
     <key>NSPrivacyCollectedDataTypes</key>
     <array>
         <dict>
             <key>NSPrivacyCollectedDataType</key>
             <string>NSPrivacyCollectedDataTypePreciseLocation</string>
             <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
             <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeCoarseLocation</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeUserID</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
             <key>NSPrivacyCollectedDataTypeTracking</key>
             <false/>
             <key>NSPrivacyCollectedDataTypePurposes</key>

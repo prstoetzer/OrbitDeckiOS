@@ -479,14 +479,16 @@ private struct BasicVM {
             if let banned = firstImmediateBanned(source) { throw TinyBasicError.message("\(banned) needs a numbered program", nil) }
         }
         if !program.immediate.isEmpty && program.lines.isEmpty {
-            for source in program.immediate {
+            for (index, source) in program.immediate.enumerated() {
+                currentLineIndex = index
                 let statements = CardSatTinyBasicEngine.splitStatements(source)
                 var si = 0
                 while si < statements.count {
                     try tick(line: nil)
-                    let ctl = try execute(statements[si], lineNumber: nil, lineIndex: 0, statementIndex: si)
+                    let ctl = try execute(statements[si], lineNumber: nil, lineIndex: index, statementIndex: si)
                     switch ctl {
                     case .next: si += 1
+                    case .sameLine(let target): si = target
                     case .stop: return finishResult()
                     default: throw TinyBasicError.message("statement needs a numbered program", nil)
                     }
@@ -755,6 +757,14 @@ private struct BasicVM {
         let value = variables[f.variable] ?? 0
         let going = f.step >= 0 ? value <= f.limit : value >= f.limit
         guard going else { _ = forStack.popLast(); return .next }
+        // Immediate mode (no line numbers): program.lines is empty, so a loop can only
+        // repeat within the immediate line that holds its FOR.
+        if program.lines.isEmpty {
+            guard f.lineIndex == currentLineIndex else {
+                throw TinyBasicError.message("FOR and NEXT must be on the same line without line numbers", line)
+            }
+            return .sameLine(f.statementIndex + 1)
+        }
         let statements = CardSatTinyBasicEngine.splitStatements(program.lines[f.lineIndex].1)
         if f.statementIndex + 1 < statements.count {
             return f.lineIndex == currentLineIndex ? .sameLine(f.statementIndex + 1) : .jump(f.lineIndex)

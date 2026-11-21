@@ -1,0 +1,1 @@
+amateur,tracker,doppler,iss,cubesat,pass,rotator,cat,ft4,sstv,aprs,packet,cw,morse,logbook,qso,oscar

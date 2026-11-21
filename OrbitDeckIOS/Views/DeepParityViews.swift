@@ -427,7 +427,7 @@ struct DeepTinyBasicView: View {
 
             Text("Supports numeric and A$–Z$ string variables, @()/named arrays with a shared 2048-element budget, DATA/READ/RESTORE, mixed pre-run INPUT, text functions, constants/geometry helpers, PASSAOS/PASSLOS/PASSMAX, ON…GOTO, arbitrary IF…THEN statements, degree trig, SATSEL/TXSEL, LPRINT, graphics, and sandboxed files. Execution is bounded by statement and wall-clock limits.")
                 .font(.caption).foregroundStyle(ODTheme.muted)
-            Text("BASIC files are confined to OrbitDeck’s Application Support/Basic directory; programs cannot supply paths or escape that sandbox.")
+            Text("BASIC files are confined to OrbitDeck’s Application Support/OrbitDeck/Basic directory; programs cannot supply paths or escape that sandbox.")
                 .font(.caption).foregroundStyle(ODTheme.muted)
         }
         .frame(maxWidth: .infinity)

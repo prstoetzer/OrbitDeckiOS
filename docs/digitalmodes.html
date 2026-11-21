@@ -56,7 +56,7 @@
                 <h3 id="cards">Choosing which cards appear</h3>
                 <p>Every card has its own setting in <strong>Settings &rarr; Audio features</strong> (Pass recording, SSTV decode, FT4, Packet / APRS, CW decode, Remote audio (voice)):</p>
                 <ul>
-                    <li><strong>Auto</strong> (default): the card appears only when a USB or network audio interface is connected.</li>
+                    <li><strong>Auto</strong> (default): the card appears only when a USB audio interface or an Icom network radio is connected.</li>
                     <li><strong>Always</strong>: the card is always shown. It still uses USB or network audio when available and falls back to the <strong>built-in microphone</strong> when not.</li>
                     <li><strong>Hidden</strong>: the card never appears, even with an interface plugged in.</li>
                 </ul>
@@ -88,17 +88,17 @@
                 <p>Tap <strong>Start</strong>. The headline shows <em>Searching 300–1200 Hz…</em> until a tone is found, then <em>Tracking 720 Hz</em>, or <em>Locked at 720 Hz</em> once you lock it. Under it, the status line shows the <strong>pitch</strong>, <strong>speed</strong> (WPM) and <strong>SNR</strong>, plus a <strong>Lock</strong> button.</p>
 
                 <h3 id="cw-decoders">Two decoders: DeepCW and Classic</h3>
-                <p>Choose the decoder under <strong>Setup &rarr; Decoder</strong>:</p>
+                <p>Choose the decoder with the <strong>Decoder</strong> picker in the card's <strong>Setup</strong>:</p>
                 <ul>
                     <li><strong>DeepCW</strong> (default) is a neural network that reads the whole <strong>400–1200&nbsp;Hz</strong> band. It copies weak signals and uneven hand-sent fists that defeat timing-based decoders. Text arrives <strong>in bursts, about two seconds behind the audio</strong>, because the network reads a sliding 12-second window and commits text once it stops changing. It runs entirely on the phone.</li>
-                    <li><strong>Classic</strong> is OrbitDeck's tone-tracking decoder. It locks onto one tone, filters it narrowly and times its dits and dahs. Its text appears character by character with no delay, and it has three extra settings: <strong>Filter bandwidth</strong> (50 / 100 / 200&nbsp;Hz), <strong>Squelch</strong> (0–20&nbsp;dB above the noise, default 8) and <strong>speed</strong> (adaptive 5–50&nbsp;WPM by default, or a <strong>Fixed speed</strong>). Farnsworth-spaced code is handled.</li>
+                    <li><strong>Classic</strong> is OrbitDeck's tone-tracking decoder. It locks onto one tone, filters it narrowly and times its dits and dahs. Its text appears character by character with no delay, and it has three extra settings: <strong>Filter bandwidth</strong> (50 / 100 / 200&nbsp;Hz), <strong>Squelch</strong> (0–20&nbsp;dB above the noise, default 8) and <strong>speed</strong> (measured from the code between <strong>Slowest</strong> and <strong>Fastest</strong>, 5–50&nbsp;WPM by default, or a <strong>Fixed speed</strong> of 5–50&nbsp;WPM). Farnsworth-spaced code is handled. These settings are hidden while DeepCW is selected.</li>
                 </ul>
                 <p>The Classic demodulator always runs in the background. It drives the pitch, speed and SNR readouts and the spectrum strip, even when DeepCW writes the text. If the DeepCW model is missing from a build, Classic copies instead, and the Setup note says so.</p>
                 <p><strong>When to choose Classic:</strong></p>
                 <ul>
                     <li>The CW tone is <strong>outside 400–1200&nbsp;Hz</strong>. DeepCW only hears that band, while Classic's search range can run from 200&nbsp;Hz to 2000&nbsp;Hz.</li>
                     <li>You want to <strong>pick one signal out of several</strong>. Classic copies only the tone you tap on the spectrum strip or <strong>Lock</strong>, through its narrow filter. DeepCW reads the whole band whatever the readouts are tracking.</li>
-                    <li>You want text with no delay, or prosigns. Classic prints <code>&lt;AR&gt;</code>, <code>&lt;SK&gt;</code>, <code>&lt;BT&gt;</code>, <code>&lt;KN&gt;</code>, <code>&lt;AS&gt;</code>, <code>&lt;BK&gt;</code> and <code>&lt;CL&gt;</code> from the full ITU table, and an unreadable character as <code>*</code>. DeepCW's alphabet is letters, digits and <code>, . / ?</code>.</li>
+                    <li>You want text with no delay, or prosigns. Classic prints <code>&lt;AR&gt;</code>, <code>&lt;SK&gt;</code>, <code>&lt;BT&gt;</code>, <code>&lt;KN&gt;</code>, <code>&lt;AS&gt;</code>, <code>&lt;BK&gt;</code>, <code>&lt;CL&gt;</code> and <code>&lt;HH&gt;</code> along with the full ITU character set, and an unreadable character as <code>*</code>. DeepCW's alphabet is only letters, digits and <code>, . / ?</code>, with no prosigns.</li>
                 </ul>
 
                 <h3>Spectrum strip, tuning and AFC</h3>
@@ -263,11 +263,11 @@
                 <p>Remote voice is exclusive with FT4, SSTV and packet, but pass recording runs alongside. The network audio path is experimental, so validate it on your radio.</p>
 
                 <h2 id="safety">Transmit safety</h2>
-                <p>FT4, Tune, packet, remote voice and the rigctld network server all key the radio through <strong>one PTT authority</strong>:</p>
+                <p>FT4, Tune, packet, remote voice and clients of the rigctld network server all key the radio through <strong>one shared PTT control</strong>:</p>
                 <ul>
                     <li><strong>One transmitter at a time.</strong> If another feature is keyed, a request is refused with a reason (<em>Transmitter in use by packet — not keyed.</em>). Key and unkey requests are handled in order, so an unkey is never overtaken by a later key.</li>
-                    <li><strong>Maximum key times.</strong> Every owner has a backstop above its own limit (about 30&nbsp;s for an FT4 burst, 20&nbsp;s for Tune, the packet watchdog plus 5&nbsp;s, and a little over 3 minutes for remote voice and network clients), and nothing stays keyed longer than 4 minutes.</li>
-                    <li><strong>Stop always unkeys</strong>, including a key that hasn't gone out yet. So do Stop all, CAT disconnect and a dropped link. If an unkey can't be confirmed, OrbitDeck warns you to check the radio and retries the unkey when it reconnects.</li>
+                    <li><strong>Maximum key times.</strong> Every feature has a backstop above its own limit (about 30&nbsp;s for an FT4 burst, 20&nbsp;s for Tune, the packet watchdog plus 5&nbsp;s, and a little over 3 minutes for remote voice and network clients), and nothing stays keyed longer than 4 minutes.</li>
+                    <li><strong>Stop always unkeys</strong>, including a key that hasn't gone out yet. So do Stop all, CAT disconnect and a dropped link. If an unkey can't be confirmed, OrbitDeck warns you to check the radio and sends the unkey again when it reconnects. A packet frame whose key is refused isn't played, and Stop cancels a packet transmission that's still waiting to go out.</li>
                     <li><strong>Background:</strong> FT4 and packet sessions keep transmitting with the screen locked (the FT4 sequence, packet beacons and acks). Remote voice, Tune and network-client keys are released when the app leaves the foreground.</li>
                     <li>Transmitting is refused on a transponder with no uplink (receive only).</li>
                 </ul>
@@ -328,7 +328,7 @@
                 <p>The <strong>Icom network-audio path is experimental</strong> and best checked on your own radio. It reconnects automatically if the RS-BA1 link drops mid-pass instead of going silent for the rest of the pass.</p>
 
                 <h2 id="privacy">Permissions &amp; privacy</h2>
-                <p>Audio is captured only while you record, decode or make a memo, and it stays on your device. CW decoding, including the DeepCW network, runs on the phone. SSTV images are saved in the app, and you choose when to export them to Photos. Packet alerts ask for notification permission the first time you turn one on. Two features send data off the device, and only if you turn them on. <strong>PSKReporter</strong> uploads the FT4 stations you decode, with your callsign and grid. The packet <strong>satgate</strong> sends the packets you hear, with your callsign and APRS-IS passcode, to the APRS-IS server you choose. See the <a href="privacy.html">privacy policy</a>.</p>
+                <p>Audio is captured only while you record, decode or make a memo, and it stays on your device. CW decoding, including the DeepCW network, runs on the phone. SSTV images are saved in the app, and you choose when to export them to Photos. Packet alerts ask for notification permission the first time you turn one on. If one of OrbitDeck's log files (the FT4 traffic log, the lists of recordings and SSTV images, or the QSO log) ever can't be read, it's set aside as <code>&lt;name&gt;.corrupt-&lt;timestamp&gt;.json</code> instead of being overwritten, so nothing is lost. Two features send data off the device, and only if you turn them on. <strong>PSKReporter</strong> uploads the FT4 stations you decode, with your callsign and grid. The packet <strong>satgate</strong> sends the packets you hear, with your callsign and APRS-IS passcode, to the APRS-IS server you choose. See the <a href="privacy.html">privacy policy</a>.</p>
             </div>
         </div>
     </section>

@@ -282,7 +282,7 @@ struct SettingsView: View {
                 Text("These Home cards normally appear only when a USB or network audio interface is connected. Set one to \u{201C}Always\u{201D} to use it without an interface (it still prefers USB or network audio, falling back to the built-in microphone — hold the phone near your receiver), or \u{201C}Hidden\u{201D} to keep it off the Home screen even with an interface plugged in. Remote audio needs a network (RS-BA1) radio and has no microphone fallback.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
                 Toggle("Use data mode for FT4", isOn: $ft4DataMode)
-                Text("When FT4 starts on a data-mode-capable radio, OrbitDeck sets the DATA sub-mode so audio uses the rig's ACC/USB data port, and restores plain SSB when FT4 stops: CI-V USB-D/LSB-D (IC-9700/9100/705/905/7100/7000), Hamlib PKTUSB/PKTLSB via rigctld (any supported radio), and DIG on the Yaesu FT-817/818/857/897. Turn this off if you feed audio through the mic/headphone jack instead.")
+                Text("When FT4 starts on a data-mode-capable radio, OrbitDeck sets the DATA sub-mode so audio uses the rig's ACC/USB data port, and restores plain SSB when FT4 stops: CI-V USB-D/LSB-D (IC-9700/705/905/7100), Hamlib PKTUSB/PKTLSB via rigctld (any supported radio), and DIG on the Yaesu FT-817/818/857/897. Turn this off if you feed audio through the mic/headphone jack instead.")
                     .font(.caption).foregroundStyle(ODTheme.muted)
                 Toggle("Auto-calibrate transponder from FT4", isOn: $ft4AutoCal)
                 Text("While transmitting FT4 full duplex, OrbitDeck measures where your own decoded signal lands versus your TX audio frequency and folds the difference into this satellite's saved calibration, refining it on every decode of your own signal. Linear transponders only; off by default. Edits the per-satellite calibration you can see on the Calibrations screen.")
@@ -497,11 +497,12 @@ struct SettingsView: View {
         .confirmationDialog("Clear all saved passwords & keys?", isPresented: $confirmClearCredentials, titleVisibility: .visible) {
             Button("Clear credentials", role: .destructive) {
                 OrbitSecretStore.clearAll()
+                LoTW.clearCredential()
                 qrzPassword = ""; spaceTrackPassword = ""; hamsatApiKey = ""
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes every stored OrbitDeck password and API key from the Keychain. You'll need to re-enter them to use those services.")
+            Text("This removes every stored OrbitDeck password and API key from the Keychain, and deletes the imported LoTW certificate. You'll need to re-enter them (and re-import the certificate) to use those services.")
         }
         .onChange(of: qrzPassword) { _, newValue in
             if qrzLoaded { OrbitSecretStore.set(newValue, for: .qrzPassword) }
@@ -585,7 +586,7 @@ struct BackupRestoreSection: View {
                 Label("Restore from a backup…", systemImage: "square.and.arrow.down.on.square")
             }
             if let message { Text(message).font(.caption).foregroundStyle(ODTheme.muted) }
-            Text("Saves your station and sites, favorites, display options, manual satellites, calibrations, CAT, rotator, auto-switch, FT4/packet/SSTV and logging setup, and your own activation skeds in one JSON file. Passwords, API keys and the LoTW certificate stay in the iOS Keychain and are never included — re-enter them after restoring on a new device. The QSO log is optional (ADIF export is the usual way to move a log).")
+            Text("Saves your station and sites, favorites, display options, manual satellites, calibrations, CAT, rotator, auto-switch, FT4/packet/SSTV and logging setup, and your own activation skeds in one JSON file. Passwords and API keys (kept in the iOS Keychain) and the LoTW certificate (a protected file on this device) are never included — re-enter them and re-import the certificate after restoring on a new device. The QSO log is optional (ADIF export is the usual way to move a log).")
                 .font(.caption).foregroundStyle(ODTheme.muted)
         }
         .fileExporter(isPresented: $showingExporter, document: exportDocument, contentType: .json,

@@ -1,0 +1,43 @@
+OrbitDeck 1.1 (5) is the App Store release candidate. Please focus on hardware we can't test in the simulator, and report what you tried, your radio/adapter/rotator, and what happened (Settings > Diagnostics can share a log).
+
+CAT / RIG CONTROL
+• IC-705 built-in Bluetooth: connect, Doppler-tune a pass, disconnect and reconnect.
+• Data modes: FM-D (Icom) and PKT (FT-817 family) when packet or FT4 starts, and plain mode again when it stops.
+• IC-9700: satellite mode turns off on disconnect and the radio returns to MAIN/VFO A.
+• A satellite rig as one leg of a two-radio station (e.g. IC-821 up, IC-705 down).
+• Receive-only transponders and the Beacon button on an Icom satellite rig.
+• Kenwood TS-590/890/990 as a single leg (mode set with OM0/MD; TS-590 CTCSS).
+• rigctld client in VFO mode (Hamlib), including Icom satellite rigs.
+
+NETWORK SERVERS
+• rigctld (4532) and rotctld (4533) servers with real Gpredict, WSJT-X or a logger: the approval prompt (allow once / always / deny), control, and network PTT (opt-in, 3-minute limit, unkey when the client drops).
+
+ROTATOR
+• SPID replies, position read-back with the stall warning, self-test, manual control, and retry after a failed move.
+
+DIGITAL MODES (on air)
+• CW decoder on a real downlink: DeepCW (default) vs. Classic, callsign tap-to-log.
+• Packet 9600 baud interoperability; APRS messaging through a satellite or the ISS.
+• FT4: signal subtraction, Decode again (deep), DT column; RF-power warning per rig; Tune keys and unkeys cleanly.
+• SSTV thresholds, and Martin M3/M4 and Scottie S3/S4 images.
+
+TRANSMIT SAFETY
+• Stop, Stop all, disconnect and pulling the link mid-transmit always unkey the radio.
+• Only one feature can transmit at a time ("Transmitter in use by ...").
+
+LOGGING
+• LoTW upload with a station location that uses subdivisions (state/county etc.) and IOTA; confirm it is accepted.
+• Cloudlog/Wavelog upload: only accepted QSOs are marked uploaded.
+
+LIVE ACTIVITY (iOS 18+)
+• With the app closed (not just in the background), it runs through a pass and moves on to the next one at LOS.
+• Background refresh updates it; when out of date it dims with "Open OrbitDeck to update".
+• iOS 26: "Start next pass automatically while OrbitDeck is closed" starts the scheduled activity.
+• Only one activity after reopening or relaunching the app; renewal after 4 hours.
+• Layouts on small and large iPhones, with another app sharing the Dynamic Island, and on Apple Watch.
+• Tapping it opens OrbitDeck on that satellite.
+
+BACKGROUND AUDIO
+• Set Settings > Audio features > Pass recording to Always, record, lock the phone for 30 s, and confirm the recording continued.
+
+Transmitting requires an amateur radio license. Thank you for testing!

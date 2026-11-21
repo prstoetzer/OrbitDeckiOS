@@ -1,15 +1,17 @@
 # OrbitDeck for iOS and iPadOS — native port 0.9.7
 
+> **Historical document.** This describes the 0.9.7 source port. For the current app (1.1), see [README.md](README.md) and the website at <https://orbitdeckios.n8hm.radio>. The build steps below are kept current; the rest is the 0.9.7 record.
+
 This tree is a native SwiftUI port of OrbitDeck. It targets **iOS/iPadOS 17+**, **Swift 6**, and uses **SatelliteKit 2.1.2** for SGP4/SDP4 propagation. It does not embed Python/Tkinter.
 
 ## Open and build
 
 1. Open `OrbitDeckIOS.xcodeproj` in a current Xcode on macOS.
-2. Allow Swift Package Manager to resolve `gavineadie/SatelliteKit` 2.1.2.
+2. Allow Swift Package Manager to resolve `gavineadie/SatelliteKit`.
 3. Select an iPhone/iPad simulator or device running iOS/iPadOS 17 or later.
-4. Build and run the `OrbitDeck` scheme.
+4. Build and run the `OrbitDeckIOS` scheme.
 
-Location, notifications and Keychain functionality are requested/used only by their associated user-initiated features. QRZ password material is stored in Keychain; Space-Track password material remains session-only.
+Location, notifications and Keychain functionality are requested/used only by their associated user-initiated features. QRZ and Space-Track passwords are stored in the Keychain (in 0.9.7 the Space-Track password was session-only).
 
 ## 0.9.7 highlights
 

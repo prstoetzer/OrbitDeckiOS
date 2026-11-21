@@ -7,7 +7,7 @@ OrbitDeck iOS uses SatelliteKit, a Swift implementation of SGP4/SDP4.
 Repository: `gavineadie/SatelliteKit`
 
 The dependency is resolved by Swift Package Manager and is licensed under the MIT License.
-No SatelliteKit source files are vendored into this source bundle.
+No SatelliteKit source files are vendored into this repository.
 
 ## ft8_lib
 
@@ -34,7 +34,7 @@ License (Copyright (c) 2026 e04). The full license text is in
 
 The constellation stick figures on the sky charts (`WorldMapData.constellationLines`)
 come from **d3-celestial** by Olaf Frohn — Copyright (c) 2015 Olaf Frohn, licensed
-under the BSD 3-Clause License. The full license text is shown in the app under
+under the BSD 3-Clause License. The full license text is shown in the app under Settings →
 About → Acknowledgments.
 
 ## Data
