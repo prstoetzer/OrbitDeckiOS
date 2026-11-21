@@ -263,17 +263,20 @@ private struct PassSmallView: View {
             }
             .font(.headline)
             if let pass = shown.pass {
-                // "AOS 14:05Z in 4:32": still true once the timer stops at 0:00.
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text("\(shown.countdownLabel) in")
-                        .font(.caption2.monospacedDigit())
+                // "in 4:32" over "AOS 14:05Z · max 54°": the timer gets the line to
+                // itself (a watch is too narrow for "AOS 14:05Z in 3:20:00"), and
+                // the clock time it runs to stays beside it, so the pair still reads
+                // true once the timer stops at 0:00.
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("in")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize()
-                    PassCountdown(shown: shown, alignment: .leading)
-                        .font(.title3.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(shown.timerColor)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                    TimerWidth(template: shown.countdownTemplate) {
+                        PassCountdown(shown: shown, alignment: .leading)
+                    }
+                    .font(.title3.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(shown.timerColor)
                 }
                 if let window = shown.window {
                     ProgressView(timerInterval: window, countsDown: false) { EmptyView() } currentValueLabel: { EmptyView() }
@@ -284,9 +287,13 @@ private struct PassSmallView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(String(format: "Max %.0f°", pass.maxElevation))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    ViewThatFits(in: .horizontal) {
+                        Text("\(shown.countdownLabel) · max \(Int(pass.maxElevation.rounded()))°")
+                        Text(shown.countdownLabel)
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
             } else {
                 Text("Open OrbitDeck to plan more")
@@ -346,6 +353,11 @@ private struct ShownPass {
     }
 
     var timerColor: Color { stale ? .secondary : phase.color }
+
+    /// Widest reading of the main countdown from now to its target.
+    var countdownTemplate: String {
+        TimerTemplate.widest(for: max(0, (target ?? drawnAt).timeIntervalSince(drawnAt)))
+    }
 
     // MARK: VoiceOver
 
@@ -428,7 +440,7 @@ private enum PassPhase {
         return formatter.string(from: date) + " UTC"
     }
 
-    private static let points = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    private static let points: [String] = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
                                  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
 
     private static func pointIndex(_ azimuth: Double) -> Int {
@@ -443,7 +455,7 @@ private enum PassPhase {
 
     /// The same point spelled out for VoiceOver, e.g. 30 → "north-northeast".
     static func spokenCompass(_ azimuth: Double) -> String {
-        let names = ["north", "north-northeast", "northeast", "east-northeast", "east", "east-southeast",
+        let names: [String] = ["north", "north-northeast", "northeast", "east-northeast", "east", "east-southeast",
                      "southeast", "south-southeast", "south", "south-southwest", "southwest", "west-southwest",
                      "west", "west-northwest", "northwest", "north-northwest"]
         return names[pointIndex(azimuth)]
@@ -470,10 +482,11 @@ private struct PassCountdown: View {
     }
 }
 
-/// The expanded and Lock Screen countdown: "AOS 14:05Z" over "in 4:32", in a
-/// fixed-width column so the timer (which fills its width) sits right after "in".
-/// Once the timer stops at 0:00 at AOS the pair still reads true, while the
-/// progress row below takes over.
+/// The expanded and Lock Screen countdown: "AOS 14:05Z" over "in 4:32". The timer
+/// keeps its full width ("11:05:00" at large text sizes too): timer text can't
+/// scale down and would truncate, so the column takes the space it needs and the
+/// text beside it shortens instead. Once the timer stops at 0:00 at AOS the pair
+/// still reads true, while the progress row below takes over.
 private struct PassCountdownColumn: View {
     let shown: ShownPass
     let labelStyle: Color
@@ -491,16 +504,52 @@ private struct PassCountdownColumn: View {
                     .font(.caption)
                     .foregroundStyle(labelStyle)
                     .fixedSize()
-                PassCountdown(shown: shown, alignment: .leading)
-                    .font(timerFont.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(shown.timerColor)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                TimerWidth(template: shown.countdownTemplate) {
+                    PassCountdown(shown: shown, alignment: .leading)
+                }
+                .font(timerFont.monospacedDigit().weight(.semibold))
+                .foregroundStyle(shown.timerColor)
             }
         }
-        .frame(width: 96, alignment: .leading)
+        .fixedSize()
+        .layoutPriority(1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(shown.spokenTiming)
+    }
+}
+
+/// Gives a timer exactly the width of its widest reading. Timer text fills
+/// whatever width it's offered and can't scale down (it truncates), so an
+/// invisible template ("88:88", "8:88:88" or "88:88:88" in the same font) sets the
+/// width at every text size. Countdowns only get shorter, so sizing for the
+/// reading at draw time is enough.
+private struct TimerWidth<Timer: View>: View {
+    let template: String
+    @ViewBuilder let timer: () -> Timer
+
+    var body: some View {
+        Text(template)
+            .lineLimit(1)
+            .fixedSize()
+            .hidden()
+            .overlay(alignment: .leading) {
+                timer()
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+enum TimerTemplate {
+    /// The widest timer reading for a span of `seconds`.
+    static func widest(for seconds: TimeInterval) -> String {
+        switch seconds {
+        case ..<600: "8:88"
+        case ..<3600: "88:88"
+        case ..<36_000: "8:88:88"
+        default: "88:88:88"
+        }
     }
 }
 
@@ -564,9 +613,15 @@ private struct PassTimesLine: View {
                         Text("AOS \(aos) \(PassPhase.compass(aosAz)) · \(max) · LOS \(los) \(PassPhase.compass(losAz))")
                         Text("\(aos) \(PassPhase.compass(aosAz)) · \(max) · \(los) \(PassPhase.compass(losAz))")
                         Text("AOS \(aos) · \(max) · LOS \(los)")
+                        Text("\(aos)–\(los) · \(Int(pass.maxElevation.rounded()))°")
+                        Text("\(aos)–\(los)")
                     }
                 } else {
-                    Text("AOS \(aos) · \(max) · LOS \(los)")
+                    ViewThatFits(in: .horizontal) {
+                        Text("AOS \(aos) · \(max) · LOS \(los)")
+                        Text("\(aos)–\(los) · \(Int(pass.maxElevation.rounded()))°")
+                        Text("\(aos)–\(los)")
+                    }
                 }
             } else {
                 Text("No more planned passes")
@@ -599,11 +654,13 @@ private struct PassProgressRow: View {
                     // this one shows the pass length, then counts down to LOS.
                     HStack(spacing: 3) {
                         Text("Up for")
-                        Text(timerInterval: window, countsDown: true)
-                            .multilineTextAlignment(.trailing)
-                            .frame(maxWidth: 56, alignment: .trailing)
+                        TimerWidth(template: TimerTemplate.widest(for: window.upperBound.timeIntervalSince(window.lowerBound))) {
+                            Text(timerInterval: window, countsDown: true)
+                                .multilineTextAlignment(.trailing)
+                        }
                     }
-                    .fixedSize(horizontal: true, vertical: false)
+                    .fixedSize()
+                    .layoutPriority(1)
                 }
             }
         }
@@ -669,11 +726,16 @@ private struct PassLockScreenView: View {
                     .font(.title2)
                     .foregroundStyle(shown.pass == nil || shown.stale ? Color.secondary : Color.cyan)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(shown.pass?.satellite ?? "OrbitDeck")
-                        .font(.headline)
-                        .foregroundStyle(.white.opacity(shown.stale ? 0.7 : 1))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                    // A long name falls back to its short form ("TEVEL2-9") rather
+                    // than truncating mid-word.
+                    ViewThatFits(in: .horizontal) {
+                        Text(shown.pass?.satellite ?? "OrbitDeck")
+                        Text(shown.pass.map { PassPhase.shortName($0.satellite) } ?? "OrbitDeck")
+                    }
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(shown.stale ? 0.7 : 1))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     Group {
                         PassTimesLine(shown: shown)
                         PassFooterLine(shown: shown)
@@ -718,6 +780,11 @@ private extension OrbitDeckPassAttributes.ContentState {
                                                   [("ISS (ZARYA)", 14, 15, 25, 54), ("AO-91", nil, 110, 122, 31)])
     OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false,
                                                   [("SO-50", nil, -2, 8, 31), ("AO-7_[U/v]", nil, 95, 112, 62)])
+    // Hours away (H:MM:SS timers), local 12-hour clock and a long name.
+    OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false,
+                                                  [("TEVEL2-9 (RADFXSAT-2)", nil, 200, 215, 72), ("ISS (ZARYA)", nil, 400, 411, 40)])
+    OrbitDeckPassAttributes.ContentState.preview(.priority, utc: true,
+                                                  [("AO-91", nil, 665, 680, 18)])
     // Content from a build before the look-ahead list.
     OrbitDeckPassAttributes.ContentState(satellite: "SO-50", aos: .now.addingTimeInterval(600),
                                          los: .now.addingTimeInterval(1200), maxElevation: 31,
@@ -734,6 +801,7 @@ private extension OrbitDeckPassAttributes.ContentState {
 } contentStates: {
     OrbitDeckPassAttributes.ContentState.preview(.priority, utc: true, [("ISS (ZARYA)", nil, 90, 100, 54)])
     OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false, [("AO-7_[U/v]", nil, -2, 13, 31)])
+    OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false, [("TEVEL2-9 (RADFXSAT-2)", nil, 665, 680, 72)])
 }
 
 #Preview("Island minimal", as: .dynamicIsland(.minimal), using: OrbitDeckPassAttributes()) {
@@ -748,4 +816,7 @@ private extension OrbitDeckPassAttributes.ContentState {
 } contentStates: {
     OrbitDeckPassAttributes.ContentState.preview(.priority, utc: true,
                                                   [("TEVEL2-9 (RADFXSAT-2)", 65, 66, 76, 72), ("ISS (ZARYA)", 140, 141, 151, 40)])
+    OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false,
+                                                  [("SO-50", nil, 200, 212, 31), ("ISS (ZARYA)", nil, 665, 676, 40)])
+    OrbitDeckPassAttributes.ContentState.preview(.favorite, utc: false, [("AO-91", nil, -3, 9, 18)])
 }
